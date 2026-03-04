@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "autoweaver"
+version = "0.1.0"
+description = "A framework for industrial vision inspection systems"
+requires-python = ">=3.12"
+dependencies = [
+  "numpy",
+  "opencv-python-headless",
+]
+
+[project.optional-dependencies]
+yolo = ["ultralytics>=8.0"]
+daheng = ["iai-gxipy>=2.0.2407.9061"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/autoweaver"]
