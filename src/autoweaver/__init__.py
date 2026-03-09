@@ -1,6 +1,7 @@
 """AutoWeaver — A framework for industrial vision inspection systems."""
 
 from .camera import CameraBase, CameraConfig, DahengCamera, MockCamera
+from .comm import CommSignalBase, CommSideTask, ModbusAdapter
 from .pipeline import (
     BoundingBox,
     Detection,
@@ -21,12 +22,15 @@ from .tasks import (
     TaskBase,
 )
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "CameraBase",
     "CameraConfig",
+    "CommSignalBase",
+    "CommSideTask",
     "MockCamera",
+    "ModbusAdapter",
     "DahengCamera",
     "Detection",
     "BoundingBox",
