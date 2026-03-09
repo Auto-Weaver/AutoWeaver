@@ -8,6 +8,29 @@ A framework for industrial vision inspection systems.
 pip install -e .
 ```
 
+### Install with `uv`
+
+If you want to consume AutoWeaver from another project and pin it to a specific Git commit,
+prefer using `uv add` instead of manually editing `pyproject.toml`.
+
+**First time adding AutoWeaver from Git:**
+
+```bash
+uv add "git+https://github.com/xinyuan/AutoWeaver.git" --rev <commit>
+```
+
+This updates both `pyproject.toml` and `uv.lock` together.
+
+If your project already has an `autoweaver` Git source configured in `tool.uv.sources`, you can
+update it to a new commit with:
+
+```bash
+uv add autoweaver --rev <commit>
+```
+
+This is the recommended workflow when bumping AutoWeaver revisions, since it avoids mismatches
+between dependency declarations and the lockfile.
+
 ### Optional dependencies
 
 **YOLO detection support:**
