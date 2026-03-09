@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, Iterable, List, Optional, Sequence
 
-from ._event_bus import EventBus
+from .event_bus import EventBus
 
 
 @dataclass(frozen=True)
