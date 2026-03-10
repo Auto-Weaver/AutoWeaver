@@ -21,8 +21,9 @@ from .tasks import (
     Task,
     TaskBase,
 )
+from .workflow import WorkflowEngine, WorkflowDefinition, load_workflow_from_yaml
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 __all__ = [
     "CameraBase",
@@ -50,4 +51,7 @@ __all__ = [
     "SideTask",
     "DoneCondition",
     "AlwaysFalseCondition",
+    "WorkflowEngine",
+    "WorkflowDefinition",
+    "load_workflow_from_yaml",
 ]

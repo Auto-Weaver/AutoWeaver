@@ -8,12 +8,13 @@ resolution-markers = [
 
 [[package]]
 name = "autoweaver"
-version = "0.3.0"
+version = "0.4.0"
 source = { editable = "." }
 dependencies = [
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "pymodbus" },
+    { name = "pyyaml" },
 ]
 
 [package.optional-dependencies]
@@ -30,6 +31,7 @@ requires-dist = [
     { name = "numpy" },
     { name = "opencv-python-headless" },
     { name = "pymodbus", specifier = ">=3.11.4" },
+    { name = "pyyaml", specifier = ">=6.0" },
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.0" },
 ]
 provides-extras = ["yolo", "daheng"]
