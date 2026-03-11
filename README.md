@@ -45,10 +45,16 @@ pip install -e ".[yolo]"
 pip install -e ".[daheng]"
 ```
 
+**WebSocket comm support:**
+
+```bash
+pip install -e ".[websocket]"
+```
+
 **Install everything:**
 
 ```bash
-pip install -e ".[yolo,daheng]"
+pip install -e ".[yolo,daheng,websocket]"
 ```
 
 ## GPU Support (Important)
@@ -112,6 +118,20 @@ register_step("my_step", MyCustomStep)
 autoweaver/
 ├── pipeline/    # Stateless per-frame processing pipeline
 ├── camera/      # Camera abstraction and implementations
+├── comm/        # Transport adapters (Modbus, WebSocket, ...)
 ├── tasks/       # Stateful task logic (v0.2)
 └── workflow/    # Workflow orchestration (v0.3)
+```
+
+## WebSocket Transport
+
+`WebSocketAdapter` plugs into the existing `CommSignalBase` / `CommSideTask`
+stack and exchanges JSON object messages over a WebSocket client connection.
+
+```python
+from autoweaver.comm import CommSideTask, WebSocketAdapter
+
+transport = WebSocketAdapter("ws://127.0.0.1:8765")
+
+# Pass `transport` into your CommSideTask subclass as usual.
 ```

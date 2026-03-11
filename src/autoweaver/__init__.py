@@ -1,7 +1,7 @@
 """AutoWeaver — A framework for industrial vision inspection systems."""
 
 from .camera import CameraBase, CameraConfig, DahengCamera, MockCamera
-from .comm import CommSignalBase, CommSideTask, ModbusAdapter
+from .comm import CommSignalBase, CommSideTask, ModbusAdapter, WebSocketAdapter
 from .pipeline import (
     BoundingBox,
     Detection,
@@ -32,6 +32,7 @@ __all__ = [
     "CommSideTask",
     "MockCamera",
     "ModbusAdapter",
+    "WebSocketAdapter",
     "DahengCamera",
     "Detection",
     "BoundingBox",
