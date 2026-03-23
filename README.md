@@ -16,7 +16,7 @@ prefer using `uv add` instead of manually editing `pyproject.toml`.
 **First time adding AutoWeaver from Git:**
 
 ```bash
-uv add "git+https://github.com/xinyuan/AutoWeaver.git" --rev <commit>
+uv add "git+https://github.com/Auto-Weaver/AutoWeaver.git" --rev <commit>
 ```
 
 This updates both `pyproject.toml` and `uv.lock` together.
