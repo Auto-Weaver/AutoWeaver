@@ -150,3 +150,17 @@ class DahengCamera(CameraBase):
         if not self._is_opened:
             raise RuntimeError("Camera not opened")
         return (self._cam.Width.get(), self._cam.Height.get())
+
+    def set_exposure_time(self, exposure_time: float) -> None:
+        """Set exposure time in microseconds."""
+        if not self._is_opened:
+            raise RuntimeError("Camera not opened")
+        self._cam.ExposureTime.set(exposure_time)
+        logger.debug(f"Exposure time set to {exposure_time} us")
+
+    def set_gain(self, gain: float) -> None:
+        """Set gain value."""
+        if not self._is_opened:
+            raise RuntimeError("Camera not opened")
+        self._cam.Gain.set(gain)
+        logger.debug(f"Gain set to {gain}")

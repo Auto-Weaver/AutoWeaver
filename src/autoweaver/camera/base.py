@@ -83,6 +83,30 @@ class CameraBase(ABC):
         """
         pass
 
+    @abstractmethod
+    def set_exposure_time(self, exposure_time: float) -> None:
+        """Set camera exposure time.
+
+        Args:
+            exposure_time: Exposure time in microseconds.
+
+        Raises:
+            RuntimeError: If camera not opened.
+        """
+        pass
+
+    @abstractmethod
+    def set_gain(self, gain: float) -> None:
+        """Set camera gain.
+
+        Args:
+            gain: Gain value.
+
+        Raises:
+            RuntimeError: If camera not opened.
+        """
+        pass
+
     def __enter__(self):
         """Context manager entry."""
         self.open()

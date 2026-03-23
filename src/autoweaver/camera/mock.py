@@ -118,13 +118,25 @@ class MockCamera(CameraBase):
         """Get frame size."""
         if not self._is_opened:
             raise RuntimeError("Camera not opened")
-        
+
         if self.mode == "directory" and self._image_files:
             # Read first image to get size
             image = cv2.imread(str(self._image_files[0]))
             if image is not None:
                 return (image.shape[1], image.shape[0])
-        
+
         return (self.width, self.height)
+
+    def set_exposure_time(self, exposure_time: float) -> None:
+        """Set exposure time (stored but not used in mock)."""
+        if not self._is_opened:
+            raise RuntimeError("Camera not opened")
+        self.config.exposure_time = exposure_time
+
+    def set_gain(self, gain: float) -> None:
+        """Set gain (stored but not used in mock)."""
+        if not self._is_opened:
+            raise RuntimeError("Camera not opened")
+        self.config.gain = gain
 
 

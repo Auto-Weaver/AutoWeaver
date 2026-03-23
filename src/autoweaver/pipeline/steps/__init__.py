@@ -1,4 +1,5 @@
 from .base import ProcessStep
+from .capture import CaptureStep
 from .tiling import TileStep, MergeTilesStep
 from .yolo_detect import YOLODetectStep
 from .postprocess import NMSStep, FilterStep, SortStep
@@ -77,6 +78,8 @@ def list_available_steps() -> list:
 __all__ = [
     # Base
     "ProcessStep",
+    # Capture
+    "CaptureStep",
     # Tiling (sliced inference)
     "TileStep",
     "MergeTilesStep",

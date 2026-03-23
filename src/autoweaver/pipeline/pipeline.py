@@ -4,8 +4,6 @@ import logging
 import time
 from typing import List
 
-import numpy as np
-
 from .types import PipelineContext, PipelineResult
 
 logger = logging.getLogger(__name__)
@@ -13,16 +11,19 @@ logger = logging.getLogger(__name__)
 
 class VisionPipeline:
     """Vision processing pipeline.
-    
+
     A pipeline consists of multiple processing steps that are
     executed in sequence. Each step receives a PipelineContext
     and returns an updated context.
-    
+
+    The first step is typically a CaptureStep that acquires an
+    image from a camera. Subsequent steps process the image.
+
     Example:
         >>> pipeline = VisionPipeline()
-        >>> pipeline.add_step(ResizeStep({"size": [640, 640]}))
+        >>> pipeline.add_step(CaptureStep(camera, {"exposure_time": 5000.0}))
         >>> pipeline.add_step(YOLODetectStep({"model": "best.pt"}))
-        >>> result = pipeline.run(image)
+        >>> result = pipeline.run()
         >>> print(f"Found {result.detection_count} objects")
     """
 
@@ -32,10 +33,10 @@ class VisionPipeline:
 
     def add_step(self, step: "ProcessStep") -> "VisionPipeline":
         """Add a processing step to the pipeline.
-        
+
         Args:
             step: Processing step to add.
-            
+
         Returns:
             Self for method chaining.
         """
@@ -43,40 +44,35 @@ class VisionPipeline:
         logger.info(f"Added pipeline step: {step.name}")
         return self
 
-    def run(self, image: np.ndarray) -> PipelineResult:
-        """Run the pipeline on an image.
-        
-        Args:
-            image: Input image (H, W, C) in BGR format.
-            
+    def run(self) -> PipelineResult:
+        """Run the pipeline.
+
         Returns:
             PipelineResult with detections and metadata.
         """
         start_time = time.time()
-        
-        # Initialize context
-        ctx = PipelineContext(original_image=image)
-        
-        # Run each step
+
+        ctx = PipelineContext()
+
         for step in self._steps:
             step_start = time.time()
-            
+
             try:
                 ctx = step.process(ctx)
             except Exception as e:
                 logger.error(f"Step '{step.name}' failed: {e}")
                 raise
-            
+
             step_time = (time.time() - step_start) * 1000
             ctx.metadata[f"{step.name}_time_ms"] = step_time
-        
+
         total_time = (time.time() - start_time) * 1000
 
         return PipelineResult(
-            original_image=image,
             detections=ctx.detections,
             processing_time_ms=total_time,
             metadata=ctx.metadata,
+            original_image=ctx.original_image,
         )
 
     def clear(self) -> None:

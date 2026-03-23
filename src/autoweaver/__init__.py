@@ -4,6 +4,7 @@ from .camera import CameraBase, CameraConfig, DahengCamera, MockCamera
 from .comm import CommSignalBase, CommSideTask, ModbusAdapter, WebSocketAdapter
 from .pipeline import (
     BoundingBox,
+    CaptureStep,
     Detection,
     PipelineContext,
     PipelineResult,
@@ -28,6 +29,7 @@ __version__ = "0.4.0"
 __all__ = [
     "CameraBase",
     "CameraConfig",
+    "CaptureStep",
     "CommSignalBase",
     "CommSideTask",
     "MockCamera",

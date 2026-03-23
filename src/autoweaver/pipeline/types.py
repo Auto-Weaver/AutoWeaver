@@ -104,45 +104,45 @@ class Detection:
 @dataclass
 class PipelineContext:
     """Context passed between pipeline steps.
-    
+
     This object carries the image and accumulated results through
     the processing pipeline. Each step can read from and write to
     this context.
-    
+
     Attributes:
-        original_image: The original input image (unchanged).
-        processed_image: The current processed image (may be modified).
+        original_image: The original input image (set by CaptureStep).
+        processed_image: The current processed image (may be modified by steps).
         detections: List of detection results.
         metadata: Additional metadata from processing steps.
     """
-    original_image: np.ndarray
+    original_image: Optional[np.ndarray] = None
     processed_image: Optional[np.ndarray] = None
     detections: List[Detection] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         """Initialize processed_image if not provided."""
-        if self.processed_image is None:
+        if self.processed_image is None and self.original_image is not None:
             self.processed_image = self.original_image.copy()
 
 
 @dataclass
 class PipelineResult:
     """Final result from vision pipeline.
-    
+
     Contains all detections and processing information after
     the entire pipeline has completed.
-    
+
     Attributes:
-        original_image: The original input image.
         detections: List of all detections.
         processing_time_ms: Total processing time in milliseconds.
         metadata: Processing metadata from all steps.
+        original_image: The original input image (set by CaptureStep).
     """
-    original_image: np.ndarray
     detections: List[Detection]
     processing_time_ms: float
     metadata: Dict[str, Any]
+    original_image: Optional[np.ndarray] = None
 
     @property
     def detection_count(self) -> int:
