@@ -9,6 +9,7 @@ from .pipeline import (
     PipelineContext,
     PipelineResult,
     ProcessStep,
+    SharpnessCheckStep,
     VisionPipeline,
     create_step,
     list_available_steps,
@@ -16,8 +17,11 @@ from .pipeline import (
 )
 from .reactive import EventBus, EventHandler, StateMachine, Transition
 from .tasks import (
+    Adjuster,
     AlwaysFalseCondition,
     DoneCondition,
+    ExposureAdjuster,
+    RetryCaptureTask,
     SideTask,
     Task,
     TaskBase,
@@ -42,6 +46,7 @@ __all__ = [
     "PipelineResult",
     "VisionPipeline",
     "ProcessStep",
+    "SharpnessCheckStep",
     "create_step",
     "register_step",
     "list_available_steps",
@@ -54,6 +59,9 @@ __all__ = [
     "SideTask",
     "DoneCondition",
     "AlwaysFalseCondition",
+    "Adjuster",
+    "ExposureAdjuster",
+    "RetryCaptureTask",
     "WorkflowEngine",
     "WorkflowDefinition",
     "load_workflow_from_yaml",

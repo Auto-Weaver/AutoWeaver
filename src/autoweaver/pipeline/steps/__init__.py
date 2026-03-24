@@ -1,5 +1,6 @@
 from .base import ProcessStep
 from .capture import CaptureStep
+from .sharpness import SharpnessCheckStep
 from .tiling import TileStep, MergeTilesStep
 from .yolo_detect import YOLODetectStep
 from .postprocess import NMSStep, FilterStep, SortStep
@@ -7,6 +8,8 @@ from .postprocess import NMSStep, FilterStep, SortStep
 # Step registry for config-based creation
 # All implemented steps should be registered here
 _STEP_REGISTRY = {
+    # Quality check
+    "sharpness": SharpnessCheckStep,
     # Tiling steps (for sliced inference on large images)
     "tile": TileStep,
     "merge_tiles": MergeTilesStep,
@@ -80,6 +83,8 @@ __all__ = [
     "ProcessStep",
     # Capture
     "CaptureStep",
+    # Quality check
+    "SharpnessCheckStep",
     # Tiling (sliced inference)
     "TileStep",
     "MergeTilesStep",

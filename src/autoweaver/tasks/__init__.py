@@ -3,6 +3,7 @@
 from .base import TaskBase
 from .conditions import AlwaysFalseCondition, DoneCondition
 from .protocol import SideTask, Task
+from .retry_capture import Adjuster, ExposureAdjuster, RetryCaptureTask
 
 __all__ = [
     "TaskBase",
@@ -10,4 +11,7 @@ __all__ = [
     "SideTask",
     "DoneCondition",
     "AlwaysFalseCondition",
+    "Adjuster",
+    "ExposureAdjuster",
+    "RetryCaptureTask",
 ]
