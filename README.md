@@ -1,137 +1,98 @@
 # AutoWeaver
 
-A framework for industrial vision inspection systems.
+AutoWeaver is a reactive framework for industrial systems.
+
+Today it is aimed at general industrial quality inspection. In the longer run, it is intended to become a runtime foundation for broader industrial autonomy: not just running algorithms, but organizing perception, device interaction, control flow, and business logic in one coherent architecture.
+
+The name reflects the ambition. AutoWeaver is meant to be the weaver of algorithmic flows.
+
+## Core Abstractions
+
+- `Pipeline`: the per-run execution chain for acquisition and processing
+- `Task`: the business execution unit that uses pipelines and interprets results
+- `Workflow`: the lifecycle and state orchestration layer that mounts tasks
+- `Event`: the decoupling medium that carries triggers and facts through the system
+
+These are the common-layer concepts of AutoWeaver. If they are clear, the rest of the package is much easier to place.
+
+## Documentation
+
+- [Docs Index](docs/README.md)
+- [Core Abstractions](docs/core-abstractions.md)
+- [Architecture](docs/architecture.md)
+- [Pipeline Guide](docs/pipeline.md)
+- [Tasks and Workflow](docs/tasks-and-workflow.md)
+- [Camera and Communication](docs/camera-and-comm.md)
+- [Getting Started](docs/getting-started.md)
+
+## Documentation Style
+
+These docs intentionally prioritize:
+
+- definition over tutorial
+- boundaries over large code examples
+- contracts over patterns copied from one project
+
+The source code remains the final truth for exact implementation details. The docs exist to make the architecture legible to humans and AI readers.
 
 ## Installation
 
+Develop inside the repository:
+
 ```bash
-pip install -e .
+uv sync
 ```
 
-### Install with `uv`
+Install optional extras when needed:
 
-If you want to consume AutoWeaver from another project and pin it to a specific Git commit,
-prefer using `uv add` instead of manually editing `pyproject.toml`.
+```bash
+uv sync --extra yolo --extra daheng --extra websocket
+```
 
-**First time adding AutoWeaver from Git:**
+`pip` also works for local editable installs:
+
+```bash
+pip install -e .
+pip install -e ".[yolo,daheng,websocket]"
+```
+
+Consume AutoWeaver from another project with `uv`:
 
 ```bash
 uv add "git+https://github.com/Auto-Weaver/AutoWeaver.git" --rev <commit>
 ```
 
-This updates both `pyproject.toml` and `uv.lock` together.
-
-If your project already has an `autoweaver` Git source configured in `tool.uv.sources`, you can
-update it to a new commit with:
+If your project already has an `autoweaver` Git source configured, bump it with:
 
 ```bash
 uv add autoweaver --rev <commit>
 ```
 
-This is the recommended workflow when bumping AutoWeaver revisions, since it avoids mismatches
-between dependency declarations and the lockfile.
+## Optional Dependencies
 
-### Optional dependencies
+- `yolo`: installs `ultralytics`
+- `daheng`: installs `iai-gxipy`
+- `websocket`: installs `websockets`
 
-**YOLO detection support:**
+## GPU Support
 
-```bash
-pip install -e ".[yolo]"
-```
+`ultralytics` will typically pull in CPU-only PyTorch by default. If you need GPU acceleration, install the correct CUDA build of PyTorch before installing the `yolo` extra.
 
-**Daheng industrial camera support:**
-
-```bash
-pip install -e ".[daheng]"
-```
-
-**WebSocket comm support:**
+Example for CUDA 12.1:
 
 ```bash
-pip install -e ".[websocket]"
-```
-
-**Install everything:**
-
-```bash
-pip install -e ".[yolo,daheng,websocket]"
-```
-
-## GPU Support (Important)
-
-`pip install autoweaver[yolo]` installs `ultralytics`, which pulls in **CPU-only PyTorch** by default.
-
-If you need GPU acceleration (recommended for production), install the CUDA version of PyTorch **before** installing AutoWeaver:
-
-```bash
-# Example for CUDA 12.1 — adjust for your CUDA version
 pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
-
-# Then install AutoWeaver
 pip install -e ".[yolo]"
 ```
 
-Check your CUDA version with `nvidia-smi` and pick the matching index URL from https://pytorch.org/get-started/locally/.
+## Package Layout
 
-## Quick Start
-
-```python
-from autoweaver.pipeline import VisionPipeline, ProcessStep, Detection
-from autoweaver.camera import CameraBase, MockCamera
-
-# Create pipeline from config
-pipeline = VisionPipeline.from_config({
-    "pipeline": {
-        "steps": [
-            {"name": "tile", "type": "tile", "params": {"tile_size": 640, "overlap": 0.2}},
-            {"name": "detect", "type": "yolo", "params": {"model": "best.pt", "conf": 0.25}},
-            {"name": "merge", "type": "merge_tiles", "params": {"iou_threshold": 0.5}},
-            {"name": "filter", "type": "filter", "params": {"min_confidence": 0.3}},
-            {"name": "sort", "type": "sort", "params": {"by": "confidence"}},
-        ]
-    }
-})
-
-# Run detection
-result = pipeline.run(image)
-print(f"Found {result.detection_count} objects in {result.processing_time_ms:.1f}ms")
-```
-
-## Extending with Custom Steps
-
-```python
-from autoweaver.pipeline import ProcessStep, PipelineContext
-from autoweaver.pipeline.steps import register_step
-
-class MyCustomStep(ProcessStep):
-    def process(self, ctx: PipelineContext) -> PipelineContext:
-        # Your processing logic here
-        ctx.metadata["my_result"] = "some_value"
-        return ctx
-
-register_step("my_step", MyCustomStep)
-```
-
-## Project Structure
-
-```
-autoweaver/
-├── pipeline/    # Stateless per-frame processing pipeline
+```text
+src/autoweaver/
 ├── camera/      # Camera abstraction and implementations
-├── comm/        # Transport adapters (Modbus, WebSocket, ...)
-├── tasks/       # Stateful task logic (v0.2)
-└── workflow/    # Workflow orchestration (v0.3)
-```
-
-## WebSocket Transport
-
-`WebSocketAdapter` plugs into the existing `CommSignalBase` / `CommSideTask`
-stack and exchanges JSON object messages over a WebSocket client connection.
-
-```python
-from autoweaver.comm import CommSideTask, WebSocketAdapter
-
-transport = WebSocketAdapter("ws://127.0.0.1:8765")
-
-# Pass `transport` into your CommSideTask subclass as usual.
+├── comm/        # Communication transports and side-task bridge
+├── pipeline/    # Per-run execution pipeline and built-in steps
+├── reactive/    # Event bus and state machine
+├── tasks/       # Task protocols and reusable task utilities
+└── workflow/    # Workflow engine and YAML loader
 ```
