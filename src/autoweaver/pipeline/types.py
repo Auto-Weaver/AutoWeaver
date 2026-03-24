@@ -138,11 +138,13 @@ class PipelineResult:
         processing_time_ms: Total processing time in milliseconds.
         metadata: Processing metadata from all steps.
         original_image: The original input image (set by CaptureStep).
+        processed_image: The final processed image after all steps.
     """
     detections: List[Detection]
     processing_time_ms: float
     metadata: Dict[str, Any]
     original_image: Optional[np.ndarray] = None
+    processed_image: Optional[np.ndarray] = None
 
     @property
     def detection_count(self) -> int:

@@ -73,6 +73,7 @@ class VisionPipeline:
             processing_time_ms=total_time,
             metadata=ctx.metadata,
             original_image=ctx.original_image,
+            processed_image=ctx.processed_image,
         )
 
     def clear(self) -> None:
