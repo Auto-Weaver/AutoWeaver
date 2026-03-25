@@ -18,7 +18,7 @@ class TaskBase:
     - subscribe(): subscribe to EventBus events
     - broadcast(): publish results via EventBus
 
-    Engine calls run(data) each frame. Subclasses implement run() to
+    Engine calls tick(data) each frame. Subclasses implement tick() to
     call pipeline, do business logic, and broadcast results as needed.
     """
 
@@ -35,7 +35,7 @@ class TaskBase:
         self._event_bus = event_bus
         self.subscribe()
 
-    def run(self, data: Any) -> None:
+    def tick(self, data: Any) -> None:
         """Called by Engine each frame. Subclasses override to combine building blocks."""
         raise NotImplementedError
 

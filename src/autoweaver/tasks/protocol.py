@@ -46,7 +46,7 @@ class Task(Protocol):
         """Inject EventBus for event publishing/subscribing."""
         ...
 
-    def run(self, data: Any) -> None:
+    def tick(self, data: Any) -> None:
         """Process a single engine input item (image or handoff data)."""
         ...
 

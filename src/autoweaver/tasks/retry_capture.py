@@ -73,7 +73,7 @@ class ExposureAdjuster:
 class RetryCaptureTask(TaskBase):
     """Closed-loop capture: run pipeline, check quality, adjust, retry.
 
-    Engine calls run() to trigger one capture cycle. Internally the task
+    Engine calls tick() to trigger one capture cycle. Internally the task
     retries up to max_retries times. On success it broadcasts
     "capture_ok"; on failure it broadcasts "capture_failed".
 
@@ -116,10 +116,10 @@ class RetryCaptureTask(TaskBase):
         self._threshold = threshold
         self._max_retries = max_retries
 
-        # Last successful result (accessible after run)
+        # Last successful result (accessible after tick)
         self.last_result = None
 
-    def run(self, data: Any) -> None:
+    def tick(self, data: Any) -> None:
         """Execute one capture cycle with retries.
 
         Args:

@@ -11,7 +11,7 @@ A `Task` is the business execution unit associated with a workflow state.
 AutoWeaver defines `Task` as a protocol. A task implementation is expected to support:
 
 - `attach(event_bus)`
-- `run(data)`
+- `tick(data)`
 - `reset()`
 - `close()`
 
@@ -51,7 +51,7 @@ It is responsible for:
 
 It is not responsible for being a generic frame-processing loop.
 
-That distinction matters. The workflow layer manages lifecycle and activation, while applications remain free to decide how input data reaches `Task.run(data)`.
+That distinction matters. The workflow layer manages lifecycle and activation, while applications remain free to decide how input data reaches `Task.tick(data)`.
 
 ## `StateMachine`
 
