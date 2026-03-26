@@ -1,38 +1,19 @@
-"""WebSocket-based comm signal adapter."""
+"""WebSocket client transport."""
 
 from __future__ import annotations
 
-import json
 import logging
 import queue
 import threading
-from typing import Any, Callable, Dict, Optional, Sequence
+from typing import Any, Dict, Optional, Sequence
 
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
 from websockets.sync.client import connect
 
-from .base import CommSignalBase
+from ..base import CommSignalBase
+from . import DecodeMessage, EncodeMessage, default_decode, default_encode
 
 logger = logging.getLogger(__name__)
-
-RawMessage = str | bytes
-DecodeMessage = Callable[[RawMessage], Optional[Dict[str, Any]]]
-EncodeMessage = Callable[[Dict[str, Any]], RawMessage]
-
-
-def _default_decode_message(raw: RawMessage) -> Optional[Dict[str, Any]]:
-    """Decode a JSON object message from a WebSocket frame."""
-    decoded = json.loads(raw)
-    if decoded is None:
-        return None
-    if not isinstance(decoded, dict):
-        raise ValueError("WebSocket message must decode to a JSON object")
-    return decoded
-
-
-def _default_encode_message(message: Dict[str, Any]) -> RawMessage:
-    """Encode a message dict into a JSON text frame."""
-    return json.dumps(message)
 
 
 class WebSocketAdapter(CommSignalBase):
@@ -60,8 +41,8 @@ class WebSocketAdapter(CommSignalBase):
     ) -> None:
         self.uri = uri
         self._receive_timeout = receive_timeout
-        self._decode_message = decode_message or _default_decode_message
-        self._encode_message = encode_message or _default_encode_message
+        self._decode_message = decode_message or default_decode
+        self._encode_message = encode_message or default_encode
         self._incoming: queue.Queue[Dict[str, Any]] = queue.Queue(maxsize=inbox_size)
         self._send_lock = threading.Lock()
         self._running = threading.Event()
@@ -89,14 +70,12 @@ class WebSocketAdapter(CommSignalBase):
         self._recv_thread.start()
 
     def receive(self) -> Optional[Dict[str, Any]]:
-        """Receive the next decoded message without blocking."""
         try:
             return self._incoming.get_nowait()
         except queue.Empty:
             return None
 
     def send(self, message: Dict[str, Any]) -> None:
-        """Send a message dict as a WebSocket frame."""
         if not self._running.is_set():
             logger.warning("WebSocket send skipped because the connection is closed")
             return
@@ -112,7 +91,6 @@ class WebSocketAdapter(CommSignalBase):
             logger.warning("WebSocket send failed: %s", exc)
 
     def close(self) -> None:
-        """Stop receiver thread and close the WebSocket connection."""
         if self._closed.is_set():
             return
 
@@ -128,7 +106,6 @@ class WebSocketAdapter(CommSignalBase):
         self._recv_thread.join(timeout=max(1.0, self._receive_timeout * 4))
 
     def _recv_loop(self) -> None:
-        """Read frames in the background and enqueue decoded messages."""
         while self._running.is_set():
             try:
                 raw = self._connection.recv(timeout=self._receive_timeout)
