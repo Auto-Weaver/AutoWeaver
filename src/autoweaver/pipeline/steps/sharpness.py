@@ -20,18 +20,19 @@ class SharpnessCheckStep(ProcessStep):
 
     Args:
         params: Step parameters.
-            - max_size: Downscale long edge to this before computing (default: 320).
-                Speeds up computation on large images.
+            - center_ratio: Fraction of the image (per axis) to keep as a
+                center crop before scoring (default: None = full image).
+                For example, 0.25 on a 5120x5120 image crops to 1280x1280.
 
     Example:
-        >>> step = SharpnessCheckStep({"max_size": 320})
+        >>> step = SharpnessCheckStep({"center_ratio": 0.25})
         >>> ctx = step.process(ctx)
         >>> print(ctx.metadata["sharpness"])  # e.g. 152.3
     """
 
     def __init__(self, params: Optional[Dict[str, Any]] = None):
         super().__init__(params)
-        self._max_size = self.params.get("max_size", 320)
+        self._center_ratio: Optional[float] = self.params.get("center_ratio")
 
     def process(self, ctx: PipelineContext) -> PipelineContext:
         if ctx.processed_image is None:
@@ -39,18 +40,16 @@ class SharpnessCheckStep(ProcessStep):
 
         gray = cv2.cvtColor(ctx.processed_image, cv2.COLOR_BGR2GRAY)
 
-        # Downscale for speed
-        h, w = gray.shape
-        scale = self._max_size / max(1.0, float(max(h, w)))
-        if scale < 1.0:
-            gray = cv2.resize(
-                gray,
-                (int(w * scale), int(h * scale)),
-                interpolation=cv2.INTER_AREA,
-            )
+        # Center crop
+        if self._center_ratio is not None and 0.0 < self._center_ratio < 1.0:
+            h, w = gray.shape
+            ch, cw = int(h * self._center_ratio), int(w * self._center_ratio)
+            y0 = (h - ch) // 2
+            x0 = (w - cw) // 2
+            gray = gray[y0 : y0 + ch, x0 : x0 + cw]
 
         score = float(cv2.Laplacian(gray, cv2.CV_64F).var())
         ctx.metadata["sharpness"] = score
 
-        logger.debug(f"Sharpness score: {score:.1f}")
+        logger.debug("Sharpness score: %.1f", score)
         return ctx
