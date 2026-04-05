@@ -4,6 +4,7 @@ from .steps.base import ProcessStep
 from .steps.capture import CaptureStep
 from .steps.sharpness import SharpnessCheckStep
 from .steps.yolo_seg import YOLOSegStep, SegmentResult
+from .steps.save import SaveStep
 from .steps import create_step, register_step, list_available_steps
 
 __all__ = [
@@ -17,6 +18,7 @@ __all__ = [
     "SharpnessCheckStep",
     "YOLOSegStep",
     "SegmentResult",
+    "SaveStep",
     "create_step",
     "register_step",
     "list_available_steps",

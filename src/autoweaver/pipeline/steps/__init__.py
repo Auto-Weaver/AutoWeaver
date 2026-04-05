@@ -4,6 +4,7 @@ from .sharpness import SharpnessCheckStep
 from .tiling import TileStep, MergeTilesStep
 from .yolo_detect import YOLODetectStep
 from .yolo_seg import YOLOSegStep, SegmentResult
+from .save import SaveStep
 from .postprocess import NMSStep, FilterStep, SortStep
 
 # Step registry for config-based creation
@@ -18,6 +19,8 @@ _STEP_REGISTRY = {
     "yolo": YOLODetectStep,
     # Segmentation steps
     "yolo_seg": YOLOSegStep,
+    # I/O steps
+    "save": SaveStep,
     # Postprocessing steps
     "nms": NMSStep,
     "filter": FilterStep,
@@ -96,6 +99,7 @@ __all__ = [
     # Segmentation
     "YOLOSegStep",
     "SegmentResult",
+    "SaveStep",
     # Postprocessing
     "NMSStep",
     "FilterStep",
