@@ -4,6 +4,7 @@ from .sharpness import SharpnessCheckStep
 from .tiling import TileStep, MergeTilesStep
 from .yolo_detect import YOLODetectStep
 from .yolo_seg import YOLOSegStep, SegmentResult
+from .mask_apply import MaskApplyStep
 from .save import SaveStep
 from .postprocess import NMSStep, FilterStep, SortStep
 
@@ -19,6 +20,8 @@ _STEP_REGISTRY = {
     "yolo": YOLODetectStep,
     # Segmentation steps
     "yolo_seg": YOLOSegStep,
+    # Mask steps
+    "mask_apply": MaskApplyStep,
     # I/O steps
     "save": SaveStep,
     # Postprocessing steps
@@ -99,6 +102,7 @@ __all__ = [
     # Segmentation
     "YOLOSegStep",
     "SegmentResult",
+    "MaskApplyStep",
     "SaveStep",
     # Postprocessing
     "NMSStep",

@@ -44,15 +44,22 @@ class VisionPipeline:
         logger.info(f"Added pipeline step: {step.name}")
         return self
 
-    def run(self) -> PipelineResult:
+    def run(self, ctx: PipelineContext = None) -> PipelineResult:
         """Run the pipeline.
+
+        Args:
+            ctx: Optional initial context. If not provided, an empty
+                context is created (typically filled by a CaptureStep).
+                Pass a pre-filled context when processing images from
+                files rather than cameras.
 
         Returns:
             PipelineResult with detections and metadata.
         """
         start_time = time.time()
 
-        ctx = PipelineContext()
+        if ctx is None:
+            ctx = PipelineContext()
 
         for step in self._steps:
             step_start = time.time()
