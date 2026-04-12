@@ -28,6 +28,10 @@ They intentionally do not rely on many code examples. Examples are useful, but i
 - If you are building a station-level system, read [Tasks and Workflow](tasks-and-workflow.md).
 - If you are integrating devices, PLCs, or transports, read [Camera and Communication](camera-and-comm.md).
 
+## Release Notes
+
+- [0.4.3 - Perception Runtime Milestone](release-notes-0.4.3.md)
+
 ## Source of Truth
 
 The source code is the final truth for exact signatures and implementation details.

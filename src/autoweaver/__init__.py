@@ -32,7 +32,7 @@ from .tasks import (
 )
 from .workflow import WorkflowEngine, WorkflowDefinition, load_workflow_from_yaml
 
-__version__ = "0.4.0"
+__version__ = "0.4.3"
 
 __all__ = [
     "CameraBase",

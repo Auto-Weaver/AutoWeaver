@@ -157,11 +157,13 @@ Capture（相机）           →  相机 SDK/API  →  相机
 
 **轴管理器**
 
-管理所有物理轴的注册、状态和调度。
+管理所有 EtherCAT 从站的注册、状态和调度。
 
-- 多轴注册（启动时扫描从站，建立轴 ID 映射）
-- Goal 接收与分发
-- 状态汇总（所有轴的当前位置、状态、错误码）
+- 从站注册（启动时扫描，建立轴 ID 和 IO 模块 ID 映射）
+- Goal 接收与分发（运动指令和 IO 指令）
+- 状态汇总（轴位置、IO 状态、错误码）
+
+管理对象包括伺服轴、步进轴和 IO 模块——它们都是 EtherCAT 从站，统一通过 PDO 读写。
 
 **CiA402 状态机**
 
@@ -201,6 +203,41 @@ EtherCAT 通信需要稳定的周期性执行（毫秒级）。Rust 提供：
 
 如果将来需要 CSP（Cyclic Synchronous Position）模式——master 侧做插补、每 1ms 发一个位置点——再评估升级到 IgH。
 
+### 资源隔离
+
+Perception Engine 和 Motion Engine 共存时，资源竞争是一个实际问题。
+
+**GPU：无竞争。** Motion 全链路（BT、Rust、EtherCAT）不使用 GPU。GPU 由 Perception Engine 独占。
+
+**CPU：通过核心隔离解决。** Perception 的推理和图像处理是突发性高 CPU 负载。Rust Motion Runtime 是持续性低负载但要求稳定的毫秒级周期。两者不能抢同一组核心。
+
+推荐做法：Rust 进程绑定到独占的 CPU 核心，Python 进程排除这些核心。
+
+```
+P 核（高性能）：Python — 推理、图像处理
+E 核（独占）  ：Rust Motion Runtime + Safety Monitor
+```
+
+实现方式：
+
+- `taskset -c 6 ./motion-runtime` — 标准 Linux 命令，将进程绑定到指定核心
+- `isolcpus=6,7` — 内核启动参数，阻止调度器将其他进程放到这些核心上
+
+两种方式都是标准 Linux 功能，不需要任何内核补丁。
+
+**GIL：实际无影响。** Python 进程内 Perception Pipeline 和 BT tick 共享 GIL，但推理引擎（ONNX Runtime、PyTorch）和图像处理（OpenCV）在执行时释放 GIL。BT tick 本身是微秒级操作，即使偶尔等待 GIL 也不影响 20-50Hz 的 tick 周期。
+
+**为什么不需要 PREEMPT_RT 补丁：** PP 模式下，master 侧的时序要求是 EtherCAT 周期 1-10ms 允许几毫秒抖动，BT tick 20-50Hz 允许十几毫秒抖动。标准 Linux 内核 + isolcpus 即可满足。PREEMPT_RT 是给 CSP 那种"每 1ms 必须精确发一个插补点、抖动不能超过几十微秒"的场景用的。
+
+**业务节奏天然错开。** 在 inductor 场景中，运动和感知大部分时间交替执行：
+
+```
+机械臂移动到拍照位 → 停稳 → 拍照 → 推理 → 决策 → 机械臂移动到下一个位置
+     运动密集              感知密集              运动密集
+```
+
+真正同时满载的窗口很窄。核心隔离是保底措施，业务节奏本身就减轻了竞争。
+
 ## 硬件层
 
 ### 当前设备
@@ -212,6 +249,9 @@ EtherCAT 通信需要稳定的周期性执行（毫秒级）。Rust 提供：
 | 汇川伺服电机 | MS1H4-20B30CB-A334R | — | 由驱动器带动，不直接控制 |
 | 鸣志步进驱动器 | STF05-ECX-H | EtherCAT (CiA402) | 驱动器 |
 | 鸣志步进电机 | LE115S-T6503-100-AR1-S-100 | — | 由驱动器带动，不直接控制 |
+| 汇川 EtherCAT IO 模块 | EC3A-IO1632 | EtherCAT | DO 接电磁阀（真空、气缸），DI 接传感器回信 |
+
+EC3A-IO1632 提供 16 路数字输入（PNP/NPN）+ 16 路数字输出（PNP）。电磁阀（真空发生器、气缸）接 DO，传感器回信（真空压力开关、气缸到位、光电开关）接 DI。一个模块覆盖典型工站的 IO 需求。
 
 ### 网络拓扑
 
@@ -223,7 +263,7 @@ Linux 工控机（双网口）
 │   └── 开发调试
 │
 └── 网口 2：EtherCAT 专用
-    └── 伺服驱动器 → 步进驱动器（菊花链）
+    └── 伺服驱动器 → 步进驱动器 → IO 模块（菊花链）
 ```
 
 两个电机本体不是网络节点，不需要独立网口。一个 EtherCAT 口通过菊花链承载所有从站。
@@ -238,6 +278,7 @@ Linux 工控机（双网口）
 | 机械臂不走 Rust 层 | 机械臂控制器自带运动规划，Python 直接调 API 即可 |
 | 电机本体不作为控制对象 | 电机是执行件，真正的网络控制节点是驱动器 |
 | 先 PP 模式，后续按需升级 CSP | 够用优先。CSP 需要 master 侧插补 + 可能的内核级实时，复杂度高一个量级 |
+| Rust 绑核隔离，不上 PREEMPT_RT | PP 模式时序要求宽松，标准内核 + isolcpus 足够。不增加部署复杂度 |
 
 ## 本文档不覆盖的内容
 
