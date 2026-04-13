@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from autoweaver.motion_policy.blackboard import Blackboard
 
 
 class Status(Enum):
@@ -18,7 +21,7 @@ class TreeNode(ABC):
     def __init__(self, name: str = ""):
         self.name = name or self.__class__.__name__
         self.status = Status.IDLE
-        self._blackboard: Any = None
+        self._blackboard: Blackboard | None = None
         self._port_mapping: dict[str, str] = {}
         self._writer_id: str = ""
 
@@ -53,7 +56,7 @@ class TreeNode(ABC):
 
     def set_blackboard(
         self,
-        blackboard: Any,
+        blackboard: Blackboard,
         port_mapping: dict[str, str] | None = None,
         writer_id: str = "",
     ) -> None:
