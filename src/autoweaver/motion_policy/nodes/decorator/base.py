@@ -1,0 +1,17 @@
+from autoweaver.motion_policy.nodes.node import Status, TreeNode
+
+
+class DecoratorNode(TreeNode):
+    """Base class for decorators. Wraps a single child."""
+
+    def __init__(self, child: TreeNode, name: str = ""):
+        super().__init__(name=name)
+        self.child = child
+
+    def halt(self) -> None:
+        self.child.halt()
+        super().halt()
+
+    def set_blackboard(self, blackboard, port_mapping=None, writer_id="") -> None:
+        super().set_blackboard(blackboard, port_mapping, writer_id)
+        self.child.set_blackboard(blackboard, port_mapping, writer_id)
