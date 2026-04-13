@@ -12,6 +12,6 @@ class DecoratorNode(TreeNode):
         self.child.halt()
         super().halt()
 
-    def set_blackboard(self, blackboard, key_mapping=None, writer_id="") -> None:
-        super().set_blackboard(blackboard, key_mapping, writer_id)
-        self.child.set_blackboard(blackboard, key_mapping, writer_id)
+    def set_blackboard(self, blackboard, key_mapping=None) -> None:
+        super().set_blackboard(blackboard, key_mapping)
+        self.child.set_blackboard(blackboard, key_mapping)

@@ -19,7 +19,7 @@ class ControlNode(TreeNode):
     def _children_list(self) -> list[TreeNode]:
         return list(self.children)
 
-    def set_blackboard(self, blackboard, key_mapping=None, writer_id="") -> None:
-        super().set_blackboard(blackboard, key_mapping, writer_id)
+    def set_blackboard(self, blackboard, key_mapping=None) -> None:
+        super().set_blackboard(blackboard, key_mapping)
         for child in self.children:
-            child.set_blackboard(blackboard, key_mapping, writer_id)
+            child.set_blackboard(blackboard, key_mapping)

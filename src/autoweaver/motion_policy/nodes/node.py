@@ -23,7 +23,6 @@ class TreeNode(ABC):
         self.status = Status.IDLE
         self._blackboard: Blackboard
         self._key_mapping: dict[str, str] = {}
-        self._writer_id: str = ""
 
     def tick(self) -> Status:
         if self.status == Status.IDLE:
@@ -58,13 +57,10 @@ class TreeNode(ABC):
         self,
         blackboard: Blackboard,
         key_mapping: dict[str, str] | None = None,
-        writer_id: str = "",
     ) -> None:
         self._blackboard = blackboard
         if key_mapping:
             self._key_mapping = key_mapping
-        if writer_id:
-            self._writer_id = writer_id
 
     def get_input(self, key: str) -> Any:
         mapped = self._key_mapping.get(key, key)
@@ -72,7 +68,7 @@ class TreeNode(ABC):
 
     def set_output(self, key: str, value: Any) -> None:
         mapped = self._key_mapping.get(key, key)
-        self._blackboard.write(mapped, value, self._writer_id)
+        self._blackboard.write(mapped, value, self.name)
 
     # --- Operator DSL ---
 
