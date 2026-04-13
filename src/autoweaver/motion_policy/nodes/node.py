@@ -22,7 +22,7 @@ class TreeNode(ABC):
         self.name = name or self.__class__.__name__
         self.status = Status.IDLE
         self._blackboard: Blackboard
-        self._port_mapping: dict[str, str] = {}
+        self._key_mapping: dict[str, str] = {}
         self._writer_id: str = ""
 
     def tick(self) -> Status:
@@ -57,22 +57,22 @@ class TreeNode(ABC):
     def set_blackboard(
         self,
         blackboard: Blackboard,
-        port_mapping: dict[str, str] | None = None,
+        key_mapping: dict[str, str] | None = None,
         writer_id: str = "",
     ) -> None:
         self._blackboard = blackboard
-        if port_mapping:
-            self._port_mapping = port_mapping
+        if key_mapping:
+            self._key_mapping = key_mapping
         if writer_id:
             self._writer_id = writer_id
 
-    def get_input(self, port_name: str) -> Any:
-        key = self._port_mapping.get(port_name, port_name)
-        return self._blackboard.read(key)
+    def get_input(self, key: str) -> Any:
+        mapped = self._key_mapping.get(key, key)
+        return self._blackboard.read(mapped)
 
-    def set_output(self, port_name: str, value: Any) -> None:
-        key = self._port_mapping.get(port_name, port_name)
-        self._blackboard.write(key, value, self._writer_id)
+    def set_output(self, key: str, value: Any) -> None:
+        mapped = self._key_mapping.get(key, key)
+        self._blackboard.write(mapped, value, self._writer_id)
 
     # --- Operator DSL ---
 
