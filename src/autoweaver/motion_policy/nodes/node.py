@@ -21,7 +21,7 @@ class TreeNode(ABC):
     def __init__(self, name: str = ""):
         self.name = name or self.__class__.__name__
         self.status = Status.IDLE
-        self._blackboard: Blackboard | None = None
+        self._blackboard: Blackboard
         self._port_mapping: dict[str, str] = {}
         self._writer_id: str = ""
 
@@ -67,14 +67,10 @@ class TreeNode(ABC):
             self._writer_id = writer_id
 
     def get_input(self, port_name: str) -> Any:
-        if self._blackboard is None:
-            raise RuntimeError("Blackboard not set")
         key = self._port_mapping.get(port_name, port_name)
         return self._blackboard.read(key)
 
     def set_output(self, port_name: str, value: Any) -> None:
-        if self._blackboard is None:
-            raise RuntimeError("Blackboard not set")
         key = self._port_mapping.get(port_name, port_name)
         self._blackboard.write(key, value, self._writer_id)
 

@@ -23,16 +23,14 @@ class Action:
     def __init__(
         self,
         tree: TreeNode,
-        blackboard: Blackboard | None = None,
         hz: int = 50,
         name: str = "",
     ):
         self.tree = tree
-        self.blackboard = blackboard or Blackboard()
         self.interval = 1.0 / hz
         self.name = name or tree.name
 
-        self.tree.set_blackboard(self.blackboard)
+        self.tree.set_blackboard(Blackboard())
 
     async def run(self) -> ActionResult:
         """Run the tick loop until the tree completes."""
