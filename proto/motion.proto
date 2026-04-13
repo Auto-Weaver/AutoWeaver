@@ -1,0 +1,98 @@
+syntax = "proto3";
+
+package motion;
+
+service MotionService {
+  // Send a motion goal to an axis (servo or stepper, PP mode)
+  rpc SendGoal(GoalRequest) returns (GoalResponse);
+
+  // Get real-time feedback from an axis
+  rpc GetFeedback(FeedbackRequest) returns (FeedbackResponse);
+
+  // Get the result of a completed motion
+  rpc GetResult(ResultRequest) returns (ResultResponse);
+
+  // Halt an axis immediately
+  rpc Halt(HaltRequest) returns (HaltResponse);
+
+  // Set a digital output on an IO module
+  rpc SetDigitalOutput(SetDigitalOutputRequest) returns (SetDigitalOutputResponse);
+
+  // Get a digital input from an IO module
+  rpc GetDigitalInput(GetDigitalInputRequest) returns (GetDigitalInputResponse);
+}
+
+// ---------- Motion Goal ----------
+
+message GoalRequest {
+  uint32 axis_id = 1;
+  int32 target_position = 2;   // Target position in user units (pulses)
+  uint32 velocity = 3;         // Profile velocity
+  float timeout_secs = 4;      // Timeout in seconds (0 = no timeout)
+}
+
+message GoalResponse {
+  bool accepted = 1;
+  string message = 2;
+}
+
+// ---------- Feedback ----------
+
+message FeedbackRequest {
+  uint32 axis_id = 1;
+}
+
+message FeedbackResponse {
+  uint32 axis_id = 1;
+  int32 current_position = 2;
+  string state = 3;            // CiA402 state name
+  float progress_pct = 4;      // 0.0 .. 100.0
+}
+
+// ---------- Result ----------
+
+message ResultRequest {
+  uint32 axis_id = 1;
+}
+
+message ResultResponse {
+  uint32 axis_id = 1;
+  bool success = 2;
+  int32 final_position = 3;
+  uint32 error_code = 4;
+  string error_message = 5;
+}
+
+// ---------- Halt ----------
+
+message HaltRequest {
+  uint32 axis_id = 1;
+}
+
+message HaltResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+// ---------- Digital IO ----------
+
+message SetDigitalOutputRequest {
+  uint32 module_id = 1;
+  uint32 channel = 2;          // 0-15 for 16DO
+  bool value = 3;
+}
+
+message SetDigitalOutputResponse {
+  bool success = 1;
+  string message = 2;
+}
+
+message GetDigitalInputRequest {
+  uint32 module_id = 1;
+  uint32 channel = 2;          // 0-15 for 16DI, 0xFFFF = all
+}
+
+message GetDigitalInputResponse {
+  bool value = 1;              // Single channel value (when channel != 0xFFFF)
+  uint32 all_inputs = 2;       // Bitmask of all 16 inputs
+}
