@@ -1,10 +1,9 @@
 from abc import abstractmethod
 
-from autoweaver.motion_policy.nodes.leaf.base import LeafNode
-from autoweaver.motion_policy.nodes.node import Status
+from autoweaver.motion_policy.nodes.node import Status, TreeNode
 
 
-class Condition(LeafNode):
+class Condition(TreeNode):
     """Base class for condition leaves (no side effects, pure read).
 
     Conditions return SUCCESS or FAILURE instantly. Never RUNNING.

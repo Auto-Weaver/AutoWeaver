@@ -1,10 +1,9 @@
 import time
 
-from autoweaver.motion_policy.nodes.leaf.base import LeafNode
-from autoweaver.motion_policy.nodes.node import Status
+from autoweaver.motion_policy.nodes.node import Status, TreeNode
 
 
-class Wait(LeafNode):
+class Wait(TreeNode):
     """Wait for a specified duration. Returns RUNNING until time elapsed."""
 
     def __init__(self, seconds: float, name: str = ""):
