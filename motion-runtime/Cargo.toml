@@ -4,7 +4,6 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ethercrab = "0.7"
 tonic = "0.12"
 prost = "0.13"
 tokio = { version = "1", features = ["full"] }
@@ -12,6 +11,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
+env_logger = "0.11"
 
 [build-dependencies]
 tonic-build = "0.12"

@@ -44,6 +44,8 @@ pub struct MotionAxis {
     halt_requested: AtomicBool,
     /// PP-mode set-point handshake state.
     setpoint_sent: bool,
+    /// Whether the drive has acknowledged the set-point (bit 12 of statusword).
+    ack_seen: bool,
 }
 
 impl MotionAxis {
@@ -56,6 +58,7 @@ impl MotionAxis {
             start_position: 0,
             halt_requested: AtomicBool::new(false),
             setpoint_sent: false,
+            ack_seen: false,
         }
     }
 
@@ -76,6 +79,7 @@ impl MotionAxis {
         );
         self.active_goal = Some(goal);
         self.setpoint_sent = false;
+        self.ack_seen = false;
         self.last_result = None;
         Ok(())
     }
@@ -155,9 +159,23 @@ impl MotionAxis {
     // -----------------------------------------------------------------------
 
     fn handle_motion(&mut self, statusword: u16, actual_position: i32) -> u16 {
+        // Diagnostic: log first 30 calls
+        use std::sync::atomic::{AtomicU32, Ordering as AOrdering};
+        static HM_COUNT: AtomicU32 = AtomicU32::new(0);
+        let hm_n = HM_COUNT.fetch_add(1, AOrdering::Relaxed);
+
         // Step 1: bring the drive to OperationEnabled
         let state = self.sm.current_state();
         if state != Cia402State::OperationEnabled {
+            if hm_n < 30 {
+                info!(
+                    axis = self.axis_id,
+                    n = hm_n,
+                    state = %state,
+                    sw = format_args!("0x{:04X}", statusword),
+                    "handle_motion: transitioning to OperationEnabled"
+                );
+            }
             return self
                 .sm
                 .next_controlword(statusword, Cia402State::OperationEnabled)
@@ -172,19 +190,44 @@ impl MotionAxis {
             // Record the start position for progress calculation.
             self.start_position = actual_position;
             self.setpoint_sent = true;
-            debug!(axis = self.axis_id, "Sending PP set-point");
+            info!(
+                axis = self.axis_id,
+                n = hm_n,
+                sw = format_args!("0x{:04X}", statusword),
+                pos = actual_position,
+                "Sending PP set-point (NEW_SETPOINT=1)"
+            );
             return self.sm.pp_start_controlword();
         }
 
-        // Step 3: Check if the drive acknowledged the set-point
+        // Step 3: PP-mode set-point handshake
         let ack = statusword & SW_SETPOINT_ACK != 0;
         let reached = statusword & SW_TARGET_REACHED != 0;
 
-        if ack && !reached {
-            // Set-point acknowledged, clear the new-set-point bit and wait.
-            return self.sm.pp_hold_controlword();
+        if hm_n < 30 {
+            info!(
+                axis = self.axis_id,
+                n = hm_n,
+                sw = format_args!("0x{:04X}", statusword),
+                ack, reached,
+                ack_seen = self.ack_seen,
+                setpoint_sent = self.setpoint_sent,
+                "handle_motion: handshake state"
+            );
         }
 
+        if !self.ack_seen {
+            if ack {
+                // Drive accepted the new set-point.  Clear NEW_SETPOINT bit.
+                self.ack_seen = true;
+                debug!(axis = self.axis_id, "Set-point acknowledged by drive");
+                return self.sm.pp_hold_controlword();
+            }
+            // Still waiting for ACK — keep NEW_SETPOINT asserted.
+            return self.sm.pp_start_controlword();
+        }
+
+        // ACK was seen.  Now wait for TARGET_REACHED.
         if reached {
             // Motion complete.
             info!(
@@ -222,6 +265,7 @@ impl MotionAxis {
         });
         self.active_goal = None;
         self.setpoint_sent = false;
+        self.ack_seen = false;
     }
 }
 
