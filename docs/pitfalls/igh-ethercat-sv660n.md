@@ -105,6 +105,49 @@ sudo ip link set eno2 up
 sudo systemctl restart ethercat
 ```
 
+## Pitfall 7：PDO 映射中未写入的字段会用 0 覆盖 SDO 配置
+
+**现象**：SV660N 进入 OP，CiA402 状态机正常走到 OperationEnabled，PP 模式 handshake 也完成了（驱动器 ACK 了 set-point），但电机完全不动。位置始终不变，target_reached 迟迟不来。
+
+**排查过程中的弯路**：
+1. 先怀疑 SDO 读回的 profile_acceleration (0x6083) 和 profile_deceleration (0x6084) 为 0 导致电机无法加速。但查手册发现 SV660N 将 0 视为 0xFFFFFFFF（最大值），所以加减速不是问题。
+2. 换了一台驱动器测试，现象完全一样。
+3. 尝试不同的 target_position（绝对位置 10000 vs 当前位置+1000），都不动。
+4. 反复分析 handshake 时序、statusword 位变化，浪费大量时间。
+
+**根因**：RxPDO 映射了 10 个对象，但代码只写了 4 个（controlword、target_position、profile_velocity、modes_of_operation）。其余 6 个字段在 domain buffer 中为 0，每个 1ms cycle 都会发送给驱动器。
+
+致命的是 `0x607F max_profile_velocity`——PDO 每 cycle 写 0，覆盖了 SDO startup 配置的 500000。速度上限被锁死为 0，电机不可能动。
+
+```
+RxPDO 布局（33 字节）：
+offset 0:  0x60FF target_velocity       ← 代码未写，每 cycle 发 0（PP 模式无影响）
+offset 4:  0x607F max_profile_velocity  ← 代码未写，每 cycle 发 0 ← 致命！
+offset 8:  0x6084 profile_deceleration  ← 代码未写，每 cycle 发 0
+offset 12: 0x6083 profile_acceleration  ← 代码未写，每 cycle 发 0
+offset 16: 0x6081 profile_velocity      ← 代码写了 ✓
+offset 20: 0x6087 torque_slope          ← 代码未写（PP 模式无影响）
+offset 24: 0x6071 target_torque         ← 代码未写（PP 模式无影响）
+offset 26: 0x6060 modes_of_operation    ← 代码写了 ✓
+offset 27: 0x6040 controlword           ← 代码写了 ✓
+offset 29: 0x607A target_position       ← 代码写了 ✓
+```
+
+**解决**：在每个 cycle 的 tick 函数中补上缺失字段的合理值：
+```rust
+output_pdo[OFF_RX_MAX_PROFILE_VEL..OFF_RX_MAX_PROFILE_VEL + 4]
+    .copy_from_slice(&500_000u32.to_le_bytes());   // 0x607F
+output_pdo[OFF_RX_PROFILE_ACCEL..OFF_RX_PROFILE_ACCEL + 4]
+    .copy_from_slice(&100_000u32.to_le_bytes());   // 0x6083
+output_pdo[OFF_RX_PROFILE_DECEL..OFF_RX_PROFILE_DECEL + 4]
+    .copy_from_slice(&100_000u32.to_le_bytes());   // 0x6084
+```
+
+**教训**：
+- PDO 是实时通道，每个 cycle 都会覆盖驱动器内部寄存器。SDO startup 写的值在进入 OP 后会被 PDO 的 0 立即覆盖。
+- PDO 映射里的每一个对象，要么代码每 cycle 写入正确值，要么就不要放进 PDO 映射。
+- 遇到"命令发了但不动"的问题，第一步应该对照 PDO 映射逐字段检查实际写入值，而不是在 handshake 时序上打转。
+
 ## 最终通路
 
 ```
