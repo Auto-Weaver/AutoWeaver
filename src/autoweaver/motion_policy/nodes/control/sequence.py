@@ -18,7 +18,7 @@ class Sequence(ControlNode):
 
     def _tick_children(self) -> Status:
         while self._current_index < len(self.children):
-            status = self.children[self._current_index].tick()
+            status = self.children[self._current_index].tick(self._snapshot)
             if status == Status.FAILURE:
                 self._halt_from(self._current_index + 1)
                 self._current_index = 0

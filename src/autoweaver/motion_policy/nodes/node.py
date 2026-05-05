@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
 from abc import ABC, abstractmethod
 from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from autoweaver.motion_policy.blackboard import Blackboard
+    from autoweaver.motion_policy.world_board import Snapshot
+
+logger = logging.getLogger(__name__)
 
 
 class Status(Enum):
@@ -23,18 +27,37 @@ class TreeNode(ABC):
         self.status = Status.IDLE
         self._blackboard: Blackboard
         self._key_mapping: dict[str, str] = {}
+        self._snapshot: Snapshot | None = None
+        self._exception: BaseException | None = None
 
-    def tick(self) -> Status:
-        if self.status == Status.IDLE:
-            self.status = self.on_start()
-        elif self.status == Status.RUNNING:
-            self.status = self.on_running()
+    def tick(self, snapshot: Snapshot | None = None) -> Status:
+        if snapshot is not None:
+            self._snapshot = snapshot
+
+        try:
+            if self.status == Status.IDLE:
+                self.status = self.on_start()
+            elif self.status == Status.RUNNING:
+                self.status = self.on_running()
+        except Exception as e:
+            logger.exception("node '%s' raised", self.name)
+            self._exception = e
+            self.status = Status.FAILURE
 
         result = self.status
         if result != Status.RUNNING:
             self.reset()
 
         return result
+
+    @property
+    def snapshot(self) -> Snapshot:
+        if self._snapshot is None:
+            raise RuntimeError(
+                f"node '{self.name}' accessed snapshot outside of a tick — "
+                "snapshot is only available during on_start / on_running"
+            )
+        return self._snapshot
 
     @abstractmethod
     def on_start(self) -> Status: ...
@@ -49,9 +72,11 @@ class TreeNode(ABC):
         if self.status == Status.RUNNING:
             self.on_halted()
             self.status = Status.IDLE
+        self._snapshot = None
 
     def reset(self) -> None:
         self.status = Status.IDLE
+        self._snapshot = None
 
     def set_blackboard(
         self,

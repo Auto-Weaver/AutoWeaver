@@ -24,7 +24,7 @@ class Timeout(DecoratorNode):
             self.child.halt()
             self._start_time = None
             return Status.FAILURE
-        status = self.child.tick()
+        status = self.child.tick(self._snapshot)
         if status != Status.RUNNING:
             self._start_time = None
         return status

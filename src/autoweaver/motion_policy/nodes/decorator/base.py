@@ -15,3 +15,6 @@ class DecoratorNode(TreeNode):
     def set_blackboard(self, blackboard, key_mapping=None) -> None:
         super().set_blackboard(blackboard, key_mapping)
         self.child.set_blackboard(blackboard, key_mapping)
+
+    def _children_list(self) -> list[TreeNode]:
+        return [self.child]

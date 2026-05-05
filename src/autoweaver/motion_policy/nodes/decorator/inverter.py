@@ -6,10 +6,10 @@ class Inverter(DecoratorNode):
     """Swap SUCCESS and FAILURE. RUNNING passes through."""
 
     def on_start(self) -> Status:
-        return self._invert(self.child.tick())
+        return self._invert(self.child.tick(self._snapshot))
 
     def on_running(self) -> Status:
-        return self._invert(self.child.tick())
+        return self._invert(self.child.tick(self._snapshot))
 
     @staticmethod
     def _invert(status: Status) -> Status:

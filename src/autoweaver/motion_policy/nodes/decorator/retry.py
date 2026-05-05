@@ -18,7 +18,7 @@ class Retry(DecoratorNode):
         return self._try()
 
     def _try(self) -> Status:
-        status = self.child.tick()
+        status = self.child.tick(self._snapshot)
         if status == Status.SUCCESS:
             self._attempt = 0
             return Status.SUCCESS

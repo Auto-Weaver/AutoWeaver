@@ -17,7 +17,7 @@ class Premise(ControlNode):
 
     def _tick_from_start(self) -> Status:
         for i, child in enumerate(self.children):
-            status = child.tick()
+            status = child.tick(self._snapshot)
             if status == Status.FAILURE:
                 self._halt_from(i + 1)
                 return Status.FAILURE
