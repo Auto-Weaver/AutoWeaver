@@ -15,6 +15,7 @@ dependencies = [
     { name = "opencv-python-headless" },
     { name = "pymodbus" },
     { name = "pyyaml" },
+    { name = "requests" },
 ]
 
 [package.optional-dependencies]
@@ -41,6 +42,7 @@ requires-dist = [
     { name = "opencv-python-headless" },
     { name = "pymodbus", specifier = ">=3.11.4" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.32.5" },
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.0" },
     { name = "websockets", marker = "extra == 'websocket'", specifier = ">=12" },
 ]
