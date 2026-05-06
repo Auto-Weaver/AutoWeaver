@@ -1,8 +1,8 @@
 # North Star: Dobot 集成测试与网络配置
 
-日期：2026-05-05
+日期：2026-05-05（首版）/ 2026-05-06（首轮 L1-L5 通过后回写）
 
-状态：待落地（明天装配人员到位后改 IP，再跑测试）
+状态：**L1-L5 全部 PASS**（在 Nova 5 单台、临时网络配置下）
 
 前置文档：[NEXT-006: Dobot Arm 主流程](../next/006-dobot-arm-mainline.md)
 
@@ -385,16 +385,18 @@ async def test_movej_action_leaf_e2e_on_real_arm(real_dobot):
 
 ### 落地清单
 
-- [ ] 等装配人员把机械臂 IP 改到 192.168.5.x（明天）
-- [ ] 操作员 ping 验证三台机械臂都能通
-- [ ] 确认哪个 IP 对应 Nova 5 / Nova 2，记到本文档底部
-- [ ] 给 `pyproject.toml` 加 `markers` 配置 + `addopts`
-- [ ] 写 `tests/integration/conftest.py`（real_dobot fixture）
-- [ ] 扩 `Dobot.move_j` 接口暴露 `speed` 参数（L3 之前需要）
-- [ ] 跑 L1（连接 + 反馈）—— 这一层任何人都能跑，零风险
-- [ ] 跑 L2（原地 move_j）
-- [ ] 操作员就位，手扶急停 → 跑 L3、L4、L5
-- [ ] 全过 → 业务层 BT 接入
+- [x] ~~等装配人员把机械臂 IP 改到 192.168.5.x~~ → **改了一台 Nova 5 → 192.168.5.98**（其他两台明天再说）
+- [x] 操作员 ping 验证 Nova 5 通（临时配工控机有线 IP 后通了，见下文"实测回写"）
+- [x] 给 `pyproject.toml` 加 `markers` 配置 + `addopts`
+- [x] 写 `tests/integration/conftest.py`（real_dobot fixture）
+- [x] 扩 `Dobot.move_j` 接口暴露 `speed` 参数
+- [x] 跑 L1（连接 + 反馈）
+- [x] 跑 L2（原地 move_j）
+- [x] 操作员就位，手扶急停 → 跑 L3、L4、L5
+- [ ] 跑 L6（长跑稳定性）— **推迟到业务节点写完后一起做**
+- [ ] 装配人员把另外两台 Dobot 也改到 192.168.5.x
+- [ ] 工控机有线网卡 IP 持久化（当前是临时方案，重启后丢失）
+- [ ] 业务层 BT 接入（首要目标：Nova 5 的 ZSweep 节点 + region 切换）
 
 ---
 
@@ -406,12 +408,153 @@ async def test_movej_action_leaf_e2e_on_real_arm(real_dobot):
 
 ---
 
-## 附：现场 IP 对应关系表（待填）
-
-修改完成后填这里，以后查询用：
+## 附：现场 IP 对应关系表
 
 | 物理机器 | IP | 角色 | 备注 |
 |---|---|---|---|
-| Nova 5 | (待填) | 视觉机械臂 | |
-| Nova 2 | (待填) | (待填) | |
-| 第三台 | (待填) | (待填) | 是否真有第三台？还是 Studio 软件广播？ |
+| Nova 5 | **192.168.5.98** | 视觉机械臂 | 装配人员手动改的，不是文档建议的 .10 — 后续 L6 / 业务测试沿用 |
+| Nova 2 | (待填) | 压板机械臂 | 等装配人员改 IP |
+| 第三台 | (待填) | 挑毛机械臂？ | 同上 |
+
+工控机：
+
+| 接口 | IP | 用途 | 状态 |
+|---|---|---|---|
+| 有线 `enp3s0` | 192.168.5.100/24 | 工业内网（机械臂通信） | **临时**：`sudo ip addr add` 加的，重启失效 |
+| 无线 `wlx90de80086de5` | 192.168.1.167/23 | 外网（家用路由器） | DHCP 自动 |
+
+---
+
+# 实测回写（2026-05-06 首轮）
+
+L1-L5 全部 PASS。下面是真机跑过之后回头看，前面文档里**说错了或者没说到**的事。新方向都通过这一节进入文档主体。
+
+## 网络层：临时配置怎么跑通的
+
+装配人员把 Nova 5 改到 `192.168.5.98`（不是文档建议的 .10，但同网段），其他两台暂时没改。开测时发现工控机有线网卡 `enp3s0` 物理 link UP 但**没有任何 IP 地址**——之前 `192.168.5.100/24` 的配置不知什么时候丢了。
+
+临时修法：
+
+```bash
+sudo ip addr add 192.168.5.100/24 dev enp3s0
+```
+
+立刻生效，但**重启后失效**——这条命令只改运行时内核状态，不写配置文件。
+
+持久化方案（**待做**）：
+
+```bash
+sudo nmcli connection add \
+  type ethernet ifname enp3s0 \
+  con-name "industrial-net" \
+  ipv4.method manual \
+  ipv4.addresses 192.168.5.100/24 \
+  ipv4.never-default yes \
+  ipv6.method ignore \
+  autoconnect yes
+```
+
+`ipv4.never-default yes` 是关键——工业内网不出外网，必须告诉系统"别把默认路由指过来"，否则会跟无线网卡（外网那条）抢路由，影响 SSH 远程进入工控机。
+
+**为什么没立刻持久化**：网段还可能变（其他两台机械臂 IP 改了之后可能调整），等所有机械臂 IP 稳定下来再统一持久化。
+
+## 控制盒接管：PDF 的"模式表"比真实更严
+
+PDF 第 7-8 页 RequestControl 的"允许切换 TCP 模式"表写得很死：
+
+> 仅当机器人处于"未上电"或"下使能"（且非暂停或松抱闸状态）时才可切换 TCP 模式
+
+**实测发现这条比固件实际行为严**——`RequestControl()` 在 ENABLE 状态下也接受、返回 `0,{},RequestControl();`（OK）。所以当前 `Dobot.acquire_control()` 的真实顺序是：
+
+```
+1. 等首帧反馈到达（拿到 RobotMode）
+2. 如果在 INIT，等出来（最多 timeout）
+3. 如果在 PAUSE / RUNNING / RECORDING：dashboard.Stop() 清队列
+4. 如果在 ERROR：dashboard.ClearError()
+5. RequestControl()                      ← 不论从 ENABLE 还是 DISABLED 都接受
+6. 如果当前是 ENABLE → 直接返回，已经好了
+   如果当前是 DISABLED → PowerOn() → EnableRobot() → 等模式翻到 ENABLE
+```
+
+**这套实测序列已落到 `Dobot.acquire_control()`**，写在代码注释里说明"PDF table is stricter than the controller actually enforces"。
+
+## RobotMode 字段暴露给 board
+
+之前 `Dobot._publish` 没解析反馈包里的 `RobotMode` 字段。现在加进去了：
+
+- 新 board key：`<arm_name>.robot_mode`（int）
+- 新模块 `device/arm/dobot_states.py`：模式常量 + 人类可读名（`robot_mode_name(5) → "ENABLE"`）
+
+业务层 `CheckArmHealthy` 节点将来可以直接读这个 key 判断臂是否在可用状态。
+
+## L4 实测：halt 减速距离很小
+
+L4（J1 +30°，speed=10，运行 12s 后调 halt）：
+
+| 测点 | 实测 |
+|---|---|
+| 12s 走的距离 | 22.69° |
+| 推算速度 | ~1.89°/s（不是 SDK 文档说的"v=10 表示 10% 最大速度"那种比例换算） |
+| `halt()` RPC 同步等待 | **~290ms**（dashboard.Stop 走 RPC + 等控制盒回执） |
+| halt 后惯性继续走 | **0.27°**（几乎原地停下） |
+| halt 后 RobotMode | **5（ENABLE）**——干净的 idle，**不**落到 PAUSE |
+| 二次 halt（stale goal_id）| 静默忽略 ✅ |
+| `move_j(start)` 直接成功 | 不需要重新 acquire_control |
+
+两个值得记住的事实：
+
+1. **halt 后控制盒落到 ENABLE 而不是 PAUSE** —— 这意味着 `acquire_control` 的 PAUSE 处理逻辑在这条主路径上其实用不上。但留着无害，是健壮性兜底（如果操作员示教器触发 PAUSE 之类的非主路径还是要它）。
+
+2. **halt 是同步阻塞 290ms** —— 在 BT 25Hz tick（40ms budget）里调 halt 会触发 SLOW_TICK 警告。这不是 bug，是已知设计权衡。halt 不会频繁发生，所以可以接受；将来如果业务路径里 halt 变频繁，再考虑异步化（开另一个线程发 Stop）。
+
+## L5 实测：BT 框架开销可忽略
+
+L5（J1 +5°，speed=10，单 leaf BT 走完 SUCCESS）：
+
+- 同样是 +5°，L3 直接调耗时约 ~3s，L5 经 BT 路径耗时 **2.86s** → **没有可观察到的额外开销**（asyncio 调度、snapshot 拷贝、tick 函数调用都在数百微秒级，淹没在 SDK RPC 时间里）
+- **零 SLOW_TICK 警告** —— move_j RPC 9-13ms，远低于 40ms tick budget
+
+也就是说 NEXT-005 的 25Hz tick 假设**在真实负载下完全成立**，没有任何"框架反应来不及"的迹象。
+
+## `safety_state=127` 是什么
+
+L1-L5 全程 `safety_state=127`。我们之前假设"0=OK，非 0=异常"，但**127 就是 Nova 5 在使能/正常工作下的 safety_state 值**。
+
+这个数实际上是个 bitmask（每个 bit 对应一种安全状态），127 = 0b01111111。**不是异常**。
+
+将来 `CheckArmHealthy` 节点的判定要改成"基于 bitmask 检查特定 bit"，不能直接 `safety_state != 0 → FAILURE`。具体哪个 bit 是哪个含义要查 PDF（暂未深挖，因为 v1 业务里 enabled + error 这两个 bool 字段已经够用）。
+
+## SDK 的 close() 二次调用警告
+
+每次测试结束 fixture cleanup 时都会打印：
+
+```
+Error while closing socket: [Errno 9] Bad file descriptor
+```
+
+来源是 vendor SDK 内部 socket 关闭逻辑——`Dobot.stop()` 调 `dashboard.close()` / `feedback.close()`，但 SDK 内部某些路径已经关过一次，再关一次报 errno 9。
+
+**无害**（fixture 已经走完，资源已释放），但脏。修法：在 `Dobot.stop()` 的 `for sdk in (...)` 循环里更激进地吞 `OSError`。**留作小坑**，不阻塞主流程。
+
+## 给后续业务层的实测参考值
+
+写业务节点时，下面这些"真机量级"可以直接拿来用：
+
+| 量 | 值 | 来源 |
+|---|---|---|
+| 反馈帧率 | ~1300-2700 Hz | L1（30004 端口推送频率比 PDF 说的 8ms 周期快得多）|
+| `arm.move_j(target, speed=10)` RPC 耗时 | 9-13 ms | L3, L5 |
+| 关节运动速度（v=10）| ~1.89°/s（J1）| L4 推算 |
+| `arm.halt(goal_id)` 同步耗时 | ~290 ms | L4 |
+| halt 减速距离（v=10）| ~0.27° | L4 |
+| 反馈到 board 的延迟 | < 1ms | 单帧 0.78ms 推算 |
+| `Action.run()` 端到端 J1 +5° | 2.86 s | L5 |
+| BT tick 25Hz budget | 40 ms | NEXT-005 设计 |
+
+业务层节点（`MoveToJointPose` / `ZSweep` / `MoveZTo`）写到位判定的容差、超时、dwell 时长，都可以参考这些实测值。
+
+## 还没回答的问题
+
+- **多 Dobot 同时连**：fixture 现在是单臂 (`real_dobot`)。三臂同时连需要多 fixture / 不同 IP 配置。等其他两台 IP 改完再做。
+- **长跑稳定性（L6）**：1300+ Hz 反馈连续跑几小时反馈线程会不会挂、内存会不会涨？没测。计划：**业务节点写完后一起测**（这样测的不只是 SDK 层，也是业务路径）。
+- **safety_state bitmask 解码**：上面提到的 127 是什么具体含义。当前代码不依赖这个，先不挖。
