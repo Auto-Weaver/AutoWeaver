@@ -11,11 +11,11 @@ class _FakeDashboard:
     def __init__(self):
         self.calls: list[tuple] = []
 
-    def MovJ(self, *args):
-        self.calls.append(("MovJ", args))
+    def MovJ(self, *args, **kwargs):
+        self.calls.append(("MovJ", args, kwargs))
 
-    def MovL(self, *args):
-        self.calls.append(("MovL", args))
+    def MovL(self, *args, **kwargs):
+        self.calls.append(("MovL", args, kwargs))
 
     def Stop(self):
         self.calls.append(("Stop",))
@@ -48,6 +48,7 @@ def test_register_outputs_declares_expected_keys():
         "d1.error",
         "d1.safety_state",
         "d1.current_cmd_id",
+        "d1.robot_mode",
     }
 
 
@@ -56,7 +57,7 @@ def test_move_j_uses_joint_mode_by_default():
     arm._dashboard = _FakeDashboard()
     gid = arm.move_j((10, 20, 30, 40, 50, 60))
     assert gid == 1
-    name, args = arm._dashboard.calls[0]
+    name, args, _kwargs = arm._dashboard.calls[0]
     assert name == "MovJ"
     assert args[-1] == COORD_JOINT
     assert args[:6] == (10.0, 20.0, 30.0, 40.0, 50.0, 60.0)
@@ -74,7 +75,7 @@ def test_move_l_always_uses_pose_mode():
     arm = Dobot(ip="127.0.0.1", name="d1", joint_coord_mode=True)
     arm._dashboard = _FakeDashboard()
     arm.move_l((1, 2, 3, 4, 5, 6))
-    name, args = arm._dashboard.calls[0]
+    name, args, _kwargs = arm._dashboard.calls[0]
     assert name == "MovL"
     assert args[-1] == COORD_POSE
 
@@ -112,6 +113,40 @@ def test_move_rejects_wrong_arity():
     arm._dashboard = _FakeDashboard()
     with pytest.raises(ValueError):
         arm.move_j((1, 2, 3))
+
+
+def test_move_j_omits_speed_by_default():
+    """Without speed=, SDK call uses v=-1 (i.e. SDK's "use default" sentinel)."""
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    arm._dashboard = _FakeDashboard()
+    arm.move_j((1, 2, 3, 4, 5, 6))
+    _name, _args, kwargs = arm._dashboard.calls[0]
+    assert kwargs == {"v": -1}
+
+
+def test_move_j_passes_speed_through():
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    arm._dashboard = _FakeDashboard()
+    arm.move_j((1, 2, 3, 4, 5, 6), speed=10)
+    _name, _args, kwargs = arm._dashboard.calls[0]
+    assert kwargs == {"v": 10}
+
+
+def test_move_l_passes_speed_through():
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    arm._dashboard = _FakeDashboard()
+    arm.move_l((1, 2, 3, 4, 5, 6), speed=25)
+    _name, _args, kwargs = arm._dashboard.calls[0]
+    assert kwargs == {"v": 25}
+
+
+def test_move_rejects_speed_out_of_range():
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    arm._dashboard = _FakeDashboard()
+    with pytest.raises(ValueError):
+        arm.move_j((1, 2, 3, 4, 5, 6), speed=0)
+    with pytest.raises(ValueError):
+        arm.move_j((1, 2, 3, 4, 5, 6), speed=101)
 
 
 def test_start_without_register_raises():

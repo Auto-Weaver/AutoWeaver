@@ -6,3 +6,6 @@ motion-runtime/target/
 
 # Runtime data
 .omx/
+
+# Vendor reference docs (keep local, do not commit)
+files/

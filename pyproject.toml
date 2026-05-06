@@ -28,3 +28,11 @@ dev = [
     "pytest>=9.0.3",
     "pytest-asyncio>=1.3.0",
 ]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration_safe: real-hardware tests that don't move the arm (run with -m integration_safe)",
+    "integration: real-hardware tests that move the arm (run with -m integration; operator must be present)",
+]
+addopts = "-m 'not integration and not integration_safe'"
+asyncio_mode = "auto"
