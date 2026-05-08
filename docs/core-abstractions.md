@@ -1,5 +1,13 @@
 # Core Abstractions
 
+> **2026-05-08 修订声明**：本文档描述 AutoWeaver 早期（perception 主导阶段）的四个核心抽象。EVO-006 引入「BT 全局时钟 + Subsystem 模型」后，抽象组合发生变化：
+> - **Pipeline** 不变
+> - **Task** 保留语义但不再被 Engine 推，作为 Subsystem 的内部装配组件
+> - **Workflow** 退役——系统编排由 BT 树承担
+> - **Event** 退到 Subsystem 内部作为实现细节，跨 Subsystem 通信走 WorldBoard
+>
+> 新核心抽象以 `docs/evo/006-bt-clock-and-subsystem.md` 为准。本文档保留作为概念溯源参考。
+
 This is the most important page in the documentation set.
 
 If AutoWeaver is to stay coherent while it evolves, these four abstractions need to stay legible:

@@ -1,8 +1,19 @@
 # EVO-004: BT Engine 详细设计
 
 日期：2026-04-13
+最近修订：2026-05-08（EVO-006 影响）
 
 前置文档：[EVO-001: Motion Engine](001-motion-engine.md)、[EVO-002: Motion Stack 分层架构](002-motion-stack.md)、[EVO-003: Rust Motion Runtime](003-motion-runtime.md)
+后续修订：[EVO-006: BT 全局时钟与 Subsystem 模型](006-bt-clock-and-subsystem.md)
+
+## 修订记录
+
+**2026-05-08（基于 EVO-006）**：
+
+- Action 不再持有 tick 循环——tick 由全局 **BT Clock 引擎** 统一驱动；Action 只持有树拓扑和生命周期管理
+- ActionLeaf 在新模型下收敛为两种使用模式：**NotifyLeaf**（fire-and-forget 写 cmd buffer）和 **MotionLeaf**（走 motion stack）；Condition 仍然存在并新增 **WaitFor** 这种常用形态。详细见 EVO-005、EVO-006
+- BT 节点之间共享数据走 Blackboard 不变；跨 BT 树和跨 Subsystem 的数据共享走 **WorldBoard**（EVO-005、006）
+- Leaf 节点全部应保持无状态——业务跨帧状态收敛在 Subsystem 内部，不藏在 leaf 里
 
 ## 背景
 
@@ -46,6 +57,12 @@ motion_policy/
         ├── condition.py     # Condition 基类（无副作用，纯读取）
         └── wait.py          # Wait（返回 RUNNING 直到时间到）
 ```
+
+> **EVO-006 修订**：在新模型下，ActionLeaf 收敛为两种使用模式：
+> - **NotifyLeaf**：fire-and-forget 写 WorldBoard cmd buffer，瞬间 SUCCESS（详见 EVO-005、EVO-006）
+> - **MotionLeaf**：走 motion stack（gRPC / Socket），跨多个 tick 拿 Feedback
+> Condition 通常具体化为 **WaitFor**——读 WorldBoard 等谓词满足。
+> Leaf 节点**全部无状态**——业务跨帧状态收敛在 Subsystem 内部，不藏在 leaf 里。
 
 继承关系：
 
@@ -97,27 +114,41 @@ def tick(self):
 
 ## Tick 驱动
 
-Action 是 tick 循环的持有者。一个 Action 对应一棵树，以固定频率 tick，直到根节点返回 SUCCESS 或 FAILURE：
+> **EVO-006 修订**：原版本「Action 持有 tick 循环、自己 await asyncio.sleep」在新模型下作废——tick 由全局 BT Clock 引擎统一驱动。Action 不再启动循环、不再 sleep；它只持有 BT 树拓扑和生命周期，被 BT Clock 挂载后接收 tick 调用。
+
+Action 是 BT 树的容器。一个 Action 对应一棵树，被 BT Clock 引擎挂载后，每次 BT Clock tick 时 Action 把 tick 转发给根节点：
 
 ```python
 class Action:
-    def __init__(self, tree: TreeNode, hz: int = 50):
+    def __init__(self, tree: TreeNode):
         self.tree = tree
-        self.interval = 1.0 / hz
-    
-    async def run(self):
-        while True:
-            status = self.tree.tick()
-            if status == SUCCESS:
-                return Result(success=True)
-            if status == FAILURE:
-                return Result(success=False)
-            await asyncio.sleep(self.interval)
+        self._on_done: Callable[[NodeStatus], None] | None = None
+
+    def attach(self, clock: BTClock, blackboard: Blackboard) -> None:
+        self.tree.bind(blackboard)
+        self._handle = clock.attach_tree(self)
+
+    def tick(self) -> NodeStatus:
+        """被 BT Clock 调用。返回根节点状态。"""
+        status = self.tree.tick()
+        if status != RUNNING and self._on_done:
+            self._on_done(status)
+        return status
+
+    def detach(self) -> None:
+        self.tree.halt()
+        self._handle.detach()
 ```
 
-tick 频率 20-50Hz。BT tick 是决策循环（"做什么"），不是控制循环（"怎么让电机到位"）。实时控制在 Rust 层 1000Hz。
+tick 频率（典型 20-50Hz）由 BT Clock 决定，详见 EVO-006。Action 自己不感知频率——它只承诺"被推一次就走一次树遍历"。
 
 每次 tick 从根节点做一次路径搜索，找到当前应该执行的叶子节点。树的形状不变，变的是每次 tick 走的路径。
+
+### 多树挂载
+
+EVO-006 引入了 BT Clock 的多树挂载能力：主骨架树常驻、业务子树按需挂载/卸载。每棵树都是一个 Action 实例，共享同一个 BT Clock 节拍。
+
+这让"按需启动业务"成为标准模式：主骨架的某个节点写 `clock.attach_tree(business_action)` 把业务子树挂上去；业务子树跑完了主骨架卸载它。不需要重启整个引擎。
 
 ## Halt 传播
 
@@ -353,11 +384,15 @@ tree = (
 
 条件、动作、子树都是普通 Python 变量，可以命名、复用、参数化、工厂函数生成。这是 XML 定义树做不到的。
 
+> **EVO-006 修订说明**：上面示例中 `move_to(pick_pos)`、`pick_part()` 等具体节点的实现属于业务侧。在新模型下，这些通常实现为 NotifyLeaf（通知 Subsystem）或 MotionLeaf（走 motion stack）；目标坐标 `pick_pos` 通常来自 WorldBoard 而非字面量。运算符 DSL 本身的语法不受影响，详见 EVO-005、EVO-006。
+
 ## Blackboard
 
 ### 本质
 
 一个带类型约束和写权限管理的字典。
+
+> **EVO-006 修订**：Blackboard 是 BT **树内部**节点之间的工作记忆。跨 BT 树和跨 Subsystem 的状态共享走 **WorldBoard**——见 EVO-005 双 Board 模型、EVO-006 namespace registry。Blackboard 跟着 BT 树挂载/卸载消失；WorldBoard 是全局常驻的。
 
 ```python
 class Blackboard:
@@ -475,11 +510,11 @@ action.run()
 
 ## 本文档不覆盖的内容
 
-以下主题将在后续 evo 文档中展开：
+以下主题的状态：
 
-- ForEach 组合子（延后到有实际挑毛场景时设计）
-- 具体叶子节点实现（属于应用层，不属于框架）
-- gRPC proto 详细定义
-- 坐标变换（相机坐标系 → 机器人坐标系）
-- Safety Monitor 设计
-- motion_policy 与 EventBus 的对接
+- **ForEach 组合子**——延后到有实际挑毛场景时设计
+- **具体叶子节点实现**——属于应用层，不属于框架
+- **gRPC proto 详细定义**——见 EVO-002、EVO-003
+- **坐标变换**（相机坐标系 → 机器人坐标系）——后续 EVO
+- **Safety Monitor 设计**——后续 EVO
+- ~~**motion_policy 与 EventBus 的对接**~~ —— **已覆盖**：见 EVO-005、EVO-006

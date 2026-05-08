@@ -1,5 +1,7 @@
 # Architecture
 
+> **2026-05-08 修订声明**：本文档描述 AutoWeaver 早期（perception 主导阶段）的分层架构。EVO-006 引入「BT 全局时钟 + Subsystem 模型」后，Workflow Layer 的职责被 BT Clock 接管，原 Task/SideTask 抽象部分退役。新架构以 `docs/evo/006-bt-clock-and-subsystem.md` 为准；本文档保留作为概念溯源参考。
+
 AutoWeaver is a layered reactive runtime for industrial systems.
 
 Its purpose is not only to run algorithms, but to separate execution, coordination, and business meaning cleanly enough that the whole system can grow without collapsing into one script.

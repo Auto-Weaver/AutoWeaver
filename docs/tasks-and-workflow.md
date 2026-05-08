@@ -1,5 +1,13 @@
 # Tasks and Workflow
 
+> **2026-05-08 修订声明**：EVO-006 引入「BT 全局时钟 + Subsystem 模型」后：
+> - `Task.tick(data)` 不再被 WorkflowEngine 推；Task 改作 Subsystem 的内部装配组件
+> - `SideTask` 概念被 Subsystem 吃掉
+> - `WorkflowEngine` 主循环退役，由 BT Clock 接管系统调度
+> - `StateMachine` 不强制定位，可能作为 Subsystem 内部实现工具保留
+>
+> 新模型以 `docs/evo/006-bt-clock-and-subsystem.md` 为准。本文档保留作为旧抽象的接口参考。
+
 Pipelines are not enough to express a real industrial system.
 
 A production system also needs business intent, state progression, lifecycle control, and long-lived coordination. In AutoWeaver, that belongs to the task and workflow layers.
