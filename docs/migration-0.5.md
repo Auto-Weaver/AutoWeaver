@@ -39,7 +39,7 @@
 
 ---
 
-## Phase 1：WorldBoard namespace 升级
+## Phase 1：WorldBoard 重构（namespace + state/note 分离）
 
 ✅ 完成
 
@@ -50,113 +50,151 @@ board = WorldBoard()
 board.register("nova5.pose", tuple, writer="dobot")
 board.register("foo", int, writer="bar")          # 任意 key 都允许
 board.write("nova5.pose", pose, writer="dobot")
+value = board.read("nova5.pose")
 ```
 
 ### 新 API（0.5.0）
 
+WorldBoard 上**只有两类东西**——分别有自己的 API。
+
 ```python
 board = WorldBoard()
 
-# 1. State key 必须形如 <namespace>.<rest>
-board.register("perception.detections", list, writer="perception")
-board.register("perception.stable_targets", list, writer="perception")
-board.write("perception.detections", [...], writer="perception")
+# ── State（持续告示牌）──
+board.declare_state("perception.detections", list, writer="perception")
+board.declare_state("perception.stable_targets", list, writer="perception")
+board.post_state("perception.detections", [...], writer="perception")
+value = board.read_state("perception.detections")
 
-# 2. 同一 namespace 必须由同一个 writer 持有
-board.register("perception.x", int, writer="perception")
-board.register("perception.y", int, writer="someone_else")  # ← ValueError
+# Namespace 必须由同一个 writer 持有——一旦 perception.* 被 perception 认领，
+# perception.y 就只能继续由 perception 声明
+board.declare_state("perception.x", int, writer="perception")
+board.declare_state("perception.y", int, writer="someone_else")  # ← ValueError
 
-# 3. Note 通过 register_note_handler，不通过 register
-#    把 note 想成同桌之间偷偷传的纸条:写一次、读一次、读完即丢。
-board.register_note_handler(
+# ── Note（一次性纸条）──
+# 接收方声明"我能收 'start_picking' 这种纸条":
+board.accept_notes(
     namespace="perception",
     name="start_picking",
     payload_type=dict,
-    handler=lambda payload: subsystem.on_start_picking(payload),
+    on_receive=lambda payload: subsystem.on_start_picking(payload),
 )
 
-# 4. 用 pass_note 传纸条——bt 写入、subsystem 在下次 drain 时读取
-board.pass_note("perception", "start_picking", {"region": 3}, writer="bt")
+# 任何人传纸条:
+board.pass_note("perception", "start_picking", {"region": 3}, sender="bt")
 
-# 5. BT Clock 在 tick 边界调 drain_notes，自动调 handler 并清空 slot
-board.drain_notes()
+# BT Clock 在 tick 边界把所有积累的纸条按 pass 顺序送达 on_receive,
+# 业务侧通常不直接调:
+board.deliver_notes()
 ```
+
+### State vs Note：核心区别
+
+| | State（告示牌）| Note（纸条）|
+|---|---|---|
+| 谁写 | 该 namespace 的 owner Subsystem | 任何人（典型是 BT 通过 NotifyLeaf）|
+| 进 snapshot 吗 | 是——`read_state` 可见，产生新 Snapshot | 否——`pass_note` 不写 snapshot，不可被 `read_state` 读到 |
+| 生命周期 | 持续，被覆盖更新 | 一次性，`deliver_notes` 后即丢 |
+| 同一目标多次写 | 后覆盖前 | 全部派发，按 pass 顺序 |
+| 比喻 | 公布栏告示 | 同桌偷偷传的纸条 |
 
 ### Break 详情
 
-**1. 顶层 key 被拒**
+**1. `register / write / read` 全部改名**
 
 ```python
-board.register("foo", int, writer="bar")
-# ValueError: Key 'foo' has no namespace. WorldBoard keys must be of the form
-# '<namespace>.<rest>' (e.g. 'perception.detections', 'motion.note.goto').
+# 旧
+board.register("perception.detections", list, writer="perception")
+board.write("perception.detections", [...], writer="perception")
+board.read("perception.detections")
+
+# 新
+board.declare_state("perception.detections", list, writer="perception")
+board.post_state("perception.detections", [...], writer="perception")
+board.read_state("perception.detections")
 ```
 
-迁移：所有 key 加 namespace 前缀。如果你的代码里有 `board.register("k", ...)` 这种测试代码，改为 `board.register("test.k", ...)`。
+迁移：批量重命名。这是为了和 note 那边形成对称——`declare_state / post_state / read_state` vs `accept_notes / pass_note / deliver_notes`。
 
-**2. 跨 writer 的 namespace 冲突**
+**2. 顶层 key 被拒**
 
 ```python
-board.register("perception.x", int, writer="alice")
-board.register("perception.y", int, writer="bob")
-# ValueError: Namespace 'perception' already owned by 'alice', cannot register
-# key with writer 'bob'
+board.declare_state("foo", int, writer="bar")
+# ValueError: Key 'foo' has no namespace. WorldBoard state keys must be of the
+# form '<namespace>.<rest>' (e.g. 'perception.detections').
 ```
 
-迁移：每个 namespace 一个 writer——通常是该 Subsystem 的名字。如果一个 Subsystem 写多个 namespace，每个 namespace 都要从这个 Subsystem 注册。
+迁移：所有 key 加 namespace 前缀。
 
-**3. Note slot 不能用 register**
+**3. 跨 writer 的 namespace 冲突**
 
 ```python
-board.register("perception.note.start_picking", dict, writer="perception")
-# ValueError: Key '...' is a note key. Use register_note_handler() instead.
+board.declare_state("perception.x", int, writer="alice")
+board.declare_state("perception.y", int, writer="bob")
+# ValueError: Namespace 'perception' already owned by 'alice'
 ```
 
-迁移：note slot 通过 `register_note_handler(namespace, name, payload_type, handler)` 注册;不需要也不允许通过 `register`/`write`。
+迁移：每个 namespace 一个 writer——通常是该 Subsystem 的名字。
 
-**4. Note slot 不能用 write**
+**4. Note 完全独立——不再走 state key**
+
+旧版本一度把 note 实现成 `<ns>.note.<name>` 这种 state key（`pass_note` 立即写 snapshot、drain 时清空）。0.5.0 最终方案是：**note 不进 state**。`pass_note` 只把 payload 加进一个待送达队列，`read_state("perception.note.foo")` 永远是 None。
 
 ```python
-board.write("perception.note.start_picking", {...}, writer="bt")
-# ValueError: Key '...' is a note slot. Use pass_note() to deliver notes.
+# 不存在的写法（永远拿不到）
+board.read_state("perception.note.start_picking")  # → None
+
+# 唯一的接入方式：注册一个 receiver
+board.accept_notes("perception", "start_picking", dict, on_receive_callback)
 ```
 
-迁移：用 `board.pass_note(namespace, name, payload, writer)` 传纸条。
+迁移：如果你的代码"侦听"过 note 字段，应该改成 `accept_notes` 注册 receiver。
 
 ### 新增 API
 
 | 方法 | 用途 |
 |---|---|
-| `register_note_handler(namespace, name, payload_type, handler)` | 注册一个 note slot 的处理器 |
-| `pass_note(namespace, name, payload, writer)` | 给已注册的 note slot 传一张纸条 |
-| `drain_notes()` | 清空所有待处理 note slot，调对应 handler。BT Clock 在 tick 边界调用，业务侧通常不直接调 |
-| `registered_notes()` | 列出所有已注册的 note slot key |
-| `namespace_owner(namespace)` | 返回某个 namespace 的 writer 名（用于 introspection） |
+| `declare_state(key, type, writer)` | 申报一个 state 字段（namespace 前缀必需）|
+| `post_state(key, value, writer)` | 发布 state 值 |
+| `read_state(key, default=None)` | 读 state |
+| `accept_notes(namespace, name, payload_type, on_receive)` | 声明本侧能接收哪种纸条 |
+| `pass_note(namespace, name, payload, sender)` | 传一张纸条 |
+| `deliver_notes()` | 把待送达队列里的纸条逐个送给 receiver。BT Clock 调用，业务侧通常不直接调 |
+| `accepted_notes()` | 列出已注册接收的 (namespace, name) |
+| `declared_states()` | 列出已声明的 state key |
+| `namespace_owner(namespace)` | 返回某个 namespace 的 writer |
 
 ### 命名说明：为什么叫 "note"
 
 类比中学课堂里同桌之间偷偷传的小纸条——一次性、单向、私下传递、读完即丢。这个比喻**完整捕获**了 BT-to-Subsystem 请求的语义：
 
-- 一次性：写完一次、读完一次，drain 后就清空，不留底
-- 单向：BT 给 Subsystem 传，Subsystem 不通过这条通道回话（结果通过自己的状态字段反馈）
-- 私下：不广播，只这个 Subsystem 收得到
+- 一次性：写完一次、读完一次，deliver 后就清空，不留底（除调试日志）
+- 单向：BT 给 Subsystem 传，Subsystem 不通过这条通道回话（结果通过自己的 state 字段反馈）
+- 私下：不广播，只 accept 了的接收方收得到
 - 小载荷：通常是简短指令 + 少量参数，不是大块数据
 
 工业控制传统里这种东西叫 cmd buffer、command register 之类——但那些词太宽泛、含 reply 语义、方向也模糊。`note` 一个词把所有约束都说清了。
 
 ### 行为细节
 
-- **drain 时序**：handler 调用是同步的，按 register 顺序逐个处理。handler 抛异常会被框架往上传，但 slot 仍然被清空（避免下次 drain 又被同一个 stale payload 卡住）
-- **历史可见性**：note payload 会出现在 `history_of(slot_key)` 里（用于调试），但 drain 后从 *current snapshot* 移除——即不会被业务逻辑当作"持续状态"误用
-- **类型校验**：`pass_note` 会校验 payload 类型符合 `register_note_handler` 时声明的 `payload_type`，不符合直接 raise
+- **deliver 时序**：receiver 调用是同步的，按 `pass_note` 顺序逐张派发
+- **多张同名纸条全部送达**：BT 在一个 tick 内对同一 (namespace, name) 多次 `pass_note`，每张都被 deliver——纸条不丢、不合并、不覆盖
+- **失败隔离**：单个 receiver 抛异常不会阻止其他 receiver 收到自己的纸条；deliver 结束时，错误以 `ExceptionGroup` 重新抛出（单错则直接 raise 该错）
+- **类型校验**：`pass_note` 校验 payload 类型符合 `accept_notes` 时声明的 `payload_type`，不符合直接 raise
+- **note 不进 snapshot**：`pass_note` 不产生新 Snapshot，不写历史。需要观察 note 流水的话另起调试通道（后续 EVO 可能引入）
 
 ### Phase 1 改动文件
 
-- `src/autoweaver/motion_policy/world_board.py` — 主要改动
-- `tests/motion_policy/test_world_board.py` — 重写 + 加 19 个新测试
-- `tests/motion_policy/test_tree_node.py` / `test_action.py` — 把测试用的占位 key `"k"` 改为 `"test.k"`
+代码：
+- `src/autoweaver/motion_policy/world_board.py` — 重写
+- `src/autoweaver/device/arm/dobot.py` / `mock.py` — `register/write/read` 调用全替换为 `declare_state/post_state/read_state`
 
-测试结果：81 passed in 0.53s（不含 integration 测试）。
+测试：
+- `tests/motion_policy/test_world_board.py` — 全部重写（共 32 个测试）
+- `tests/motion_policy/test_action.py` / `test_tree_node.py` — API 调用更新
+- `tests/device/arm/test_dobot.py` / `test_mock_arm.py` — 占位 `registered_keys` → `declared_states`
+
+测试结果：83 passed in 0.52s（不含 integration 测试）。
 
 ---
 

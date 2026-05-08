@@ -40,7 +40,7 @@ def test_register_outputs_declares_expected_keys():
     arm = Dobot(ip="127.0.0.1", name="d1")
     board = WorldBoard()
     arm.register_outputs(board)
-    assert set(board.registered_keys()) == {
+    assert set(board.declared_states()) == {
         "d1.pose",
         "d1.joint",
         "d1.running",

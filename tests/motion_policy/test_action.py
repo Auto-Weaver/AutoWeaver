@@ -151,8 +151,8 @@ async def test_finally_runs_even_on_exception_inside_run():
 async def test_snapshot_passed_to_tree_each_tick():
     """The leaf records the snapshot it sees each tick."""
     board = WorldBoard()
-    board.register("k", int, writer="w")
-    board.write("k", 1, writer="w")
+    board.declare_state("test.k", int, writer="w")
+    board.post_state("test.k", 1, writer="w")
 
     tree = _NeverFinish()
     action = Action(tree=tree, world_board=board, hz=200)
@@ -166,7 +166,7 @@ async def test_snapshot_passed_to_tree_each_tick():
     await stopper
     assert len(tree.snapshots_seen) >= 1
     # Each recorded snapshot is the one current at tick start.
-    assert all(s["k"] == 1 for s in tree.snapshots_seen)
+    assert all(s["test.k"] == 1 for s in tree.snapshots_seen)
 
 
 @pytest.mark.asyncio

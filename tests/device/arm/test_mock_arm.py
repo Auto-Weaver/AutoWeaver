@@ -51,7 +51,7 @@ def test_register_outputs_declares_expected_keys():
     arm = MockArm(name="m1")
     board = WorldBoard()
     arm.register_outputs(board)
-    keys = set(board.registered_keys())
+    keys = set(board.declared_states())
     assert keys == {
         "m1.pose",
         "m1.joint",

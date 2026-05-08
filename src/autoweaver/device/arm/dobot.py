@@ -136,14 +136,14 @@ class Dobot:
     def register_outputs(self, board: WorldBoard) -> None:
         self._board = board
         prefix = self.name
-        board.register(f"{prefix}.pose", tuple, writer=self.name)
-        board.register(f"{prefix}.joint", tuple, writer=self.name)
-        board.register(f"{prefix}.running", bool, writer=self.name)
-        board.register(f"{prefix}.enabled", bool, writer=self.name)
-        board.register(f"{prefix}.error", bool, writer=self.name)
-        board.register(f"{prefix}.safety_state", int, writer=self.name)
-        board.register(f"{prefix}.current_cmd_id", int, writer=self.name)
-        board.register(f"{prefix}.robot_mode", int, writer=self.name)
+        board.declare_state(f"{prefix}.pose", tuple, writer=self.name)
+        board.declare_state(f"{prefix}.joint", tuple, writer=self.name)
+        board.declare_state(f"{prefix}.running", bool, writer=self.name)
+        board.declare_state(f"{prefix}.enabled", bool, writer=self.name)
+        board.declare_state(f"{prefix}.error", bool, writer=self.name)
+        board.declare_state(f"{prefix}.safety_state", int, writer=self.name)
+        board.declare_state(f"{prefix}.current_cmd_id", int, writer=self.name)
+        board.declare_state(f"{prefix}.robot_mode", int, writer=self.name)
 
     # --- lifecycle ---
 
@@ -192,7 +192,7 @@ class Dobot:
         deadline = time.monotonic() + timeout_s
 
         # 1. wait for first feedback frame so robot_mode is populated
-        while self._board.read(f"{self.name}.robot_mode") is None:
+        while self._board.read_state(f"{self.name}.robot_mode") is None:
             if time.monotonic() > deadline:
                 raise RuntimeError(
                     f"{self.name}: no feedback received within {timeout_s}s"
@@ -275,7 +275,7 @@ class Dobot:
     def _read_mode(self) -> int:
         if self._board is None:
             return ROBOT_MODE_NO_CONTROLLER
-        value = self._board.read(f"{self.name}.robot_mode")
+        value = self._board.read_state(f"{self.name}.robot_mode")
         return ROBOT_MODE_NO_CONTROLLER if value is None else int(value)
 
     def _wait_until_mode(
@@ -350,11 +350,11 @@ class Dobot:
         safety = int(f0["SafetyState"])
         cmd_id = int(f0["CurrentCommandId"])
 
-        board.write(f"{prefix}.pose", pose, writer=self.name)
-        board.write(f"{prefix}.joint", joint, writer=self.name)
-        board.write(f"{prefix}.running", running, writer=self.name)
-        board.write(f"{prefix}.enabled", enabled, writer=self.name)
-        board.write(f"{prefix}.error", error, writer=self.name)
-        board.write(f"{prefix}.safety_state", safety, writer=self.name)
-        board.write(f"{prefix}.current_cmd_id", cmd_id, writer=self.name)
-        board.write(f"{prefix}.robot_mode", int(f0["RobotMode"]), writer=self.name)
+        board.post_state(f"{prefix}.pose", pose, writer=self.name)
+        board.post_state(f"{prefix}.joint", joint, writer=self.name)
+        board.post_state(f"{prefix}.running", running, writer=self.name)
+        board.post_state(f"{prefix}.enabled", enabled, writer=self.name)
+        board.post_state(f"{prefix}.error", error, writer=self.name)
+        board.post_state(f"{prefix}.safety_state", safety, writer=self.name)
+        board.post_state(f"{prefix}.current_cmd_id", cmd_id, writer=self.name)
+        board.post_state(f"{prefix}.robot_mode", int(f0["RobotMode"]), writer=self.name)

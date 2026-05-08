@@ -101,13 +101,13 @@ class MockArm:
     def register_outputs(self, board: WorldBoard) -> None:
         self._board = board
         prefix = self.name
-        board.register(f"{prefix}.pose", tuple, writer=self.name)
-        board.register(f"{prefix}.joint", tuple, writer=self.name)
-        board.register(f"{prefix}.running", bool, writer=self.name)
-        board.register(f"{prefix}.enabled", bool, writer=self.name)
-        board.register(f"{prefix}.error", bool, writer=self.name)
-        board.register(f"{prefix}.safety_state", int, writer=self.name)
-        board.register(f"{prefix}.current_cmd_id", int, writer=self.name)
+        board.declare_state(f"{prefix}.pose", tuple, writer=self.name)
+        board.declare_state(f"{prefix}.joint", tuple, writer=self.name)
+        board.declare_state(f"{prefix}.running", bool, writer=self.name)
+        board.declare_state(f"{prefix}.enabled", bool, writer=self.name)
+        board.declare_state(f"{prefix}.error", bool, writer=self.name)
+        board.declare_state(f"{prefix}.safety_state", int, writer=self.name)
+        board.declare_state(f"{prefix}.current_cmd_id", int, writer=self.name)
 
     # --- lifecycle ---
 
@@ -161,13 +161,13 @@ class MockArm:
         if board is None:
             return
         prefix = self.name
-        board.write(f"{prefix}.pose", pose, writer=self.name)
-        board.write(f"{prefix}.joint", joint, writer=self.name)
-        board.write(f"{prefix}.running", running, writer=self.name)
-        board.write(f"{prefix}.enabled", enabled, writer=self.name)
-        board.write(f"{prefix}.error", error, writer=self.name)
-        board.write(f"{prefix}.safety_state", safety, writer=self.name)
-        board.write(f"{prefix}.current_cmd_id", cmd_id, writer=self.name)
+        board.post_state(f"{prefix}.pose", pose, writer=self.name)
+        board.post_state(f"{prefix}.joint", joint, writer=self.name)
+        board.post_state(f"{prefix}.running", running, writer=self.name)
+        board.post_state(f"{prefix}.enabled", enabled, writer=self.name)
+        board.post_state(f"{prefix}.error", error, writer=self.name)
+        board.post_state(f"{prefix}.safety_state", safety, writer=self.name)
+        board.post_state(f"{prefix}.current_cmd_id", cmd_id, writer=self.name)
 
     # --- test helpers ---
 

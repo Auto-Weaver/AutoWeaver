@@ -56,7 +56,7 @@ BT 节点对 WorldBoard **可读可写**，但**写**只允许通过 note slot�
         │  perception.note.start_picking          │
         ├────────────────────────────────────────►│
         │                                         │
-        │                                         │  drain_notes: 调 handler → 改 mode → slot 清空
+        │                                         │  deliver_notes: 调 handler → 改 mode → slot 清空
         │                                         │  on_tick: 推进业务（detect, stabilize, decide）
         │                                         │
         │                                         │  写状态到 WorldBoard
@@ -71,7 +71,7 @@ BT 节点对 WorldBoard **可读可写**，但**写**只允许通过 note slot�
 具体例子——"通知 perception 开始挑取":
 
 1. **BT 侧**：`NotifyLeaf("perception", "start_picking", payload)` 在一个 tick 里调 `pass_note("perception", "start_picking", payload)`，立刻返回 SUCCESS（不等结果）
-2. **Subsystem 侧**：下个 tick，BT Clock 在 `drain_notes` 阶段调 PerceptionSubsystem 注册的 handler；handler 把 `self._mode` 改成 `"picking"`，slot 自动清空
+2. **Subsystem 侧**：下个 tick，BT Clock 在 `deliver_notes` 阶段调 PerceptionSubsystem 注册的 handler；handler 把 `self._mode` 改成 `"picking"`，slot 自动清空
 3. **Subsystem 工作**：on_tick 看到 mode 变化，开始做事——拍帧、跑 pipeline、稳定、决策。完成后写 `perception.next_pick_target` 和 `perception.state = "picked"`
 4. **BT 侧**：在另一个节点 `WaitFor("perception.state", lambda s: s == "picked")`，每 tick 读一次 WorldBoard，等到该值出现返回 SUCCESS
 5. **下一个节点**：`MoveToWorldTargetLeaf("perception.next_pick_target")` 读出目标坐标、走 motion stack
@@ -119,7 +119,7 @@ EVO-001 定义的 Sensor 是 Subsystem 的内部组件——Sensor 是设备驱�
 Subsystem 跟着 BT Clock 的 tick 跑。每帧的执行顺序是：
 
 1. **BT 树 tick** — BT 树执行一帧，叶节点可能往 WorldBoard 的 note slot 传纸条
-2. **Subsystem tick 广播** — BT Clock 给所有 Subsystem 广播 tick；Subsystem 在 `on_tick` 里推进自己的内部业务、写状态到 WorldBoard。note handler 在 BT Clock 调 `drain_notes` 时被调用，发生在 on_tick 之前
+2. **Subsystem tick 广播** — BT Clock 给所有 Subsystem 广播 tick；Subsystem 在 `on_tick` 里推进自己的内部业务、写状态到 WorldBoard。note handler 在 BT Clock 调 `deliver_notes` 时被调用，发生在 on_tick 之前
 
 这样整个系统只有一个驱动力——BT Clock。不需要在 Blackboard / WorldBoard 上加发布订阅机制，不需要回调，不需要额外的通知管道。一个 tick 周期（20-50ms）的延迟对工业场景完全够用。
 
@@ -127,7 +127,7 @@ Subsystem 跟着 BT Clock 的 tick 跑。每帧的执行顺序是：
 
 每个 Subsystem 做几件事：
 
-1. **接收 BT note**——通过 `register_note_handler` 注册的 handler 处理 BT 传来的 note
+1. **接收 BT note**——通过 `accept_notes` 注册的 handler 处理 BT 传来的 note
 2. **管理外部资源**——sensor / 网络连接 / gRPC client 在 `on_start` 打开、`on_stop` 关闭
 3. **执行业务**——`on_tick` 推进自己内部的状态机或 Task 装配
 4. **暴露状态**——把当前状态写到 WorldBoard 自己 namespace 下的 keys 里
@@ -180,7 +180,7 @@ class NotifyLeaf(ActionLeaf):
             self.target_subsystem,
             self.name,
             self.payload or {},
-            writer=self.bt_id,
+            sender=self.bt_id,
         )
         return SUCCESS
 ```
@@ -199,7 +199,7 @@ class WaitFor(Condition):
     predicate: Callable[[Any], bool]
 
     def on_running(self) -> NodeStatus:
-        value = self.world.read(self.key)
+        value = self.world.read_state(self.key)
         return SUCCESS if self.predicate(value) else RUNNING
 ```
 

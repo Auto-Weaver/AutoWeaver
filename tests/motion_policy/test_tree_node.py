@@ -32,8 +32,8 @@ def test_node_exception_caught_and_converted_to_failure():
 
 def test_snapshot_passed_to_leaf():
     board = WorldBoard()
-    board.register("k", int, writer="w")
-    board.write("k", 42, writer="w")
+    board.declare_state("test.k", int, writer="w")
+    board.post_state("test.k", 42, writer="w")
     snap = board.snapshot()
 
     leaf = _RecordingLeaf()
@@ -45,8 +45,8 @@ def test_snapshot_propagates_through_sequence():
     from autoweaver.motion_policy.nodes.control.sequence import Sequence
 
     board = WorldBoard()
-    board.register("k", int, writer="w")
-    board.write("k", 7, writer="w")
+    board.declare_state("test.k", int, writer="w")
+    board.post_state("test.k", 7, writer="w")
     snap = board.snapshot()
 
     a = _RecordingLeaf(name="a")
@@ -61,8 +61,8 @@ def test_snapshot_propagates_through_decorator():
     from autoweaver.motion_policy.nodes.decorator.force_success import ForceSuccess
 
     board = WorldBoard()
-    board.register("k", int, writer="w")
-    board.write("k", 1, writer="w")
+    board.declare_state("test.k", int, writer="w")
+    board.post_state("test.k", 1, writer="w")
     snap = board.snapshot()
 
     leaf = _RecordingLeaf()

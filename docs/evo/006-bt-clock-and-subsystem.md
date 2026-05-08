@@ -73,7 +73,7 @@ EVO-005 写桥接层时已经摸到了正确方向："桥接层跟着 Action 的
 │  Control / Decorator 不变          │    │  - MotionSubsystem            │
 │                                  │    │  - IOSubsystem                │
 │  跨节点工作记忆 → Blackboard       │    │  - ExternalEventAdapter       │
-│  对外通知 → 写 WorldBoard cmd     │    │                              │
+│  对外通知 → 给 Subsystem 传 note │    │                              │
 │  对外等待 → 读 WorldBoard 状态     │    │  Subsystem 内部实现自由：       │
 │                                  │    │    Task 装配、状态机、事件总线   │
 │                                  │    │    都是实现细节，对外不暴露      │
@@ -86,8 +86,8 @@ EVO-005 写桥接层时已经摸到了正确方向："桥接层跟着 Action 的
 │ - Subsystem 写自己的 namespace │    │ - 单 writer 约束           │
 │ - 任意角色读                    │    │ - BT 树内不出树            │
 │ - 单 writer 强制（启动校验）     │    │                          │
-│ - cmd 字段是请求 buffer，不是    │    │                          │
-│   编排逻辑                      │    │                          │
+│ - note 是一次性纸条，不进 state │    │                          │
+│   snapshot；deliver 后即清空    │    │                          │
 └──────────────────────────────┘    └──────────────────────────┘
 ```
 
@@ -97,7 +97,7 @@ EVO-005 写桥接层时已经摸到了正确方向："桥接层跟着 Action 的
 |---|---|---|
 | **BT tick 广播** | BT Clock → Subsystem | 让 Subsystem 知道现在是新 tick 了 |
 | **Blackboard** | BT 节点 | BT 树内部节点之间传参 |
-| **WorldBoard** | Subsystem 写、所有人读 | 跨子系统状态共享 + BT → Subsystem 命令 |
+| **WorldBoard** | Subsystem 写状态、所有人读；BT 也通过它传 note 给 Subsystem | 跨子系统状态共享（state） + 一次性请求传递（note）|
 | **EventBus**（可选）| Subsystem 内部 | Task 之间的响应式协作。**框架不强制，每个 Subsystem 自己决定要不要用**。跨 Subsystem 不走 EventBus |
 
 ## BT Clock 引擎
@@ -172,7 +172,7 @@ def run(self) -> None:
 
 关键点：
 
-- **tick 顺序固定**：先推 BT 树，再广播 Subsystem。这意味着同一 tick 内，BT 写入 WorldBoard 的 cmd 在**下一 tick** 才被 Subsystem 看到。这是有意为之——tick 边界是状态变更的窗口，让所有读写都对齐到这个窗口
+- **tick 顺序固定**：先推 BT 树，再广播 Subsystem。BT 在 tick 内传的 note 在 *下一 tick* 的 `deliver_notes` 阶段才被 Subsystem 收到。这是有意为之——tick 边界是状态变更的窗口，让所有读写都对齐到这个窗口
 - **异常隔离**：任何一棵树或 Subsystem 抛异常不影响其他。被标记 faulted 的 Subsystem 不再接收 tick
 - **节拍恒定**：默认 50Hz，业务侧不应假设比这更精确。tick 之间的实际间隔靠 `ctx.dt` 显式给出，需要 *精确补偿* 时序的子系统自己用 dt 算
 
@@ -298,8 +298,8 @@ class Subsystem(ABC):
 
     # ───── 子类调用的工具 ─────
 
-    def write(self, key: str, value: Any) -> None:
-        """写自己 namespace 下的 WorldBoard key。
+    def write_state(self, key: str, value: Any) -> None:
+        """写自己 namespace 下的 WorldBoard state 字段。
         
         框架校验：
         - key 是否在 declared_keys 中
@@ -307,23 +307,23 @@ class Subsystem(ABC):
         非法写入直接 raise，不静默吞错。
         """
 
-    def read(self, key: str) -> Any:
-        """读任意 WorldBoard key（跨 subsystem 读不受限）。"""
+    def read_state(self, key: str) -> Any:
+        """读任意 WorldBoard state 字段（跨 subsystem 读不受限）。"""
 
-    def register_note_handler(
+    def accept_notes(
         self,
         name: str,
         payload_type: type,
-        handler: Callable[[Any], None],
+        on_receive: Callable[[Any], None],
     ) -> None:
-        """注册一个 note slot 的处理器（"<我的 namespace>.note.<name>"）。
+        """声明本 Subsystem 能接收 (我的 namespace, name) 这种纸条。
         
         把 note 想成同桌之间偷偷传的纸条——一次性、单向、读完即丢。
         
-        框架在每个 tick 开头调 WorldBoard.drain_notes()，扫一遍已注册的
-        note slot，发现有 payload 就调 handler，调完自动清空 slot。
+        框架在每个 tick 开头调 WorldBoard.deliver_notes()，把当 tick
+        所有积累的纸条逐个交给对应的 on_receive。
         
-        handler 应该 *修改 self 的内部状态* 而不是直接做事——
+        on_receive 应该 *修改 self 的内部状态* 而不是直接做事——
         实际工作应该在下一个 on_tick 里基于状态推进。
         这保证 tick 是状态变更的唯一窗口。
         """
@@ -392,13 +392,13 @@ class PluckPerceptionSubsystem(Subsystem):
 
 > 关于命名："note" 来自中学课堂里同桌偷偷传的小纸条——一次性、单向、私下传递、读完即丢。这个比喻完整捕获了 BT-to-Subsystem 请求的核心约束。工业控制传统里这种东西叫 cmd buffer / command register 之类，但那些词太宽泛、含 reply 语义、方向也模糊。`note` 一个词把所有约束都说清了。
 
-BT 通过 `NotifyLeaf` 给 Subsystem 传纸条时，写到 WorldBoard 上 `<namespace>.note.<name>` 这种 slot。Subsystem 在 `on_attach` 里通过 `register_note_handler(name, payload_type, handler)` 注册处理器：
+BT 通过 `NotifyLeaf` 给 Subsystem 传纸条时，写到 WorldBoard 上 `<namespace>.note.<name>` 这种 slot。Subsystem 在 `on_attach` 里通过 `accept_notes(name, payload_type, handler)` 注册处理器：
 
 ```python
 # Subsystem 侧
 def on_attach(self, board, pool):
-    self.register_note_handler("start_picking", dict, self._on_start_picking)
-    self.register_note_handler("stop", dict, self._on_stop)
+    self.accept_notes("start_picking", dict, self._on_start_picking)
+    self.accept_notes("stop", dict, self._on_stop)
 
 def _on_start_picking(self, payload: dict):
     self._mode = "picking"
@@ -410,7 +410,7 @@ NotifyLeaf("perception", "start_picking", payload={"region_id": 3})
 
 Note 是**一次性**——handler 调完框架自动清空 slot。如果 BT 想再触发一次，再 `pass_note` 一次。这避免"上次的纸条还卡在 slot 里"的歧义。
 
-`register_note_handler` 注册的 handler 不应该做实际工作（那应该在 `on_tick` 里）——handler 的职责是 *修改 Subsystem 的内部状态*，让下个 tick 知道该做什么。这保证 tick 是唯一的状态变更窗口。
+`accept_notes` 注册的 handler 不应该做实际工作（那应该在 `on_tick` 里）——handler 的职责是 *修改 Subsystem 的内部状态*，让下个 tick 知道该做什么。这保证 tick 是唯一的状态变更窗口。
 
 ## WorldBoard 升级
 
@@ -427,39 +427,50 @@ EVO-005 已经引入了 WorldBoard 概念（"外部世界的状态镜像"，BT �
 
 这是 *硬约束*——写非自己 namespace 的 key 直接 raise。约束在框架层强制，业务想绕都绕不过去。
 
-### Note 字段
+### Note 不是 state
 
-每个 Subsystem namespace 下保留一个特殊子树 `<namespace>.note.*`，用于接收 BT 传来的纸条。这些 slot 是**短暂存活**的——`pass_note` 写入后，等 BT Clock 下一 tick 调 `drain_notes`，handler 处理完即清空。
+Note **不进 state snapshot**——它和 state 是 WorldBoard 上完全平行的两条路径。
+
+`pass_note(namespace, name, payload, sender)` 把 payload 加进一个 *待送达队列*。`read_state` 永远读不到这张纸条，snapshot 也不会因为 `pass_note` 产生新版本——note 不是"现在世界什么样"的真相板的一部分。
+
+BT Clock 在每个 tick 开头调 `deliver_notes`，把队列里的纸条逐个交给对应 `accept_notes` 注册的 `on_receive`，按 `pass_note` 的顺序。送达完即丢，不留底（除日志/调试通道外）。
+
+同一个 (namespace, name) 在一个 tick 内被 `pass_note` 多次时，**所有纸条按顺序逐个 deliver**——不合并、不去重、不丢。这和"传纸条"的直觉一致：传两张就读两张。
 
 ```
-perception.detections           ← 状态展示（持续刷新）
-perception.stable_targets       ← 状态展示（持续刷新）
-perception.state                ← 状态展示（idle/scanning/picking）
-perception.note.start_picking   ← note slot（pass → handle → 清空）
-perception.note.stop            ← note slot
+state 字段（持续刷新的告示）：
+  perception.detections           ← Subsystem 写的状态
+  perception.stable_targets       ← Subsystem 写的状态
+  perception.state                ← Subsystem 写的状态
+
+note 通道（一次性纸条）：
+  ("perception", "start_picking") ← pass → 进队列 → deliver → 即丢
+  ("perception", "stop")          ← 同上
 ```
 
 Note 不是编排逻辑，**只是请求传递的纸条**。具体逻辑在 Subsystem 自己内部。
 
 ### 单 writer 约束
 
-EVO-005 已经声明过——每个 key 只有一个 writer（在新模型下就是声明它的 Subsystem）。这条不变，但实施由框架强制：
+EVO-005 已经声明过——每个 state 字段只有一个 writer（在新模型下就是声明它的 Subsystem）。这条不变，但实施由框架强制：
 
 ```python
-def write(self, key: str, value: Any) -> None:
-    decl = self._registry.lookup(key)
-    if decl is None:
-        raise UndeclaredKeyError(key)
-    if decl.owner is not self:
-        raise PermissionError(f"{self.name} cannot write {key} (owned by {decl.owner.name})")
-    if not isinstance(value, decl.type):
+def post_state(self, key: str, value: Any, writer: str) -> None:
+    meta = self._state_meta.get(key)
+    if meta is None:
+        raise KeyError(f"State '{key}' is not declared")
+    if meta.writer != writer:
+        raise PermissionError(f"'{writer}' has no write access to '{key}'")
+    if not isinstance(value, meta.value_type):
         raise TypeError(...)
-    self._board[key] = value
+    self._commit(key, value, writer)
 ```
+
+跨 *namespace* 的写权限通过 namespace owner 校验——一个 Subsystem 只能在自己声明的 namespace 下 declare/write state。
 
 ### 跨 Subsystem 通信的唯一通道
 
-新模型下，**跨 Subsystem 通信只通过 WorldBoard**。一个 Subsystem 想知道另一个 Subsystem 的状态，只能 read。这条立住后：
+新模型下，**跨 Subsystem 通信只通过 WorldBoard**。一个 Subsystem 想知道另一个 Subsystem 的状态，只能 `read_state`。这条立住后：
 
 - 没有"是用事件还是用状态"的决策疲劳——跨子系统永远是状态
 - 调试时跨子系统交互全部留痕在 WorldBoard——dump 一次就能看全
@@ -507,7 +518,7 @@ class NotifyLeaf(ActionLeaf):
             self.target_subsystem,
             self.name,
             self.payload,
-            writer=self.bt_id,
+            sender=self.bt_id,
         )
         return SUCCESS
 
@@ -526,7 +537,7 @@ class WaitFor(Condition):
     predicate: Callable[[Any], bool]
 
     def on_running(self) -> NodeStatus:
-        value = self.world.read(self.key)
+        value = self.world.read_state(self.key)
         return SUCCESS if self.predicate(value) else RUNNING
 ```
 
@@ -674,7 +685,7 @@ class PluckPerceptionSubsystem(Subsystem):
       - perception.state           当前模式（idle/scanning/picking/picked/exhausted）
       - perception.next_pick_target  picking 模式下选出的下一个目标坐标
     
-    对外接收的 note（register_note_handler 体现）：
+    对外接收的 note（accept_notes 体现）：
       - start_scanning  开始持续 detect+stabilize
       - start_picking   进入挑取决策模式
       - stop            回到 idle
@@ -710,10 +721,10 @@ class PluckPerceptionSubsystem(Subsystem):
         self._sensor.close()
 
     def on_attach(self, board, pool):
-        self.register_note_handler("start_scanning", dict, self._on_start_scanning)
-        self.register_note_handler("start_picking",  dict, self._on_start_picking)
-        self.register_note_handler("stop",           dict, self._on_stop_note)
-        self.register_note_handler("reset_pick",     dict, self._on_reset_pick)
+        self.accept_notes("start_scanning", dict, self._on_start_scanning)
+        self.accept_notes("start_picking",  dict, self._on_start_picking)
+        self.accept_notes("stop",           dict, self._on_stop_note)
+        self.accept_notes("reset_pick",     dict, self._on_reset_pick)
 
     def on_tick(self, ctx):
         # 唯一对外可见的"做事"入口。
