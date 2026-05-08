@@ -22,7 +22,7 @@ EVO-004 完成了 BT Engine 的内部机制设计，但明确将"motion_policy �
 
 BT 是 tick 驱动的，外部系统形态各异——感知有自己的 pipeline、运动 runtime 通过 gRPC、IO 直接读写、PLC/操作员是异步事件。它们说不同的语言。
 
-EVO-006 把这个问题置于一个更大的命题下回答："BT tick 是系统唯一节拍源，所有外部世界的对接者都是被 tick 唤醒的 Subsystem"。本文档接着 EVO-006，专门讲 Subsystem 和 BT 树的对接细节——双 Board 模型、cmd buffer 模式、leaf 形态。
+EVO-006 把这个问题置于一个更大的命题下回答："BT tick 是系统唯一节拍源，所有外部世界的对接者都是被 tick 唤醒的 Subsystem"。本文档接着 EVO-006，专门讲 Subsystem 和 BT 树的对接细节——双 Board 模型、note 模式、leaf 形态。
 
 ## 需求
 
@@ -39,25 +39,25 @@ EVO-006 把这个问题置于一个更大的命题下回答："BT tick 是系统
 
 | | Blackboard | WorldBoard |
 |---|---|---|
-| 含义 | BT 的工作记忆 | 外部世界的状态镜像 + cmd buffer |
+| 含义 | BT 的工作记忆 | 外部世界的状态镜像 + note 收件夹 |
 | 谁写 | BT 叶节点（单写者约束） | Subsystem（按 namespace 单写者约束） |
 | 谁读 | BT 所有节点 | BT 节点 + 任意 Subsystem |
 | 生命周期 | 随 BT 树挂载/卸载 | 常驻整个系统会话 |
 | 数据举例 | 节点间传递的中间值、计数器、标志位 | 视觉识别结果、运动反馈、IO 状态、外部信号 |
 
-BT 节点对 WorldBoard **可读可写**，但**写**只允许通过 cmd buffer——往 `<subsystem>.cmd.<name>` 这种 key 写请求，由对应 Subsystem 在自己的 namespace 下消费。BT 节点不能直接写 Subsystem 的状态字段（如 `perception.detections`），那是 Subsystem 自己的对外承诺。
+BT 节点对 WorldBoard **可读可写**，但**写**只允许通过 note slot——往 `<subsystem>.note.<name>` 这种 key 传纸条，由对应 Subsystem 在自己的 namespace 下消费。BT 节点不能直接写 Subsystem 的状态字段（如 `perception.detections`），那是 Subsystem 自己的对外承诺。
 
 ### 数据流
 
 ```
        BT 树                                    Subsystem
         │                                         │
-        │  写 cmd 到 WorldBoard                   │
-        │  perception.cmd.start_picking           │
+        │  pass_note 给 perception                │
+        │  perception.note.start_picking          │
         ├────────────────────────────────────────►│
         │                                         │
-        │                                         │  on_tick: 看到 cmd → 处理 → 清空
-        │                                         │  内部跑业务（detect, stabilize, decide）
+        │                                         │  drain_notes: 调 handler → 改 mode → slot 清空
+        │                                         │  on_tick: 推进业务（detect, stabilize, decide）
         │                                         │
         │                                         │  写状态到 WorldBoard
         │                                         │  perception.next_pick_target
@@ -70,13 +70,13 @@ BT 节点对 WorldBoard **可读可写**，但**写**只允许通过 cmd buffer�
 
 具体例子——"通知 perception 开始挑取":
 
-1. **BT 侧**：`NotifyLeaf("perception", "start_picking", payload)` 在一个 tick 里写 `perception.cmd.start_picking = payload`，立刻返回 SUCCESS（不等结果）
-2. **Subsystem 侧**：下个 tick，PerceptionSubsystem 的 `on_tick` 之前，框架扫到 cmd 已注册，调 handler；handler 把 `self._mode` 改成 `"picking"`，cmd buffer 自动清空
+1. **BT 侧**：`NotifyLeaf("perception", "start_picking", payload)` 在一个 tick 里调 `pass_note("perception", "start_picking", payload)`，立刻返回 SUCCESS（不等结果）
+2. **Subsystem 侧**：下个 tick，BT Clock 在 `drain_notes` 阶段调 PerceptionSubsystem 注册的 handler；handler 把 `self._mode` 改成 `"picking"`，slot 自动清空
 3. **Subsystem 工作**：on_tick 看到 mode 变化，开始做事——拍帧、跑 pipeline、稳定、决策。完成后写 `perception.next_pick_target` 和 `perception.state = "picked"`
 4. **BT 侧**：在另一个节点 `WaitFor("perception.state", lambda s: s == "picked")`，每 tick 读一次 WorldBoard，等到该值出现返回 SUCCESS
 5. **下一个节点**：`MoveToWorldTargetLeaf("perception.next_pick_target")` 读出目标坐标、走 motion stack
 
-注意 BT 树**通知**和**等待**是分开的两个节点。NotifyLeaf 完全无状态、立刻 SUCCESS，不耦合到结果消费方。WaitFor 也无状态、纯读 WorldBoard。Subsystem 不知道是谁通知它的、也不知道谁在等它的结果。**三方完全解耦**——通过 WorldBoard 上的 key 间接交互。
+注意 BT 树**通知**和**等待**是分开的两个节点。NotifyLeaf 完全无状态、立刻 SUCCESS，不耦合到结果消费方。WaitFor 也无状态、纯读 WorldBoard。Subsystem 不知道是谁传纸条来的、也不知道谁在等它的结果。**三方完全解耦**——通过 WorldBoard 上的 key 间接交互。
 
 ### 为什么不是一块 Blackboard
 
@@ -100,11 +100,11 @@ EVO-006 进一步把这条收紧：**EventBus 不做全局**，跨 Subsystem 通
 
 WorldBoard 和 Blackboard 共享相同的核心机制（单写者、类型约束），区别在于：
 
-- **BT 节点对 WorldBoard 写有限制**——只能写 `<subsystem>.cmd.*` 这种 cmd buffer key，不能写 Subsystem 的状态字段
+- **BT 节点对 WorldBoard 写有限制**——只能往 `<subsystem>.note.*` 这种 note slot 传纸条，不能写 Subsystem 的状态字段
 - **WorldBoard 是全局常驻**——跨 BT 树和 Subsystem 共享
 - **写权限按 namespace 强制**——每个 Subsystem 在挂载时声明 namespace，框架校验 declared_keys 没冲突
 
-EVO-006 详细描述了 WorldBoard 的 namespace registry、单 writer 校验、cmd buffer 字段约定。本文档不再重复。
+EVO-006 详细描述了 WorldBoard 的 namespace registry、单 writer 校验、note 字段约定。本文档不再重复。
 
 ## Subsystem
 
@@ -118,8 +118,8 @@ EVO-001 定义的 Sensor 是 Subsystem 的内部组件——Sensor 是设备驱�
 
 Subsystem 跟着 BT Clock 的 tick 跑。每帧的执行顺序是：
 
-1. **BT 树 tick** — BT 树执行一帧，叶节点可能往 WorldBoard 的 cmd buffer 写请求
-2. **Subsystem tick 广播** — BT Clock 给所有 Subsystem 广播 tick；Subsystem 在 `on_tick` 里看 cmd buffer、推进自己的内部业务、写状态到 WorldBoard
+1. **BT 树 tick** — BT 树执行一帧，叶节点可能往 WorldBoard 的 note slot 传纸条
+2. **Subsystem tick 广播** — BT Clock 给所有 Subsystem 广播 tick；Subsystem 在 `on_tick` 里推进自己的内部业务、写状态到 WorldBoard。note handler 在 BT Clock 调 `drain_notes` 时被调用，发生在 on_tick 之前
 
 这样整个系统只有一个驱动力——BT Clock。不需要在 Blackboard / WorldBoard 上加发布订阅机制，不需要回调，不需要额外的通知管道。一个 tick 周期（20-50ms）的延迟对工业场景完全够用。
 
@@ -127,7 +127,7 @@ Subsystem 跟着 BT Clock 的 tick 跑。每帧的执行顺序是：
 
 每个 Subsystem 做几件事：
 
-1. **接收 BT 命令**——通过 `register_cmd` 注册的 handler 处理 BT 写到 cmd buffer 的请求
+1. **接收 BT note**——通过 `register_note_handler` 注册的 handler 处理 BT 传来的 note
 2. **管理外部资源**——sensor / 网络连接 / gRPC client 在 `on_start` 打开、`on_stop` 关闭
 3. **执行业务**——`on_tick` 推进自己内部的状态机或 Task 装配
 4. **暴露状态**——把当前状态写到 WorldBoard 自己 namespace 下的 keys 里
@@ -172,12 +172,16 @@ fire-and-forget 通知：
 ```python
 class NotifyLeaf(ActionLeaf):
     target_subsystem: str   # 如 "perception"
-    cmd: str                # 如 "start_picking"
-    payload: dict | None    # 命令参数
+    name: str               # 如 "start_picking"
+    payload: dict | None    # note payload
 
     def on_start(self) -> NodeStatus:
-        key = f"{self.target_subsystem}.cmd.{self.cmd}"
-        self.world.write(key, self.payload or {})
+        self.world.pass_note(
+            self.target_subsystem,
+            self.name,
+            self.payload or {},
+            writer=self.bt_id,
+        )
         return SUCCESS
 ```
 
@@ -269,7 +273,7 @@ tree = (
 |---|---|
 | 双 Board 而非单 Board | 所有权清晰，单写者语义不交叉，调试时一眼看出数据来源 |
 | WorldBoard 命名 | 表达"外部世界的状态镜像"，与 Blackboard（BT 工作记忆）形成对称 |
-| BT 节点对 WorldBoard 写仅限 cmd buffer | 防止 BT 越权写 Subsystem 的对外状态；状态字段是 Subsystem 的承诺 |
+| BT 节点对 WorldBoard 写仅限 note slot | 防止 BT 越权写 Subsystem 的对外状态；状态字段是 Subsystem 的承诺 |
 | tick 驱动而非 event 驱动 | EVO-006 命题：全系统单一节拍，简单可预测 |
 | Subsystem 在树外、和 BT 平级 | EVO-006 升级——Subsystem 是独立公民，由 BT Clock 统一 tick；不再"由 Action 持有" |
 | Subsystem 由框架注入 WorldBoard handle，业务侧实现具体 Subsystem | 框架定义对接协议，业务实现具体外部系统逻辑 |

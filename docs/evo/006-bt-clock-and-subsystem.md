@@ -81,7 +81,7 @@ EVO-005 写桥接层时已经摸到了正确方向："桥接层跟着 Action 的
         │                                    │
         ▼                                    ▼
 ┌─ WorldBoard ──────────────────┐    ┌─ Blackboard ─────────────┐
-│ 跨子系统状态展示面板 + cmd buffer │    │ BT 节点之间工作记忆        │
+│ 跨子系统状态展示面板 + note 收件夹 │    │ BT 节点之间工作记忆        │
 │                              │    │                          │
 │ - Subsystem 写自己的 namespace │    │ - 单 writer 约束           │
 │ - 任意角色读                    │    │ - BT 树内不出树            │
@@ -310,11 +310,18 @@ class Subsystem(ABC):
     def read(self, key: str) -> Any:
         """读任意 WorldBoard key（跨 subsystem 读不受限）。"""
 
-    def register_cmd(self, cmd: str, handler: Callable[[dict], None]) -> None:
-        """注册"看到 BB 上某 cmd 出现就处理"的回调。
+    def register_note_handler(
+        self,
+        name: str,
+        payload_type: type,
+        handler: Callable[[Any], None],
+    ) -> None:
+        """注册一个 note slot 的处理器（"<我的 namespace>.note.<name>"）。
         
-        框架在每个 tick 主体之前扫一遍已注册的 cmd buffer key，
-        发现请求就调 handler，handler 返回后框架自动清空 buffer。
+        把 note 想成同桌之间偷偷传的纸条——一次性、单向、读完即丢。
+        
+        框架在每个 tick 开头调 WorldBoard.drain_notes()，扫一遍已注册的
+        note slot，发现有 payload 就调 handler，调完自动清空 slot。
         
         handler 应该 *修改 self 的内部状态* 而不是直接做事——
         实际工作应该在下一个 on_tick 里基于状态推进。
@@ -381,27 +388,29 @@ class PluckPerceptionSubsystem(Subsystem):
 
 共享池适合 IO 等待型 / 短任务；独占池适合长任务 / GPU 推理 / 重 CPU。绝大多数 subsystem 用共享池就够了——感知子系统是典型例外。
 
-### Cmd buffer 模式
+### Note 模式
 
-BT 通过 `NotifyLeaf` 给 Subsystem 下命令时，写到 WorldBoard 上 `<namespace>.cmd.<name>` 这种 key。Subsystem 在 `on_attach` 里通过 `register_cmd(name, handler)` 注册处理器：
+> 关于命名："note" 来自中学课堂里同桌偷偷传的小纸条——一次性、单向、私下传递、读完即丢。这个比喻完整捕获了 BT-to-Subsystem 请求的核心约束。工业控制传统里这种东西叫 cmd buffer / command register 之类，但那些词太宽泛、含 reply 语义、方向也模糊。`note` 一个词把所有约束都说清了。
+
+BT 通过 `NotifyLeaf` 给 Subsystem 传纸条时，写到 WorldBoard 上 `<namespace>.note.<name>` 这种 slot。Subsystem 在 `on_attach` 里通过 `register_note_handler(name, payload_type, handler)` 注册处理器：
 
 ```python
 # Subsystem 侧
 def on_attach(self, board, pool):
-    self.register_cmd("start_picking", self._on_start_picking)
-    self.register_cmd("stop", self._on_stop)
+    self.register_note_handler("start_picking", dict, self._on_start_picking)
+    self.register_note_handler("stop", dict, self._on_stop)
 
 def _on_start_picking(self, payload: dict):
     self._mode = "picking"
     # 不在这里直接做事；下一个 on_tick 看到 self._mode 变了自己推进
 
 # BT 侧
-NotifyLeaf("perception.cmd.start_picking", payload={"region_id": 3})
+NotifyLeaf("perception", "start_picking", payload={"region_id": 3})
 ```
 
-cmd buffer 是**请求一次**——handler 调完框架自动清空 key。如果 BT 想再触发一次，再写一次。这避免"上次的命令还卡在 buffer 里"的歧义。
+Note 是**一次性**——handler 调完框架自动清空 slot。如果 BT 想再触发一次，再 `pass_note` 一次。这避免"上次的纸条还卡在 slot 里"的歧义。
 
-`register_cmd` 注册的 handler 不应该做实际工作（那应该在 `on_tick` 里）——handler 的职责是 *修改 Subsystem 的内部状态*，让下个 tick 知道该做什么。这保证 tick 是唯一的状态变更窗口。
+`register_note_handler` 注册的 handler 不应该做实际工作（那应该在 `on_tick` 里）——handler 的职责是 *修改 Subsystem 的内部状态*，让下个 tick 知道该做什么。这保证 tick 是唯一的状态变更窗口。
 
 ## WorldBoard 升级
 
@@ -418,19 +427,19 @@ EVO-005 已经引入了 WorldBoard 概念（"外部世界的状态镜像"，BT �
 
 这是 *硬约束*——写非自己 namespace 的 key 直接 raise。约束在框架层强制，业务想绕都绕不过去。
 
-### Cmd buffer 字段
+### Note 字段
 
-每个 Subsystem namespace 下保留一个特殊子树 `<namespace>.cmd.*`，用于接收 BT 的请求。这些 key 是**短暂存活**的——写入后等 Subsystem 下一 tick 处理完即清空。
+每个 Subsystem namespace 下保留一个特殊子树 `<namespace>.note.*`，用于接收 BT 传来的纸条。这些 slot 是**短暂存活**的——`pass_note` 写入后，等 BT Clock 下一 tick 调 `drain_notes`，handler 处理完即清空。
 
 ```
-perception.detections          ← 状态展示（持续刷新）
-perception.stable_targets      ← 状态展示（持续刷新）
-perception.state               ← 状态展示（idle/scanning/picking）
-perception.cmd.start_picking   ← cmd buffer（写入 → 处理 → 清空）
-perception.cmd.stop            ← cmd buffer
+perception.detections           ← 状态展示（持续刷新）
+perception.stable_targets       ← 状态展示（持续刷新）
+perception.state                ← 状态展示（idle/scanning/picking）
+perception.note.start_picking   ← note slot（pass → handle → 清空）
+perception.note.stop            ← note slot
 ```
 
-cmd 不是编排逻辑，**只是请求传递的 buffer**。具体逻辑在 Subsystem 自己内部。
+Note 不是编排逻辑，**只是请求传递的纸条**。具体逻辑在 Subsystem 自己内部。
 
 ### 单 writer 约束
 
@@ -463,7 +472,7 @@ EventBus 在这条规矩下退到 **Subsystem 内部** ——是 Subsystem 自�
 新模型下 BT 树的职责更聚焦了——它**不做业务决策**，只做：
 
 1. **运动控制**：通过 MotionLeaf 走 motion stack
-2. **通知 Subsystem**：通过 NotifyLeaf 写 cmd buffer
+2. **通知 Subsystem**：通过 NotifyLeaf 给 Subsystem 传纸条（note）
 3. **等待外部状态**：通过 WaitFor 读 WorldBoard
 
 业务决策（"挑哪个目标"、"怎么稳定多帧"、"什么时候认为 detection 完成"）发生在**对应的 Subsystem 内部**。BT 树只是 *指挥者*——它告诉 Subsystem "现在开始 picking"、然后等 Subsystem 把结果（"挑好了，下一个目标在 perception.next_pick_target"）展示在 WorldBoard 上、然后驱动 motion 去那个位置。
@@ -476,7 +485,7 @@ EVO-004 描述的 Action / Condition / Wait 节点在新模型下精简为三种
 
 | Leaf 类型 | 是 EVO-004 的 | 职责 | 状态 |
 |---|---|---|---|
-| **NotifyLeaf** | ActionLeaf 子类 | fire-and-forget 写 cmd buffer，得到 ACK 即 SUCCESS | 无状态 |
+| **NotifyLeaf** | ActionLeaf 子类 | fire-and-forget 给 Subsystem 传 note，瞬间 SUCCESS | 无状态 |
 | **WaitFor** | Condition | 读 WorldBoard 检查谓词，满足 SUCCESS、不满足 RUNNING | 无状态 |
 | **MotionLeaf** | ActionLeaf 子类 | 走 motion stack（gRPC 给 Rust runtime / Socket 给机械臂）；EVO-001/003 的 Goal/Feedback/Result 模式 | leaf 实例本身无状态，状态在 motion runtime 那边 |
 
@@ -486,21 +495,26 @@ EVO-004 描述的 Action / Condition / Wait 节点在新模型下精简为三种
 
 ```python
 class NotifyLeaf(ActionLeaf):
-    """fire-and-forget 通知。瞬间得到 ACK 即结束。"""
+    """fire-and-forget 给 Subsystem 传一张纸条。瞬间 SUCCESS。"""
 
     target_subsystem: str
-    cmd: str
+    name: str
     payload: dict
 
     def on_start(self) -> NodeStatus:
-        # 一次写，立刻成功——不等结果
-        self.world.write(f"{self.target_subsystem}.cmd.{self.cmd}", self.payload)
+        # 传一张纸条，立刻成功——不等结果
+        self.world.pass_note(
+            self.target_subsystem,
+            self.name,
+            self.payload,
+            writer=self.bt_id,
+        )
         return SUCCESS
 
     # 不需要 on_running / on_halted——单 tick 完成
 ```
 
-NotifyLeaf 不等 Subsystem 处理完。**它只负责通知**。后续等结果是 *别的 leaf* 的事。这条边界让 NotifyLeaf 完全无状态，也让"通知方"和"等待方"解耦——Subsystem 怎么处理这个 cmd 是 Subsystem 的事，跟通知方无关。
+NotifyLeaf 不等 Subsystem 处理完。**它只负责传纸条**。后续等结果是 *别的 leaf* 的事。这条边界让 NotifyLeaf 完全无状态，也让"通知方"和"等待方"解耦——Subsystem 怎么处理这张 note 是 Subsystem 的事，跟通知方无关。
 
 #### WaitFor 形态
 
@@ -660,7 +674,7 @@ class PluckPerceptionSubsystem(Subsystem):
       - perception.state           当前模式（idle/scanning/picking/picked/exhausted）
       - perception.next_pick_target  picking 模式下选出的下一个目标坐标
     
-    对外接收的 cmd（register_cmd 体现）：
+    对外接收的 note（register_note_handler 体现）：
       - start_scanning  开始持续 detect+stabilize
       - start_picking   进入挑取决策模式
       - stop            回到 idle
@@ -696,10 +710,10 @@ class PluckPerceptionSubsystem(Subsystem):
         self._sensor.close()
 
     def on_attach(self, board, pool):
-        self.register_cmd("start_scanning", self._on_start_scanning)
-        self.register_cmd("start_picking",  self._on_start_picking)
-        self.register_cmd("stop",           self._on_stop_cmd)
-        self.register_cmd("reset_pick",     self._on_reset_pick)
+        self.register_note_handler("start_scanning", dict, self._on_start_scanning)
+        self.register_note_handler("start_picking",  dict, self._on_start_picking)
+        self.register_note_handler("stop",           dict, self._on_stop_note)
+        self.register_note_handler("reset_pick",     dict, self._on_reset_pick)
 
     def on_tick(self, ctx):
         # 唯一对外可见的"做事"入口。

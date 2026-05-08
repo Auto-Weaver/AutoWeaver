@@ -11,7 +11,7 @@
 **2026-05-08（基于 EVO-006）**：
 
 - Action 不再持有 tick 循环——tick 由全局 **BT Clock 引擎** 统一驱动；Action 只持有树拓扑和生命周期管理
-- ActionLeaf 在新模型下收敛为两种使用模式：**NotifyLeaf**（fire-and-forget 写 cmd buffer）和 **MotionLeaf**（走 motion stack）；Condition 仍然存在并新增 **WaitFor** 这种常用形态。详细见 EVO-005、EVO-006
+- ActionLeaf 在新模型下收敛为两种使用模式：**NotifyLeaf**（fire-and-forget 给 Subsystem 传 note）和 **MotionLeaf**（走 motion stack）；Condition 仍然存在并新增 **WaitFor** 这种常用形态。详细见 EVO-005、EVO-006
 - BT 节点之间共享数据走 Blackboard 不变；跨 BT 树和跨 Subsystem 的数据共享走 **WorldBoard**（EVO-005、006）
 - Leaf 节点全部应保持无状态——业务跨帧状态收敛在 Subsystem 内部，不藏在 leaf 里
 
@@ -59,7 +59,7 @@ motion_policy/
 ```
 
 > **EVO-006 修订**：在新模型下，ActionLeaf 收敛为两种使用模式：
-> - **NotifyLeaf**：fire-and-forget 写 WorldBoard cmd buffer，瞬间 SUCCESS（详见 EVO-005、EVO-006）
+> - **NotifyLeaf**：fire-and-forget 给 Subsystem 传一张 note（WorldBoard 上 `<ns>.note.<name>` slot），瞬间 SUCCESS（详见 EVO-005、EVO-006）
 > - **MotionLeaf**：走 motion stack（gRPC / Socket），跨多个 tick 拿 Feedback
 > Condition 通常具体化为 **WaitFor**——读 WorldBoard 等谓词满足。
 > Leaf 节点**全部无状态**——业务跨帧状态收敛在 Subsystem 内部，不藏在 leaf 里。

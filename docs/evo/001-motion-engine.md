@@ -63,7 +63,7 @@ AutoWeaver
 │   └── 完全被动；没人调 snapshot 它就不出帧
 │
 └── 共享设施
-    ├── WorldBoard       — 跨子系统状态共享 + cmd buffer
+    ├── WorldBoard       — 跨子系统状态共享 + note 收件夹
     └── Blackboard       — BT 树内部工作记忆
 ```
 
@@ -134,11 +134,11 @@ BT 节点分四类。
 
 **Leaf 节点** 是唯一和外部世界交互的节点：
 
-> **EVO-006 修订**：原版本 leaf 分 Action / Condition / Wait 三种。新模型下 ActionLeaf 收敛为两个使用模式：NotifyLeaf（fire-and-forget 写 cmd buffer）和 MotionLeaf（走 motion stack）。详见 EVO-005、EVO-006。
+> **EVO-006 修订**：原版本 leaf 分 Action / Condition / Wait 三种。新模型下 ActionLeaf 收敛为两个使用模式：NotifyLeaf（fire-and-forget 给 Subsystem 传 note）和 MotionLeaf（走 motion stack）。详见 EVO-005、EVO-006。
 
 | 节点 | 角色 | 副作用 |
 |------|------|-------------|
-| NotifyLeaf | 写 WorldBoard cmd buffer 通知 Subsystem | 是——但仅写一个 key，瞬间 SUCCESS |
+| NotifyLeaf | 给 Subsystem 传 note（一张纸条，一次性、单向） | 是——但仅 pass_note 一次，瞬间 SUCCESS |
 | MotionLeaf | 走 motion stack（gRPC / Socket）| 是——驱动物理动作 |
 | Condition | 读 WorldBoard / Blackboard 检查谓词 | 否——纯读 |
 | WaitFor | Condition 子类，等 WorldBoard 谓词满足 | 否 |
