@@ -1,5 +1,7 @@
 # Pipeline Guide
 
+> 0.5.0 下 Pipeline 本身没有变化——它仍然是单次、无状态的数据流链。变化在**使用方**：过去 Pipeline 被某个 TaskBase 子类持有、被 FrameLoopSideTask 推；现在它被 Subsystem 持有、在 `on_tick` 里调用一次。参考 `src/autoweaver/subsystem/` + pluck-hair 的 `PerceptionSubsystem`。
+
 The pipeline layer is AutoWeaver's per-run execution layer.
 
 Its job is to execute bounded acquisition and processing work, not to own business semantics or system lifecycle.

@@ -1,5 +1,10 @@
 # Camera and Communication
 
+> **0.5.0 变化**：
+> - `CameraBase` 继承了 `autoweaver.Sensor`——主入口是 `snapshot()` / `is_open()`；旧名 `capture()` / `is_opened()` 作为 back-compat alias 仍然可用。相机应该被 Subsystem 持有，不再被业务代码直接调用。
+> - `CommSideTask` 已删除，换成 `CommSubsystem`——继承 `Subsystem`，内部 polling 走 `run_background` 守护线程，transport 在 `on_start` 打开、`on_stop` 关闭。
+> - `CommSignalBase` transport 抽象未变（`receive` / `send` / `close`），三套实现（Modbus / WebSocket client / WebSocket server）也都保留。
+
 Industrial systems live at the boundary between algorithms, devices, and external control systems.
 
 AutoWeaver provides abstractions for both camera access and communication transport, but it deliberately stops short of embedding project-specific semantics into those abstractions.

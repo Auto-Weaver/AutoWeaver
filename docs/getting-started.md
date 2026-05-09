@@ -2,49 +2,49 @@
 
 This page is intentionally short.
 
-Its purpose is not to teach the whole framework through examples. Its purpose is to help you enter the system in the right order.
+Its purpose is not to teach the whole framework through examples. It points you into the right reading order.
 
-## Step 1: Understand the Four Core Abstractions
+## Step 1: Read EVO-006
 
-Before writing code, read [Core Abstractions](core-abstractions.md).
+Before writing any code, read **[EVO-006: BT 全局时钟与 Subsystem 模型](evo/006-bt-clock-and-subsystem.md)**. It defines what the framework actually is — BTClock 驱动、Subsystem 被动响应、WorldBoard 做共享状态。Everything else is a detail on top.
 
-If `Pipeline`, `Task`, `Workflow`, and `Event` are still blurry, you will almost certainly place logic in the wrong layer.
+If the BT Clock / Subsystem / note-vs-state split is still blurry after one pass, read it again. Placing logic in the wrong layer comes from incomplete mental model.
 
-## Step 2: Decide Your Integration Scope
+## Step 2: Map the Layers
 
-There are two common entry points.
+Then skim [Architecture](architecture.md) for the layer map:
 
-### Pipeline-first
+- **Pipeline** — per-run data flow (VisionPipeline)
+- **Sensor** — passive device driver (CameraBase implements Sensor)
+- **Subsystem** — the unit of business logic; one per piece of the outside world
+- **BT tree** (optional) — explicit flow orchestration using NotifyLeaf / WaitFor / MotionLeaf
+- **BTClock + WorldBoard** — framework-provided clock and shared state
 
-Choose this if you only need execution chains for now:
+## Step 3: Decide Your Entry Point
 
-- camera acquisition
-- preprocessing
-- inference
-- postprocessing
+### Just run a pipeline?
 
-In this mode, start with [Pipeline Guide](pipeline.md).
+If you just need "capture → run a YOLO chain → return result", start with [Pipeline Guide](pipeline.md). A pipeline by itself is a pure function.
 
-### Workflow-first
+### Build a full station?
 
-Choose this if you are building a full station or cell:
+If you need continuous tick-driven behavior — motion control, sensor fusion, multi-subsystem coordination — you need the Subsystem + BTClock path. Start by:
 
-- external triggers
-- state transitions
-- multiple tasks
-- side-task based communication
+1. Write one `Subsystem` subclass for each piece of the outside world.
+2. Wire them all into a single `BTClock(world_board=board)`.
+3. Use `NotifyLeaf` / `WaitFor` in a BT tree if you want explicit flow.
 
-In this mode, read [Architecture](architecture.md) and [Tasks and Workflow](tasks-and-workflow.md) early.
+Reference implementation: pluck-hair's `src/subsystems/focus_subsystem.py` — a 250-line example that covers the common patterns (state declaration, note handling, cross-namespace reads).
 
-## Step 3: Keep Core and Application Logic Separate
+## Step 4: Keep Core and Application Separate
 
-Ask these questions early:
+Ask these early:
 
 - Is this reusable across projects, or only for one product family?
 - Is this per-run execution logic, or stateful business logic?
 - Is this transport/device plumbing, or domain semantics?
 
-Those answers decide whether something belongs in AutoWeaver core or in the application package built on top of it.
+Answers decide whether something belongs in autoweaver core or in the application package built on top of it.
 
 ## Installation
 
@@ -60,22 +60,25 @@ With optional extras:
 uv sync --extra yolo --extra daheng --extra websocket
 ```
 
-Consume AutoWeaver from another project:
+Consume autoweaver from another project:
 
-```bash
-uv add "git+https://github.com/Auto-Weaver/AutoWeaver.git" --rev <commit>
+```toml
+# in your pyproject.toml
+[tool.uv.sources]
+autoweaver = { git = "https://github.com/Einstellung/AutoWeaver.git", rev = "<commit>" }
 ```
 
-## Practical Reading Order
+## Reading Order
 
-1. [Core Abstractions](core-abstractions.md)
-2. [Architecture](architecture.md)
-3. [Pipeline Guide](pipeline.md)
-4. [Tasks and Workflow](tasks-and-workflow.md)
+1. [EVO-006: BT Clock + Subsystem](evo/006-bt-clock-and-subsystem.md) — **start here**
+2. [Architecture](architecture.md) — layer map
+3. [EVO-005: Subsystem 对接细节](evo/005-bt-world-bridge.md) — note vs state, double-board model
+4. [Pipeline Guide](pipeline.md)
 5. [Camera and Communication](camera-and-comm.md)
+6. [Migration 0.5](migration-0.5.md) — if coming from an 0.4.x codebase
 
 ## First Implementation Rule
 
-Do not start by writing a lot of generic code.
+Don't start by writing a lot of generic code.
 
-Start by placing one real piece of logic in the right layer. Once that placement is correct, the rest of the framework becomes much easier to extend coherently.
+Start by placing one real piece of logic in the right layer (usually "this is a Subsystem that owns one piece of the outside world"). Once that placement is correct, the rest of the framework extends coherently.

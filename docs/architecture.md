@@ -1,127 +1,69 @@
 # Architecture
 
-> **2026-05-08 修订声明**：本文档描述 AutoWeaver 早期（perception 主导阶段）的分层架构。EVO-006 引入「BT 全局时钟 + Subsystem 模型」后，Workflow Layer 的职责被 BT Clock 接管，原 Task/SideTask 抽象部分退役。新架构以 `docs/evo/006-bt-clock-and-subsystem.md` 为准；本文档保留作为概念溯源参考。
+> 面向 0.5.0+。EVO-006 的 BT Clock + Subsystem 模型为基线。
 
-AutoWeaver is a layered reactive runtime for industrial systems.
+AutoWeaver 是一个工业视觉系统的编排运行时。核心命题是：**BT tick 是整个系统唯一的节拍源，所有有时序行为的组件都是被节拍唤醒的被动 Subsystem**。
 
-Its purpose is not only to run algorithms, but to separate execution, coordination, and business meaning cleanly enough that the whole system can grow without collapsing into one script.
+## 整体架构
 
-## Layer Map
-
-```text
-Application / Domain Layer
-  Product semantics, recipes, station rules, business-specific pipelines
-
-Workflow Layer
-  WorkflowEngine
-  Task / SideTask lifecycle
-
-Reactive Layer
-  EventBus
-  StateMachine
-
-Execution Layer
-  VisionPipeline
-  ProcessStep
-  CameraBase / CommSignalBase
+```
+┌─ BTClock (系统唯一节拍源)───────────────────────────────────┐
+│   每 tick 按固定顺序执行四件事：                                │
+│     1. drain run_async 回调（主线程执行之前提交的慢任务结果）     │
+│     2. deliver WorldBoard 上积累的 note（send 方和接收方之间）   │
+│     3. tick 所有 attached 的 BT 树                            │
+│     4. broadcast on_tick 给所有 RUNNING 的 Subsystem          │
+└────────────────────────────────────────────────────────────┘
+       │                                  │
+       ▼ 推进                               ▼ 广播 tick
+┌─ BT 树 ───────────────────────────┐  ┌─ Subsystems ────────────────┐
+│  全 stateless leaf：              │  │  独立公民，各自管理一个 namespace  │
+│    NotifyLeaf  — pass_note       │  │  on_attach / on_start /       │
+│    WaitFor    — 读 WorldBoard     │  │  on_tick / on_stop /          │
+│    MotionLeaf — 走 motion stack   │  │  on_detach 生命周期            │
+│  内部工作记忆 → Blackboard         │  │  自己的 state key + 可接收的    │
+│                                 │  │  note 清单                    │
+└─────────────────────────────────┘  └──────────────────────────────┘
+       │                                  │
+       └─────────→ WorldBoard ←─────────────┘
+                   State (持续)  + Note (一次性)
+                   Snapshot + 滚动 history
 ```
 
-## Why This Split Exists
+## 层次划分
 
-Industrial systems mix very different kinds of logic:
+| 层 | 职责 | 典型实现 |
+|---|---|---|
+| **Pipeline** | 单次无状态数据流处理 | `VisionPipeline` + `ProcessStep` |
+| **Sensor** | 被动设备驱动（相机/压力/距离…） | `Sensor` ABC、`CameraBase` 实现 |
+| **Subsystem** | 持 Sensor + Pipeline + 跨帧状态；对外暴露 namespace | 业务侧实现（如 `FocusSubsystem`）|
+| **BT 树**（可选）| 业务流程的显式编排 | Control/Decorator + 三类 leaf |
+| **BTClock** | 系统节拍 + 生命周期 + 异常隔离 | autoweaver 提供 |
+| **WorldBoard** | 跨 Subsystem 的 state + note 通道 | autoweaver 提供 |
 
-- device I/O
-- per-run algorithm execution
-- long-lived control flow
-- product semantics
-- external coordination
+**Task 仍然是一个概念**，但不再是顶层抽象——它是 Subsystem 内部的 *装配组件*（Pipeline + 跨帧状态的绑定），不再被某个 Engine.tick(data) 推。业务侧自由决定一个 Subsystem 里要不要拆 Task。
 
-If those concerns are mixed together, the system becomes hard to reason about and harder to reuse. AutoWeaver's architecture exists to stop that collapse.
+## 关键设计决策
 
-## Layer Responsibilities
+- **单一节拍源**：任何 Subsystem 不得维持自己的心跳。慢操作走 `run_async`；长时后台 worker 走 `run_background`。
+- **State vs Note 分离**：持续状态走 `declare_state` / `write_state` / `read_state`；一次性请求走 `accept_notes` / `pass_note` / `deliver_notes`。Note 永不进 snapshot，下一 tick deliver 之后即丢。
+- **Namespace 硬约束**：Subsystem 只能写 `<self.name>.*` 下的 state；跨 namespace 读没有限制。
+- **BT leaf 全无状态**：跨 tick 状态收敛在 Subsystem 内部或 motion runtime，leaf 只是"询问器"。
+- **tick 顺序固定**：4 阶段顺序不变——BT 在 tick N pass 的 note 在 tick N+1 才被 subsystem 收到。这个半 tick 延迟是有意为之的对齐机制。
+- **异常隔离**：任何 Subsystem / leaf 抛异常被框架捕获，标记 FAULTED 不再接收 tick；其他模块不受影响。
 
-### Execution Layer
+## 不属于 autoweaver
 
-This layer runs bounded processing work.
+- **具体业务逻辑**：Pipeline 里的 step、Subsystem 里的 Task 组合、BT 树拓扑 —— 都是调用方实现
+- **部署 / 容器化 / 进程管理** —— 调用方决定
+- **存储 / API 端** —— 调用方决定
 
-Typical responsibilities:
+autoweaver 定义"抽象如何协作"，不定义"业务做什么"。
 
-- capture a frame
-- transform images
-- run inference
-- collect detections
-- return per-run outputs
+## 进一步阅读
 
-This layer should remain reusable and domain-light.
-
-### Reactive Layer
-
-This layer routes information.
-
-Typical responsibilities:
-
-- publish and subscribe to events
-- map trigger events to state transitions
-- emit state change notifications
-
-This layer should know as little as possible about business semantics.
-
-### Workflow Layer
-
-This layer manages lifecycle.
-
-Typical responsibilities:
-
-- attach the state machine to the event bus
-- mount and unmount tasks
-- mount side tasks
-- stop on terminal conditions or external signals
-
-The workflow layer is about system progression over time, not image processing.
-
-### Application Layer
-
-This layer provides industrial meaning.
-
-Typical responsibilities:
-
-- product-specific region semantics
-- recipe interpretation
-- retry rules
-- reporting logic
-- line-specific protocols and events
-
-This is where AOI, station, or robotics domain logic should live.
-
-## Event-Centered Flow
-
-AutoWeaver is reactive, so the architecture is best understood through event flow:
-
-1. Some external or internal component produces an event.
-2. The reactive layer distributes that event.
-3. The state machine may translate it into a workflow transition.
-4. The workflow layer updates which task is active.
-5. Tasks and side tasks react according to their responsibility.
-6. Pipelines are invoked where concrete execution is needed.
-
-The key point is that no single layer should try to own all of that.
-
-## Core vs Application Code
-
-Belongs in AutoWeaver core:
-
-- reusable runtime abstractions
-- generic pipeline mechanics
-- device-neutral contracts
-- transport adapters without domain semantics
-- workflow and reactive primitives
-
-Belongs in application code:
-
-- product-specific step semantics
-- recipe models
-- defect taxonomy
-- station events and payload meaning
-- business decisions around pass, fail, retry, or escalation
-
-If a component only makes sense for one product line or one station, it usually does not belong in core.
+- [EVO-006: BT 全局时钟与 Subsystem 模型](evo/006-bt-clock-and-subsystem.md) — **本架构的主源文档**
+- [EVO-005: Subsystem 对接 BT 的细节](evo/005-bt-world-bridge.md) — note 模式、双 Board
+- [EVO-001: Motion Engine](evo/001-motion-engine.md) — 为什么 motion 不适合事件驱动
+- [EVO-004: BT Engine 详细设计](evo/004-bt-engine.md) — 节点协议 + 运算符 DSL
+- [Migration 0.5](migration-0.5.md) — 0.4 → 0.5 的具体迁移步骤

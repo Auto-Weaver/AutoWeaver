@@ -4,6 +4,8 @@
 
 0.5.0 是一次**颠覆性重构**，对应 [EVO-006](evo/006-bt-clock-and-subsystem.md) 引入的 BT 全局时钟 + Subsystem 模型。本指南列出每一项 break 和对应的新写法，按子系统分组。
 
+> **0.5.1 补丁（2026-05-09）**：把 `opencv-python-headless` 换成 `opencv-python`——headless 阻挡业务侧调 `cv2.imshow`。业务层无需改代码。
+
 > **本指南的"完成度"**：本文档随 Phase 0-4 的实施分阶段填充。每个 Phase 完成后，对应章节会从"待补"变为完整迁移说明。**未带"待补"标记的章节即为最终态**。
 
 ## 决策原则
