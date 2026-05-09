@@ -82,7 +82,7 @@ class MockCamera(CameraBase):
         self._is_opened = False
         logger.info("MockCamera closed")
 
-    def capture(self) -> np.ndarray:
+    def snapshot(self) -> np.ndarray:
         """Capture a frame.
         
         Returns:
@@ -110,7 +110,7 @@ class MockCamera(CameraBase):
                 dtype=np.uint8
             )
 
-    def is_opened(self) -> bool:
+    def is_open(self) -> bool:
         """Check if camera is opened."""
         return self._is_opened
 

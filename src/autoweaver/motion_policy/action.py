@@ -1,14 +1,13 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from autoweaver.motion_policy.blackboard import Blackboard
 from autoweaver.motion_policy.nodes.node import Status, TreeNode
 from autoweaver.motion_policy.tracer import ActionTracer, NullTracer
-from autoweaver.motion_policy.world_board import Snapshot, WorldBoard
+from autoweaver.motion_policy.world_board import Snapshot
 
 
 logger = logging.getLogger(__name__)
@@ -24,91 +23,107 @@ class ActionResult:
 
 
 class Action:
-    """Drives a BT tree with a fixed-frequency tick loop.
+    """Holds a BT tree, its Blackboard, and per-tick instrumentation.
 
-    One Action holds one tree, one Blackboard (BT working memory), and a
-    reference to a shared WorldBoard (process-wide observable state).
+    In 0.5.0 the ``Action`` is no longer a self-driving tick loop —
+    that responsibility moved to ``BTClock`` (see EVO-006). The Action's
+    role is:
 
-    Each tick:
-      1. Snapshot the WorldBoard (immutable, consistent across the tree)
-      2. Tick the tree with that snapshot
-      3. Sleep to maintain target frequency
+      - own one BT tree and its Blackboard
+      - expose ``tick(snapshot)`` for the clock to call once per tick
+      - emit tracer events around each tick
+      - propagate ``halt()`` to the tree when detached
 
-    Halt:
-      - External code calls action.halt() → sets _halted flag
-      - The flag is checked at tick boundary (not mid-tick)
-      - finally block guarantees tree.halt() is invoked on exit, propagating
-        halt to all RUNNING subtrees so devices receive their halt calls
+    BTClock attaches the Action via ``BTClock.attach_tree(action)`` and
+    calls ``action.tick(snapshot)`` every tick. The Action records its
+    own pass/fail outcome (in ``last_result``) the first tick the root
+    returns SUCCESS or FAILURE; subsequent ticks are no-ops.
     """
 
-    SLOW_TICK_MULTIPLIER = 2.0
+    SLOW_TICK_DEFAULT_BUDGET_S = 0.04  # 40 ms — generous default at 25 Hz
 
     def __init__(
         self,
         tree: TreeNode,
-        world_board: WorldBoard | None = None,
-        hz: int = 25,
         name: str = "",
         tracer: ActionTracer | None = None,
+        slow_tick_budget_s: float = SLOW_TICK_DEFAULT_BUDGET_S,
     ):
         self.tree = tree
-        self.interval = 1.0 / hz
         self.name = name or tree.name
-        self.world_board = world_board if world_board is not None else WorldBoard()
         self._tracer: ActionTracer = tracer if tracer is not None else NullTracer()
+        self._slow_tick_budget_s = slow_tick_budget_s
 
-        self._halted = False
         self._tick_seq = 0
+        self._started = False
+        self._finished = False
+        self.last_result: ActionResult | None = None
 
         self.tree.set_blackboard(Blackboard())
 
-    async def run(self) -> ActionResult:
-        """Tick loop until tree completes, fails, or external halt."""
-        self._tracer.on_action_start(self.name)
-        result: ActionResult
-        try:
-            while not self._halted:
-                t0 = time.monotonic()
-                self._tick_seq += 1
-                self._tracer.on_tick_start(self._tick_seq)
+    def tick(self, snapshot: Snapshot) -> Status:
+        """Run one tree tick. Called by BTClock.
 
-                snapshot = self.world_board.snapshot()
-                status = self.tree.tick(snapshot)
+        After the tree first returns a terminal status (SUCCESS/FAILURE),
+        further calls are no-ops and return that status without touching
+        the tree.
+        """
+        if self._finished:
+            return self.last_result.final_status if self.last_result else Status.IDLE
 
-                tick_duration = time.monotonic() - t0
-                self._tracer.on_tick_end(self._tick_seq, tick_duration, status)
+        if not self._started:
+            self._tracer.on_action_start(self.name)
+            self._started = True
 
-                if tick_duration > self.interval * self.SLOW_TICK_MULTIPLIER:
-                    logger.warning(
-                        "slow tick in action '%s': %.1fms (target %.1fms)",
-                        self.name,
-                        tick_duration * 1000,
-                        self.interval * 1000,
-                    )
-                    self._tracer.on_slow_tick(tick_duration, self.interval)
+        self._tick_seq += 1
+        self._tracer.on_tick_start(self._tick_seq)
+        t0 = time.monotonic()
 
-                if status == Status.SUCCESS:
-                    result = ActionResult(success=True, final_status=status)
-                    return result
-                if status == Status.FAILURE:
-                    result = self._build_failure_result(status)
-                    return result
+        status = self.tree.tick(snapshot)
 
-                await asyncio.sleep(max(0.0, self.interval - tick_duration))
+        duration = time.monotonic() - t0
+        self._tracer.on_tick_end(self._tick_seq, duration, status)
 
-            result = ActionResult(
-                success=False,
-                message="halted",
-                final_status=self.tree.status,
+        if duration > self._slow_tick_budget_s:
+            logger.warning(
+                "slow tick in action '%s': %.1fms (budget %.1fms)",
+                self.name,
+                duration * 1000,
+                self._slow_tick_budget_s * 1000,
             )
-            return result
-        finally:
-            self.tree.halt()
-            self._tracer.on_action_end(self.name, result)
+            self._tracer.on_slow_tick(duration, self._slow_tick_budget_s)
+
+        if status == Status.SUCCESS:
+            self.last_result = ActionResult(success=True, final_status=status)
+            self._tracer.on_action_end(self.name, self.last_result)
+            self._finished = True
+        elif status == Status.FAILURE:
+            self.last_result = self._build_failure_result(status)
+            self._tracer.on_action_end(self.name, self.last_result)
+            self._finished = True
+
+        return status
 
     def halt(self) -> None:
-        """Request the tick loop to exit at the next tick boundary."""
-        self._halted = True
+        """Halt the tree. BTClock calls this on detach.
+
+        Idempotent. Safe to call from threads other than the clock's
+        tick thread, since ``tree.halt()`` only walks the tree and
+        invokes node-local cleanup.
+        """
+        if self._finished:
+            return
+        try:
+            self.tree.halt()
+        finally:
+            if self._started and self.last_result is None:
+                self.last_result = ActionResult(
+                    success=False,
+                    message="halted",
+                    final_status=self.tree.status,
+                )
+                self._tracer.on_action_end(self.name, self.last_result)
+            self._finished = True
 
     def _build_failure_result(self, final_status: Status) -> ActionResult:
         exc, failed = self._collect_failure_info(self.tree)

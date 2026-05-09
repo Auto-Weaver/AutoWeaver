@@ -1,9 +1,15 @@
-"""TaskBase — abstract base class providing building blocks for task implementation."""
+"""TaskBase — optional helper for EventBus-aware task components.
+
+In 0.5.0 (EVO-006), Tasks are subsystem-internal components, no longer
+driven by an Engine.tick(data) loop. ``TaskBase`` is provided as a
+small helper for components that need to subscribe / broadcast on an
+EventBus the Subsystem owns. Subsystems may use it or roll their own.
+"""
 
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Optional
 
 if TYPE_CHECKING:
     from autoweaver.reactive import EventBus
@@ -12,32 +18,29 @@ logger = logging.getLogger(__name__)
 
 
 class TaskBase:
-    """Abstract base class for all tasks.
+    """Optional helper for tasks that want EventBus integration.
 
-    Provides building blocks that subclasses use freely:
-    - subscribe(): subscribe to EventBus events
-    - broadcast(): publish results via EventBus
+    Subclasses get:
+      - ``self._event_bus`` access after ``attach(bus)``
+      - ``subscribe()`` hook called once on attach
+      - ``broadcast(event, payload)`` helper
 
-    Engine calls tick(data) each frame. Subclasses implement tick() to
-    call pipeline, do business logic, and broadcast results as needed.
+    Subclasses define their own work surface — e.g. a method
+    ``process(detections)`` invoked by their owning Subsystem. The
+    framework does not impose a fixed entrypoint.
     """
 
     name: str = ""
-    accepts_handoff: bool = False
 
     def __init__(self) -> None:
         self._event_bus: Optional[EventBus] = None
 
-    # ---- Engine interface ----
+    # ---- Lifecycle ----
 
     def attach(self, event_bus: EventBus) -> None:
         """Inject EventBus and trigger subscribe()."""
         self._event_bus = event_bus
         self.subscribe()
-
-    def tick(self, data: Any) -> None:
-        """Called by Engine each frame. Subclasses override to combine building blocks."""
-        raise NotImplementedError
 
     def reset(self) -> None:
         """Reset stateful components. Subclasses override as needed."""
@@ -47,7 +50,7 @@ class TaskBase:
         """Clean up resources. Subclasses override as needed."""
         self._event_bus = None
 
-    # ---- Building blocks (subclasses override as needed) ----
+    # ---- Building blocks ----
 
     def subscribe(self) -> None:
         """Subscribe to EventBus events. Override to add subscriptions."""

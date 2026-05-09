@@ -1,10 +1,12 @@
 """Base camera interface."""
 
-from abc import ABC, abstractmethod
+from abc import abstractmethod
 from dataclasses import dataclass
 from typing import Optional, Tuple
 
 import numpy as np
+
+from autoweaver.sensor.base import Sensor
 
 
 @dataclass
@@ -29,90 +31,88 @@ class CameraConfig:
     white_balance_mode: str = "once"
 
 
-class CameraBase(ABC):
-    """Abstract base class for cameras.
-    
-    This interface allows for different camera implementations
-    while keeping the rest of the system camera-agnostic.
+class CameraBase(Sensor):
+    """Abstract camera — a Sensor whose snapshot is a BGR frame.
+
+    Camera implementations satisfy the Sensor protocol via:
+      - ``open / close / is_open``
+      - ``snapshot()`` returns ``np.ndarray`` (BGR)
+      - ``configure(**kwargs)`` for runtime parameters
+
+    A ``capture()`` alias is provided for backward compatibility with
+    code from before 0.5.0; new code should use ``snapshot()``.
     """
 
+    @property
+    def name(self) -> str:
+        """Default name; subclasses can override."""
+        return self.__class__.__name__
+
     @abstractmethod
-    def open(self) -> bool:
+    def open(self) -> bool:  # type: ignore[override]
         """Open the camera device.
-        
-        Returns:
-            True if opened successfully, False otherwise.
+
+        Returns True on success. Implementations may raise on hard errors.
         """
-        pass
+        ...
 
     @abstractmethod
     def close(self) -> None:
         """Close the camera device and release resources."""
-        pass
+        ...
 
     @abstractmethod
-    def capture(self) -> np.ndarray:
-        """Capture a single frame.
-        
-        Returns:
-            Image as numpy array (H, W, C) in BGR format.
-        
-        Raises:
-            RuntimeError: If capture fails or camera not opened.
+    def snapshot(self) -> np.ndarray:
+        """Capture a single BGR frame, shape ``(H, W, 3)`` or ``(H, W)``.
+
+        Raises ``RuntimeError`` if the camera is not opened or capture
+        fails.
         """
-        pass
+        ...
 
     @abstractmethod
-    def is_opened(self) -> bool:
-        """Check if camera is opened.
-        
-        Returns:
-            True if camera is opened and ready.
-        """
-        pass
+    def is_open(self) -> bool:
+        """Check whether the camera is opened and ready."""
+        ...
 
     @abstractmethod
     def get_frame_size(self) -> Tuple[int, int]:
-        """Get frame size.
-        
-        Returns:
-            Tuple of (width, height) in pixels.
-            
-        Raises:
-            RuntimeError: If camera not opened.
+        """Return ``(width, height)`` in pixels.
+
+        Raises ``RuntimeError`` if the camera is not opened.
         """
-        pass
+        ...
 
     @abstractmethod
     def set_exposure_time(self, exposure_time: float) -> None:
-        """Set camera exposure time.
-
-        Args:
-            exposure_time: Exposure time in microseconds.
-
-        Raises:
-            RuntimeError: If camera not opened.
-        """
-        pass
+        """Set camera exposure time in microseconds."""
+        ...
 
     @abstractmethod
     def set_gain(self, gain: float) -> None:
-        """Set camera gain.
+        """Set camera gain."""
+        ...
 
-        Args:
-            gain: Gain value.
+    # ----- Backward compat aliases -----
 
-        Raises:
-            RuntimeError: If camera not opened.
+    def capture(self) -> np.ndarray:
+        """Backward-compat alias for ``snapshot()``.
+
+        New code should call ``snapshot()`` directly to align with the
+        Sensor protocol.
         """
-        pass
+        return self.snapshot()
+
+    def is_opened(self) -> bool:
+        """Backward-compat alias for ``is_open()``."""
+        return self.is_open()
+
+    # ----- Context manager -----
 
     def __enter__(self):
-        """Context manager entry."""
         self.open()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        """Context manager exit."""
         self.close()
         return False

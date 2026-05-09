@@ -116,7 +116,7 @@ class DahengCamera(CameraBase):
                 self._cam = None
         self._is_opened = False
 
-    def capture(self) -> np.ndarray:
+    def snapshot(self) -> np.ndarray:
         """Capture a single frame in BGR format."""
         if not self._is_opened:
             raise RuntimeError("Camera not opened")
@@ -141,7 +141,7 @@ class DahengCamera(CameraBase):
         
         return image
 
-    def is_opened(self) -> bool:
+    def is_open(self) -> bool:
         """Check if camera is opened."""
         return self._is_opened
 

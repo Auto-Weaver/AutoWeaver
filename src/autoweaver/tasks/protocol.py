@@ -1,4 +1,18 @@
-"""Task protocol definition."""
+"""Task protocol — minimal contract for Subsystem-internal task components.
+
+In 0.5.0 (EVO-006), the Task abstraction is no longer driven by an
+Engine. Instead, a Task is a stateful business component held inside a
+Subsystem (e.g. a stabilizer, a tracker, a pick-decision unit). The
+Subsystem orchestrates its tasks however it likes — the Protocol below
+is the minimum we ask for so the framework's TaskBase can wire into
+optional EventBus subscription if a Subsystem chooses to use it.
+
+The legacy ``Engine.tick(data)``-driven contract from 0.4.x has been
+retired. The ``SideTask`` Protocol and ``RetryCaptureTask`` are gone —
+their roles are filled by Subsystem (the long-lived autonomous
+component) and by BT subtrees with Retry decorators (the retry
+behaviour) respectively.
+"""
 
 from __future__ import annotations
 
@@ -8,33 +22,13 @@ if TYPE_CHECKING:
     from autoweaver.reactive import EventBus
 
 
-class SideTask(Protocol):
-    """Protocol for side tasks that run alongside the main task.
-
-    SideTasks are autonomous: Engine only calls attach() and close().
-    Internal execution model (event-driven, polling, hybrid) is the
-    SideTask's own concern.
-    """
-
-    @property
-    def name(self) -> str:
-        """Human-friendly task name for logging."""
-        ...
-
-    def attach(self, event_bus: EventBus) -> None:
-        """Inject EventBus and start internal execution."""
-        ...
-
-    def close(self) -> None:
-        """Stop internal execution and clean up resources."""
-        ...
-
-
 class Task(Protocol):
-    """Protocol for all tasks in the workflow system.
+    """Optional protocol for stateful business components inside a Subsystem.
 
-    Tasks satisfy this protocol via structural subtyping (duck typing).
-    No inheritance required.
+    Implementations satisfy this via structural subtyping — no
+    inheritance required. Subsystems may use any shape they like;
+    this Protocol is only useful when leaning on the framework's
+    ``TaskBase`` helper for EventBus wiring.
     """
 
     @property
@@ -46,12 +40,8 @@ class Task(Protocol):
         """Inject EventBus for event publishing/subscribing."""
         ...
 
-    def tick(self, data: Any) -> None:
-        """Process a single engine input item (image or handoff data)."""
-        ...
-
     def reset(self) -> None:
-        """Reset task state when starting a new session/region."""
+        """Reset task state (e.g. when starting a new region/session)."""
         ...
 
     def close(self) -> None:

@@ -20,7 +20,7 @@ class WebSocketAdapter(CommSignalBase):
     """WebSocket client transport for comm messages.
 
     The adapter maintains a background receiver thread so ``receive()``
-    remains non-blocking and fits the existing ``CommSideTask`` polling model.
+    remains non-blocking and fits the ``CommSubsystem`` polling model.
     By default, frames are encoded as JSON objects.
     """
 

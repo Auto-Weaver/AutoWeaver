@@ -21,8 +21,8 @@ class WebSocketServerAdapter(CommSignalBase):
 
     The server is NOT started in ``__init__``.  Call ``open()`` to bind
     and start accepting connections — typically done by
-    ``CommSideTask.attach()`` so that the transport only runs while the
-    engine is active.
+    ``CommSubsystem.on_start()`` so that the transport only runs while the
+    Subsystem is attached.
     """
 
     def __init__(

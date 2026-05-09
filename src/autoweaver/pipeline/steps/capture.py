@@ -41,7 +41,7 @@ class CaptureStep(ProcessStep):
         if gain is not None:
             self._camera.set_gain(gain)
 
-        image = self._camera.capture()
+        image = self._camera.snapshot()
 
         ctx.original_image = image
         ctx.processed_image = image.copy()

@@ -200,37 +200,285 @@ board.accept_notes("perception", "start_picking", dict, on_receive_callback)
 
 ## Phase 2：Subsystem 基类 + BT Clock 引擎
 
-⏳ 待实施
+✅ 完成
 
-- `Subsystem` ABC、`TickContext`、生命周期、`register_note_handler`、`write/read/run_async`
-- `AsyncPool` 共享 / 独占
-- `BTClock` 引擎、多树挂载、tick 顺序
-- `Action` 不再持有 tick 循环
+### 新增模块
 
-详细 break 列表 + 迁移示例：本 phase 完成后回填。
+- `autoweaver/subsystem/base.py` — `Subsystem` ABC、`TickContext`、`SubsystemState`、`AsyncPoolConfig`
+- `autoweaver/subsystem/async_pool.py` — `AsyncPool`、`AsyncPoolRegistry`（共享 / 独占 worker pool，on_done 主线程语义）
+- `autoweaver/subsystem/clock.py` — `BTClock`、`TreeHandle`（系统唯一节拍源，多树/多 Subsystem 挂载）
+
+### 改造
+
+- `autoweaver/motion_policy/action.py` — Action 不再持有 tick 循环。删除 `async run()`、`asyncio.sleep`、`hz` / `world_board` 构造参数。新增 `tick(snapshot)` 同步入口（被 BTClock 调用）。`halt()` 仍存在、且 idempotent
+- `autoweaver/__init__.py` — 公开导出 Subsystem 框架
+
+### 旧 API（0.4.x）
+
+```python
+import asyncio
+from autoweaver.motion_policy.action import Action
+
+action = Action(tree=tree, world_board=board, hz=50)
+result = await action.run()
+```
+
+### 新 API（0.5.0）
+
+```python
+from autoweaver.motion_policy.action import Action
+from autoweaver.subsystem.clock import BTClock
+
+clock = BTClock(world_board=board, hz=50)
+action = Action(tree=tree)
+clock.attach_tree(action)
+clock.run()  # blocks; clock.stop() to exit
+
+# Or, in tests:
+clock.tick_once()
+```
+
+### Subsystem 业务子类范式
+
+```python
+class PerceptionSubsystem(Subsystem):
+    name = "perception"
+    async_pool_config = AsyncPoolConfig(mode="dedicated", max_workers=2)
+
+    def on_attach(self) -> None:
+        # Declare what state this subsystem publishes:
+        self.declare_state("perception.detections", list)
+        self.declare_state("perception.state", str)
+        # Declare what notes this subsystem accepts:
+        self.accept_notes("start_picking", dict, self._on_start_picking)
+        self.accept_notes("stop", dict, self._on_stop_note)
+
+    def on_start(self) -> None:
+        self._sensor.open()
+
+    def on_stop(self) -> None:
+        self._sensor.close()
+
+    def on_tick(self, ctx: TickContext) -> None:
+        # Fast, synchronous work only.
+        # Slow work goes through self.run_async(...).
+        if self._mode == "picking":
+            self.run_async(self._heavy_inference, on_done=self._publish)
+
+    def _on_start_picking(self, payload: dict) -> None:
+        self._mode = "picking"
+
+    def _publish(self, result) -> None:
+        # Runs on the main tick thread (next tick), safe to write state.
+        self.write_state("perception.detections", result.detections)
+```
+
+### 关键行为
+
+- **on_tick 同步** — 必须快返回。慢操作走 `self.run_async(fn, on_done)`
+- **on_done 在下个 tick 主线程** — `run_async` 提交的回调被排队，由 BTClock 在下个 tick 开头的 drain 阶段调用。这保证回调里 `write_state` 是 tick-safe 的
+- **tick 顺序** — 每个 tick：
+  1. drain run_async on_done 回调
+  2. `WorldBoard.deliver_notes()` 派发上一 tick 累积的 note
+  3. 推所有 attached BT 树
+  4. 广播 on_tick 给所有 RUNNING Subsystem
+- **半 tick 延迟** — BT 在某 tick pass 的 note，下一 tick 的 deliver 阶段才到达接收方。这是有意为之的对齐机制
+- **异常隔离** — 单个 Subsystem 抛 on_tick 异常被框架捕获，标记 `FAULTED` 不再接收 tick；其他 Subsystem 不受影响
+- **生命周期** — `attach_subsystem` 顺序：on_attach → on_start → 进入 RUNNING；attach 失败标记 FAULTED 并调 on_stop 清理。`detach_subsystem`：从 RUNNING 移除 → on_stop → on_detach
+- **共享 vs 独占 worker pool** — Subsystem 通过类属性 `async_pool_config = AsyncPoolConfig(mode="dedicated", max_workers=2)` 声明独占，否则用 BTClock 共享池（默认 4 workers）
+
+### Phase 2 改动文件
+
+代码（新增）：
+- `src/autoweaver/subsystem/__init__.py`
+- `src/autoweaver/subsystem/base.py` — Subsystem ABC
+- `src/autoweaver/subsystem/async_pool.py` — AsyncPool / AsyncPoolRegistry
+- `src/autoweaver/subsystem/clock.py` — BTClock
+
+代码（改）：
+- `src/autoweaver/motion_policy/action.py` — Action 重写
+- `src/autoweaver/__init__.py` — 公开导出
+
+测试（新增）：
+- `tests/subsystem/test_subsystem_base.py` — 13 个测试（生命周期、convenience API、namespace 强制、misuse 防护）
+- `tests/subsystem/test_async_pool.py` — 13 个测试（共享/独占池、on_done 时序、异常隔离、关闭语义）
+- `tests/subsystem/test_clock.py` — 17 个测试（tick 顺序、attach/detach、pause/resume、异常隔离、tree-to-subsystem note 半 tick 延迟）
+
+测试（重写）：
+- `tests/motion_policy/test_action.py` — 12 个新测试（去掉 asyncio，改用 tick 同步驱动）
+- `tests/device/arm/test_action_leaf_with_mock.py` — 改用 BTClock 驱动
+
+测试结果：128 passed in 0.55s（不含 integration 测试）。
 
 ---
 
 ## Phase 3：新 Leaf 类型 + Sensor 抽象
 
-⏳ 待实施
+✅ 完成
 
-- `NotifyLeaf` / `WaitFor`
-- `Sensor` ABC，`CameraBase` 与 `Sensor` 协议对齐
+### 新增
 
-详细 break 列表 + 迁移示例：本 phase 完成后回填。
+- `autoweaver/motion_policy/nodes/leaf/notify.py` — `NotifyLeaf`：fire-and-forget 给 Subsystem 传 note，单 tick 完成
+- `autoweaver/motion_policy/nodes/leaf/wait_for.py` — `WaitFor`：从 WorldBoard snapshot 读 state，谓词满足返回 SUCCESS
+- `autoweaver/sensor/__init__.py` + `autoweaver/sensor/base.py` — `Sensor` ABC（被动设备驱动协议）
+- `autoweaver/camera/base.py` — `CameraBase` 现在继承 `Sensor`，`snapshot()` 是规范入口
+
+### 改名 + 兼容
+
+| 旧（0.4） | 新（0.5）| 说明 |
+|---|---|---|
+| `camera.capture()` | `camera.snapshot()` | 规范入口；旧名作为 alias 仍可用 |
+| `camera.is_opened()` | `camera.is_open()` | 同上；旧名作为 alias 仍可用 |
+
+### 用法
+
+```python
+from autoweaver import BTClock, NotifyLeaf, WaitFor, WorldBoard
+
+board = WorldBoard()
+clock = BTClock(world_board=board)
+
+# Notify a subsystem with a note:
+NotifyLeaf(board, target="perception", note_name="start_picking",
+           payload={"region": 3})
+
+# Wait until perception publishes a state value:
+WaitFor("perception.next_target", lambda v: v is not None).timeout(10.0)
+```
+
+### Sensor 协议
+
+```python
+from autoweaver import Sensor
+
+class TemperatureSensor(Sensor):
+    @property
+    def name(self) -> str: return "temp"
+    def open(self) -> None: ...
+    def close(self) -> None: ...
+    def is_open(self) -> bool: ...
+    def snapshot(self) -> float: ...  # current temperature in C
+```
+
+`CameraBase` 已经 implements `Sensor`——所有现有 camera 子类自动满足协议。
+
+### 测试
+
+新增 14 个测试（NotifyLeaf 4 + WaitFor 5 + Sensor base 5）。全部通过。
 
 ---
 
-## Phase 4：comm 升级 + 旧抽象退役
+## Phase 4：CommSubsystem + 退役清理
 
-⏳ 待实施
+✅ 完成
 
-退役清单：
-- `tasks/protocol.py` 的 `SideTask` Protocol → 删
-- `comm/side_task.py` 的 `CommSideTask` → 重写为 `CommSubsystem`
-- `workflow/` 整个目录（`WorkflowEngine`、`load_workflow_from_yaml`）→ 删
-- `tasks/retry_capture.py` → 删（如无调用方）
-- `__init__.py` 公开导出 → 清理
+### 新增
 
-详细 break 列表 + 迁移示例：本 phase 完成后回填。
+- `autoweaver/comm/subsystem.py` — `CommSubsystem` 基类（继承 `Subsystem`）：
+  - 持有 `CommSignalBase` transport
+  - `on_start` 启动后台 polling 守护线程
+  - `on_stop` 关闭 transport，框架 join 后台线程
+  - 子类覆写 `handle_message(msg)` 处理入站消息
+  - 子类调 `self.send(msg)` 发出站消息
+
+- `autoweaver/subsystem/base.py` 新增 `Subsystem.run_background(fn, thread_name)`：
+  - fn 接收一个 `threading.Event`（stop_event），detach 时被 set
+  - 用于持续后台 worker（comm polling、watchdog、sensor 回调桥接）
+  - 和 `run_async`（一次性任务 + on_done）区分
+
+### 退役
+
+| 删除 | 替代 |
+|---|---|
+| `autoweaver/comm/side_task.py`（CommSideTask）| `autoweaver/comm/subsystem.py`（CommSubsystem）|
+| `autoweaver/workflow/`（整个目录：WorkflowEngine、loader、WorkflowDefinition）| BTClock + BT 树 |
+| `autoweaver/tasks/retry_capture.py`（RetryCaptureTask、Adjuster、ExposureAdjuster）| 重试逻辑由 BT `Retry` 装饰器提供；曝光调整作为 PerceptionSubsystem 的 note handler 实现 |
+| `autoweaver/tasks/conditions.py`（DoneCondition、AlwaysFalseCondition）| BT 节点 + WaitFor 取代"完成判定"概念 |
+| `tasks/protocol.py` 的 `SideTask` Protocol | Subsystem 协议 |
+| `Task.tick(data)` 方法 | Task 是 Subsystem 内部组件，不再有强制入口；Subsystem 自由编排 |
+
+`Task` Protocol 仍然保留——精简到 `name` / `attach(bus)` / `reset` / `close`，作为 Subsystem-internal 组件的轻量约定。
+
+`TaskBase` 仍然保留——给需要 EventBus 集成的 Task 一个起步辅助。
+
+### 业务侧迁移：CommSideTask → CommSubsystem
+
+```python
+# 0.4.x（旧）
+from autoweaver.comm import CommSideTask, ModbusAdapter
+
+class MyComm(CommSideTask):
+    name = "my_comm"
+    def handle_message(self, message): ...
+
+# 0.5.0（新）
+from autoweaver import CommSubsystem, ModbusAdapter
+
+class MyComm(CommSubsystem):
+    @property
+    def name(self) -> str: return "my_comm"
+    def handle_message(self, message): ...
+
+# 注册改成挂到 BTClock：
+clock.attach_subsystem(MyComm(transport))
+```
+
+### 业务侧迁移：WorkflowEngine → BTClock
+
+```python
+# 0.4.x（旧）
+from autoweaver import WorkflowEngine, load_workflow_from_yaml
+
+defn = load_workflow_from_yaml("workflow.yaml")
+engine = WorkflowEngine(state_machine=defn.state_machine, task_map=...)
+engine.loop()  # blocks
+
+# 0.5.0（新）
+from autoweaver import BTClock, WorldBoard
+
+board = WorldBoard()
+clock = BTClock(world_board=board)
+
+# Attach BT trees + Subsystems:
+clock.attach_tree(my_action)
+clock.attach_subsystem(my_perception)
+clock.attach_subsystem(my_comm)
+
+clock.run()  # blocks; clock.stop() to exit
+```
+
+YAML 配置加载不再由框架提供 —— 业务侧直接用代码构造 BT 树（运算符 DSL）。
+
+### 测试
+
+新增 9 个测试（CommSubsystem 5 + run_background 4）。全部通过。
+
+---
+
+## 总结
+
+完整重构总测试：**151 passed**（不含 integration）。
+
+### 改动文件统计
+
+新增模块：
+- `subsystem/` — Subsystem 框架（base, async_pool, clock）
+- `sensor/` — Sensor 抽象基类
+- `comm/subsystem.py` — CommSubsystem
+- `motion_policy/nodes/leaf/notify.py`、`wait_for.py` — 新 leaf 类型
+
+删除：
+- `workflow/` 整个目录
+- `comm/side_task.py`
+- `tasks/retry_capture.py`、`tasks/conditions.py`
+
+重写：
+- `motion_policy/world_board.py` — namespace + state/note 分离
+- `motion_policy/action.py` — 不再持 tick 循环
+- `tasks/base.py`、`tasks/protocol.py`、`tasks/__init__.py` — 精简到最小协议
+- `__init__.py` — 顶层公开导出
+- `camera/base.py` — 继承 Sensor、`snapshot/is_open` 规范化
+
+测试：
+- 全套 0.4.x 测试更新或重写
+- 新增 60+ 测试覆盖 0.5.0 新抽象

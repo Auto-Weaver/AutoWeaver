@@ -1,6 +1,8 @@
+"""Comm subsystem — transport-driven communication."""
+
 from .base import CommSignalBase
 from .modbus import ModbusAdapter
-from .side_task import CommSideTask
+from .subsystem import CommSubsystem
 
 try:
     from .websocket import WebSocketAdapter, WebSocketServerAdapter
@@ -29,7 +31,7 @@ except ModuleNotFoundError as exc:
 
 __all__ = [
     "CommSignalBase",
-    "CommSideTask",
+    "CommSubsystem",
     "ModbusAdapter",
     "WebSocketAdapter",
     "WebSocketServerAdapter",

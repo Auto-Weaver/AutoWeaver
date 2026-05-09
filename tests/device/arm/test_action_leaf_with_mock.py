@@ -1,6 +1,6 @@
-"""End-to-end test: real ActionLeaf + MockArm + Action.run() loop.
+"""End-to-end test: ActionLeaf + MockArm + BTClock-driven tick.
 
-This validates the contract between the BT decision layer and a device:
+Validates the contract between the BT decision layer and a device:
   - Goals flow ActionLeaf -> arm.move_j
   - Pose is observed via WorldBoard snapshot
   - SUCCESS is reached when the leaf decides the move completed
@@ -9,17 +9,16 @@ This validates the contract between the BT decision layer and a device:
 
 from __future__ import annotations
 
-import asyncio
 import math
+import time
 from typing import Sequence
-
-import pytest
 
 from autoweaver.device.arm.mock import MockArm
 from autoweaver.motion_policy.action import Action
 from autoweaver.motion_policy.nodes.leaf.action_leaf import ActionLeaf
 from autoweaver.motion_policy.nodes.node import Status
 from autoweaver.motion_policy.world_board import WorldBoard
+from autoweaver.subsystem.clock import BTClock
 
 
 def _close(a: Sequence[float], b: Sequence[float], tol: float = 1e-6) -> bool:
@@ -43,48 +42,65 @@ class MoveJ(ActionLeaf):
         return Status.RUNNING
 
 
-@pytest.mark.asyncio
-async def test_action_leaf_drives_mock_arm_to_success():
+def test_action_leaf_drives_mock_arm_to_success():
     arm = MockArm(name="m1", feedback_hz=200, move_duration=0.0)
     board = WorldBoard()
     arm.register_outputs(board)
     arm.start()
     try:
         leaf = MoveJ(arm, target=(1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
-        action = Action(tree=leaf, world_board=board, hz=100)
-        result = await asyncio.wait_for(action.run(), timeout=2.0)
+        action = Action(tree=leaf)
+        clock = BTClock(world_board=board, hz=100)
+        clock.attach_tree(action)
+        try:
+            # Drive ticks until the tree finishes; bound it so a stuck
+            # leaf doesn't deadlock the test. MockArm's feedback thread
+            # runs at 200 Hz, so a small sleep between ticks lets it
+            # publish the new joint values.
+            for _ in range(200):
+                clock.tick_once()
+                if action.last_result is not None:
+                    break
+                time.sleep(0.01)
+        finally:
+            clock.shutdown()
     finally:
         arm.stop()
 
-    assert result.success is True
+    assert action.last_result is not None
+    assert action.last_result.success is True
     move_j_calls = [c for c in arm.calls if c[0] == "move_j"]
     assert len(move_j_calls) == 1
     assert board.snapshot()["m1.joint"] == (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
 
 
-@pytest.mark.asyncio
-async def test_action_halt_propagates_to_arm():
-    """If the Action is halted mid-flight, arm.halt must be called."""
+def test_action_halt_propagates_to_arm():
+    """If the tree is detached mid-flight, arm.halt must be called."""
     arm = MockArm(name="m1", feedback_hz=200, move_duration=10.0)
     board = WorldBoard()
     arm.register_outputs(board)
     arm.start()
     try:
         leaf = MoveJ(arm, target=(9.0, 9.0, 9.0, 0.0, 0.0, 0.0))
-        action = Action(tree=leaf, world_board=board, hz=100)
-
-        async def halt_soon():
-            await asyncio.sleep(0.05)
-            action.halt()
-
-        halter = asyncio.create_task(halt_soon())
-        result = await asyncio.wait_for(action.run(), timeout=2.0)
-        await halter
+        action = Action(tree=leaf)
+        clock = BTClock(world_board=board, hz=100)
+        handle = clock.attach_tree(action)
+        try:
+            # Tick a few times so the leaf actually issues the goal.
+            for _ in range(3):
+                clock.tick_once()
+                time.sleep(0.005)
+            # Now detach — the tree should be halted.
+            clock.detach_tree(handle)
+            action.halt()  # idempotent — completes the result if not already
+        finally:
+            clock.shutdown()
     finally:
         arm.stop()
 
-    assert result.success is False
-    assert result.message == "halted"
+    assert action.last_result is not None
+    assert action.last_result.success is False
+    assert action.last_result.message == "halted"
     halt_calls = [c for c in arm.calls if c[0] == "halt"]
     assert len(halt_calls) == 1
     halted_gid = halt_calls[0][1]
