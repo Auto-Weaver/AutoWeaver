@@ -1,8 +1,8 @@
-"""Modbus-based comm signal adapter (production-side transport).
+"""Modbus protocol implementation.
 
-Principle: keep the I/O layer free of business semantics; this class only does
-register read/write + handshake. Register mapping (request_target / pick_done /
-reset, payload layout) should be defined by upper layers later.
+Principle: keep the protocol layer free of business semantics; this class only
+does register read/write + handshake. Register mapping (request_target /
+pick_done / reset, payload layout) should be defined by application code.
 
 Provided now:
 - Request/ack handshake on a single holding register (default D0.bit0=request,
@@ -18,7 +18,7 @@ from typing import Callable, Optional, Dict, Any
 
 from pymodbus.client import ModbusTcpClient
 
-from .base import CommSignalBase
+from .base import CommBase
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +32,8 @@ def _set_bit(value: int, bit: int, state: bool) -> int:
     return (value | mask) if state else (value & ~mask)
 
 
-class ModbusAdapter(CommSignalBase):
-    """Modbus TCP comm-signal transport.
+class ModbusProtocol(CommBase):
+    """Modbus TCP protocol implementation.
 
     Parameters
     ----------
@@ -80,7 +80,7 @@ class ModbusAdapter(CommSignalBase):
             raise ConnectionError(f"Failed to connect Modbus TCP {self.host}:{self.port}")
 
     # ------------------------------------------------------------------ #
-    # CommSignalBase
+    # CommBase
     # ------------------------------------------------------------------ #
     def receive(self) -> Optional[Dict[str, Any]]:
         """Non-blocking read of comm request.

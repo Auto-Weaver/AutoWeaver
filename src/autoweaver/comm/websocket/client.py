@@ -10,18 +10,18 @@ from typing import Any, Dict, Optional, Sequence
 from websockets.exceptions import ConnectionClosed, InvalidHandshake, InvalidURI
 from websockets.sync.client import connect
 
-from ..base import CommSignalBase
+from ..base import CommBase
 from . import DecodeMessage, EncodeMessage, default_decode, default_encode
 
 logger = logging.getLogger(__name__)
 
 
-class WebSocketAdapter(CommSignalBase):
-    """WebSocket client transport for comm messages.
+class WebSocketProtocol(CommBase):
+    """WebSocket client protocol implementation.
 
-    The adapter maintains a background receiver thread so ``receive()``
-    remains non-blocking and fits the ``CommSubsystem`` polling model.
-    By default, frames are encoded as JSON objects.
+    Maintains a background receiver thread so ``receive()`` remains
+    non-blocking and fits the ``CommSubsystem`` polling model. Frames
+    are encoded as JSON objects by default.
     """
 
     def __init__(
@@ -135,4 +135,4 @@ class WebSocketAdapter(CommSignalBase):
                 logger.warning("WebSocket inbox is full; dropping message")
 
 
-__all__ = ["WebSocketAdapter"]
+__all__ = ["WebSocketProtocol"]

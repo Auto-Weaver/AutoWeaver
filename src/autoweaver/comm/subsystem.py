@@ -1,7 +1,7 @@
-"""CommSubsystem — Subsystem base for transport-driven communication.
+"""CommSubsystem — Subsystem template for protocol-driven communication.
 
-Wraps a ``CommSignalBase`` transport with the standard Subsystem
-lifecycle. The transport's polling loop runs as a background thread
+Wraps a ``CommBase`` protocol with the standard Subsystem
+lifecycle. The protocol's polling loop runs as a background thread
 (``run_background``); incoming messages are handled on the worker
 thread by ``handle_message``, while subsystems that need tick-aligned
 state writes can hand off via ``run_async`` or accept_notes.
@@ -16,18 +16,18 @@ import logging
 import threading
 from typing import Any, Optional
 
-from autoweaver.comm.base import CommSignalBase
+from autoweaver.comm.base import CommBase
 from autoweaver.subsystem.base import Subsystem, TickContext
 
 logger = logging.getLogger(__name__)
 
 
 class CommSubsystem(Subsystem):
-    """Base Subsystem for comm-transport-driven I/O.
+    """Base Subsystem for protocol-driven I/O.
 
-    Subclasses provide the transport (via constructor) and override
+    Subclasses provide the protocol (via constructor) and override
     ``handle_message`` to react to inbound messages. The framework runs
-    a daemon polling thread that drains the transport until detach.
+    a daemon polling thread that drains the protocol until detach.
 
     Outbound: subclasses (or anyone holding a reference) call
     ``self.send(message)``.
@@ -41,12 +41,12 @@ class CommSubsystem(Subsystem):
 
     def __init__(
         self,
-        transport: CommSignalBase,
+        protocol: CommBase,
         *,
         poll_interval: float = 0.001,
     ) -> None:
         super().__init__()
-        self._transport = transport
+        self._protocol = protocol
         self._poll_interval = poll_interval
 
     # ------------------------------------------------------------------
@@ -54,7 +54,7 @@ class CommSubsystem(Subsystem):
     # ------------------------------------------------------------------
 
     def handle_message(self, message: dict) -> Optional[dict]:
-        """Process an incoming transport message.
+        """Process an incoming protocol message.
 
         Return a dict to send a response, or None to skip. Default no-op.
 
@@ -69,8 +69,8 @@ class CommSubsystem(Subsystem):
     # ------------------------------------------------------------------
 
     def send(self, message: dict) -> None:
-        """Send a message through the transport (any thread)."""
-        self._transport.send(message)
+        """Send a message through the protocol (any thread)."""
+        self._protocol.send(message)
 
     # ------------------------------------------------------------------
     # Subsystem lifecycle integration
@@ -85,13 +85,13 @@ class CommSubsystem(Subsystem):
         self.run_background(self._poll_loop, thread_name=f"{self.name}-poll")
 
     def on_stop(self) -> None:
-        """Close the transport. Background thread is signalled to stop
+        """Close the protocol. Background thread is signalled to stop
         by the framework before this runs."""
         try:
-            self._transport.close()
+            self._protocol.close()
         except Exception:
             logger.exception(
-                "subsystem '%s' transport close raised", self.name
+                "subsystem '%s' protocol close raised", self.name
             )
         super().on_stop()
 
@@ -117,9 +117,9 @@ class CommSubsystem(Subsystem):
             stop_event.wait(self._poll_interval)
 
     def _drain_messages(self) -> None:
-        """Drain all pending transport messages without blocking."""
+        """Drain all pending protocol messages without blocking."""
         while True:
-            message = self._transport.receive()
+            message = self._protocol.receive()
             if message is None:
                 break
             try:
@@ -131,8 +131,9 @@ class CommSubsystem(Subsystem):
                 continue
             if response is not None:
                 try:
-                    self._transport.send(response)
+                    self._protocol.send(response)
                 except Exception:
                     logger.exception(
                         "subsystem '%s' response send raised", self.name
                     )
+

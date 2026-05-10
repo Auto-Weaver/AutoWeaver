@@ -2,11 +2,11 @@
 
 from .camera import CameraBase, CameraConfig, DahengCamera, MockCamera
 from .comm import (
-    CommSignalBase,
+    CommBase,
     CommSubsystem,
-    ModbusAdapter,
-    WebSocketAdapter,
-    WebSocketServerAdapter,
+    ModbusProtocol,
+    WebSocketProtocol,
+    WSServerProtocol,
 )
 from .motion_policy.action import Action, ActionResult
 from .motion_policy.blackboard import Blackboard
@@ -44,7 +44,7 @@ from .subsystem import (
 )
 from .tasks import Task, TaskBase
 
-__version__ = "0.5.1"
+__version__ = "0.5.2"
 
 __all__ = [
     # Subsystem framework
@@ -72,11 +72,11 @@ __all__ = [
     "DahengCamera",
     "MockCamera",
     # Comm
-    "CommSignalBase",
+    "CommBase",
     "CommSubsystem",
-    "ModbusAdapter",
-    "WebSocketAdapter",
-    "WebSocketServerAdapter",
+    "ModbusProtocol",
+    "WebSocketProtocol",
+    "WSServerProtocol",
     # Pipeline
     "BoundingBox",
     "CaptureStep",

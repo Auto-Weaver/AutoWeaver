@@ -1,4 +1,4 @@
-"""WebSocket transport adapters for AutoWeaver.
+"""WebSocket protocol implementations for AutoWeaver.
 
 Shared codec and type aliases live here; client and server
 implementations are in their own modules.
@@ -29,7 +29,8 @@ def default_encode(message: Dict[str, Any]) -> RawMessage:
     return json.dumps(message)
 
 
-from .client import WebSocketAdapter  # noqa: E402
-from .server import WebSocketServerAdapter  # noqa: E402
+from .client import WebSocketProtocol  # noqa: E402
+from .server import WSServerProtocol  # noqa: E402
 
-__all__ = ["WebSocketAdapter", "WebSocketServerAdapter"]
+__all__ = ["WebSocketProtocol", "WSServerProtocol"]
+

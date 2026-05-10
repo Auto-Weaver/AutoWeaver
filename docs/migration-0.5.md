@@ -6,6 +6,18 @@
 
 > **0.5.1 补丁（2026-05-09）**：把 `opencv-python-headless` 换成 `opencv-python`——headless 阻挡业务侧调 `cv2.imshow`。业务层无需改代码。
 
+> **0.5.2 补丁（2026-05-10）**：comm 命名收敛——把"协议"和"设备/连接"两层概念彻底分开。直接 break、无 alias。
+>
+> | 旧名 | 新名 |
+> |---|---|
+> | `CommSignalBase` | `CommBase` |
+> | `ModbusAdapter` | `ModbusProtocol` |
+> | `WebSocketAdapter` | `WebSocketProtocol` |
+> | `WebSocketServerAdapter` | `WSServerProtocol` |
+> | `CommSubsystem` | （未变）|
+>
+> 命名理由：协议名（Modbus / WebSocket）只描述"用什么语言通信"，不带设备语义；具体"谁和谁通信"的命名（`Nova5Link`、`PlcLink`）由应用层负责。详见 [camera-and-comm.md](camera-and-comm.md) 的四层模型。
+
 > **本指南的"完成度"**：本文档随 Phase 0-4 的实施分阶段填充。每个 Phase 完成后，对应章节会从"待补"变为完整迁移说明。**未带"待补"标记的章节即为最终态**。
 
 ## 决策原则
@@ -377,9 +389,9 @@ class TemperatureSensor(Sensor):
 ### 新增
 
 - `autoweaver/comm/subsystem.py` — `CommSubsystem` 基类（继承 `Subsystem`）：
-  - 持有 `CommSignalBase` transport
+  - 持有 `CommBase` 协议（0.5.2 起；原 `CommSignalBase`）
   - `on_start` 启动后台 polling 守护线程
-  - `on_stop` 关闭 transport，框架 join 后台线程
+  - `on_stop` 关闭协议，框架 join 后台线程
   - 子类覆写 `handle_message(msg)` 处理入站消息
   - 子类调 `self.send(msg)` 发出站消息
 
@@ -405,6 +417,8 @@ class TemperatureSensor(Sensor):
 
 ### 业务侧迁移：CommSideTask → CommSubsystem
 
+> 0.5.2 起，下例中的 `ModbusAdapter` 改名为 `ModbusProtocol`、`CommSignalBase` 改名为 `CommBase`。新写法：
+
 ```python
 # 0.4.x（旧）
 from autoweaver.comm import CommSideTask, ModbusAdapter
@@ -413,8 +427,8 @@ class MyComm(CommSideTask):
     name = "my_comm"
     def handle_message(self, message): ...
 
-# 0.5.0（新）
-from autoweaver import CommSubsystem, ModbusAdapter
+# 0.5.2（新）
+from autoweaver import CommSubsystem, ModbusProtocol
 
 class MyComm(CommSubsystem):
     @property
@@ -422,7 +436,7 @@ class MyComm(CommSubsystem):
     def handle_message(self, message): ...
 
 # 注册改成挂到 BTClock：
-clock.attach_subsystem(MyComm(transport))
+clock.attach_subsystem(MyComm(ModbusProtocol(host=...)))
 ```
 
 ### 业务侧迁移：WorkflowEngine → BTClock

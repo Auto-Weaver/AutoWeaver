@@ -10,19 +10,19 @@ from typing import Any, Dict, Optional
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.server import ServerConnection, serve
 
-from ..base import CommSignalBase
+from ..base import CommBase
 from . import DecodeMessage, EncodeMessage, default_decode, default_encode
 
 logger = logging.getLogger(__name__)
 
 
-class WebSocketServerAdapter(CommSignalBase):
-    """Single-client WebSocket server transport.
+class WSServerProtocol(CommBase):
+    """Single-client WebSocket server protocol implementation.
 
     The server is NOT started in ``__init__``.  Call ``open()`` to bind
     and start accepting connections — typically done by
-    ``CommSubsystem.on_start()`` so that the transport only runs while the
-    Subsystem is attached.
+    ``CommSubsystem.on_start()`` so that the protocol only runs while
+    the Subsystem is attached.
     """
 
     def __init__(
@@ -138,4 +138,4 @@ class WebSocketServerAdapter(CommSignalBase):
                     self._current_connection = None
 
 
-__all__ = ["WebSocketServerAdapter"]
+__all__ = ["WSServerProtocol"]

@@ -1,38 +1,49 @@
-"""Comm subsystem — transport-driven communication."""
+"""Comm — protocol-driven communication primitives.
 
-from .base import CommSignalBase
-from .modbus import ModbusAdapter
+Layering:
+
+    CommBase                ← protocol contract (base.py)
+    ModbusProtocol / ...    ← concrete protocol mechanics
+    CommSubsystem           ← Subsystem template that wraps a protocol
+
+Application code names connections by peer (e.g. ``Nova5Link``,
+``PlcLink``) and gives messages business meaning, while picking
+which protocol to use.
+"""
+
+from .base import CommBase
+from .modbus import ModbusProtocol
 from .subsystem import CommSubsystem
 
 try:
-    from .websocket import WebSocketAdapter, WebSocketServerAdapter
+    from .websocket import WebSocketProtocol, WSServerProtocol
 except ModuleNotFoundError as exc:
     if exc.name != "websockets":
         raise
     _WEBSOCKET_IMPORT_ERROR = exc
 
-    class WebSocketAdapter:  # type: ignore[no-redef]
+    class WebSocketProtocol:  # type: ignore[no-redef]
         """Fallback stub when the websocket extra is not installed."""
 
         def __init__(self, *args, **kwargs) -> None:
             raise ModuleNotFoundError(
-                "WebSocketAdapter requires the optional 'websocket' extra. "
+                "WebSocketProtocol requires the optional 'websocket' extra. "
                 "Install it with `pip install -e \".[websocket]\"`."
             ) from _WEBSOCKET_IMPORT_ERROR
 
-    class WebSocketServerAdapter:  # type: ignore[no-redef]
+    class WSServerProtocol:  # type: ignore[no-redef]
         """Fallback stub when the websocket extra is not installed."""
 
         def __init__(self, *args, **kwargs) -> None:
             raise ModuleNotFoundError(
-                "WebSocketServerAdapter requires the optional 'websocket' extra. "
+                "WSServerProtocol requires the optional 'websocket' extra. "
                 "Install it with `pip install -e \".[websocket]\"`."
             ) from _WEBSOCKET_IMPORT_ERROR
 
 __all__ = [
-    "CommSignalBase",
+    "CommBase",
     "CommSubsystem",
-    "ModbusAdapter",
-    "WebSocketAdapter",
-    "WebSocketServerAdapter",
+    "ModbusProtocol",
+    "WebSocketProtocol",
+    "WSServerProtocol",
 ]

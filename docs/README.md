@@ -49,6 +49,7 @@
 
 ## Release Notes
 
+- 0.5.2 — comm 命名收敛：`CommSignalBase` → `CommBase`；`*Adapter` → `*Protocol`（直接 break）；详见 [migration-0.5.md](migration-0.5.md)
 - 0.5.1 — opencv-python-headless → opencv-python（cv2.imshow 现在能直接用）
 - 0.5.0 — BT Clock + Subsystem 全面登场，退役 WorkflowEngine / SideTask；见 [migration-0.5.md](migration-0.5.md)
 - [0.4.3 - Perception Runtime Milestone](release-notes-0.4.3.md)
