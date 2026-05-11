@@ -14,7 +14,7 @@
 
 **上手**：
 1. [Getting Started](getting-started.md) — 入门路径
-2. [EVO-006: BT Clock + Subsystem 模型](evo/006-bt-clock-and-subsystem.md) — **最重要的单一文档**，定义了今天的 AutoWeaver
+2. [EVO-007: BT + Worker + Task 三层模型](evo/007-bt-worker-task.md) — **最重要的单一文档**，定义了今天的 AutoWeaver
 3. [Architecture](architecture.md) — 层次划分
 
 **深入**：
@@ -37,7 +37,7 @@
 
 ## Reading Strategy
 
-- 第一次读 autoweaver：**从 Getting Started 开始，然后读 EVO-006 至少一次**。其他都是细节。
+- 第一次读 autoweaver：**从 Getting Started 开始，然后读 EVO-007 至少一次**。其他都是细节。
 - 想理解某个具体模块的契约：去 `src/autoweaver/<module>/` 看 class docstring + EVO 文档对照。
 - 想理解"为什么这么设计"：EVO 系列按时间顺序读就是设计演进史。
 
@@ -49,6 +49,7 @@
 
 ## Release Notes
 
+- 0.6.0 — BT 升级为唯一主动调度方；Subsystem 改名 Worker；Task 明确为 Worker 内部素材；引入 request_id 协议。详见 [EVO-007](evo/007-bt-worker-task.md) 和 [migration-0.6.md](migration-0.6.md)
 - 0.5.2 — comm 命名收敛：`CommSignalBase` → `CommBase`；`*Adapter` → `*Protocol`（直接 break）；详见 [migration-0.5.md](migration-0.5.md)
 - 0.5.1 — opencv-python-headless → opencv-python（cv2.imshow 现在能直接用）
 - 0.5.0 — BT Clock + Subsystem 全面登场，退役 WorkflowEngine / SideTask；见 [migration-0.5.md](migration-0.5.md)

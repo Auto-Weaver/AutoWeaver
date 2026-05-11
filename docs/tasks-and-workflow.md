@@ -19,5 +19,6 @@ Task 协议和 Workflow 层在 0.5.0 被 BTClock + Subsystem 模型取代。
 详见：
 
 - [architecture.md](architecture.md)
-- [EVO-006: BT 全局时钟与 Subsystem 模型](evo/006-bt-clock-and-subsystem.md)
+- [EVO-007: BT + Worker + Task 三层模型](evo/007-bt-worker-task.md)
+- [EVO-006（已废弃）](evo/006-superseded-bt-clock-and-subsystem.md)
 - [migration-0.5.md](migration-0.5.md)

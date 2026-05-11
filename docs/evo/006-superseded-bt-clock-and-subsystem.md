@@ -1,5 +1,15 @@
 # EVO-006: BT 全局时钟与 Subsystem 模型
 
+> ⚠️ **已被 [EVO-007](007-bt-worker-task.md) 取代（2026-05-11）**
+>
+> 本文描述了 0.5.0 引入 BT Clock + Subsystem 模型时的设计意图。其中两个核心假设已在 EVO-007 中被翻转：
+> - "Subsystem 在每个 tick 主动干活" → Worker 改为被动响应 BT 树的 note
+> - "BT 树是 Subsystem 之间的可选编排工具" → BT 树升级为唯一的主动调度方
+>
+> 此外 0.6.0 引入了名词变化：`Subsystem` → `Worker`、`attach_subsystem` → `attach_worker`、Task 仍保留但明确为 Worker 内部协作素材。
+>
+> **此文档保留作为历史参考**——它准确反映了 0.5.x 时的设计推理。新读者请直接读 EVO-007；只有想理解"为什么当时这么做、又为什么后来翻转"的人才需要读这份。
+
 日期：2026-05-08
 
 前置文档：[EVO-001: Motion Engine](001-motion-engine.md)、[EVO-004: BT Engine 详细设计](004-bt-engine.md)、[EVO-005: Subsystem——BT 与外部世界的对接](005-bt-world-bridge.md)

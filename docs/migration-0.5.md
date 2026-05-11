@@ -2,7 +2,9 @@
 
 日期：2026-05-08
 
-0.5.0 是一次**颠覆性重构**，对应 [EVO-006](evo/006-bt-clock-and-subsystem.md) 引入的 BT 全局时钟 + Subsystem 模型。本指南列出每一项 break 和对应的新写法，按子系统分组。
+0.5.0 是一次**颠覆性重构**，对应 [EVO-006（已废弃）](evo/006-superseded-bt-clock-and-subsystem.md) 引入的 BT 全局时钟 + Subsystem 模型。本指南列出每一项 break 和对应的新写法，按子系统分组。
+
+> **后续演进**：EVO-006 已被 [EVO-007](evo/007-bt-worker-task.md) 取代（0.6.0）——Subsystem 改名为 Worker，BT 树升级为唯一主动调度方。本文档反映 0.4.x → 0.5.0 的迁移步骤；从 0.5.x 迁到 0.6.0 见 [migration-0.6.md](migration-0.6.md)。
 
 > **0.5.1 补丁（2026-05-09）**：把 `opencv-python-headless` 换成 `opencv-python`——headless 阻挡业务侧调 `cv2.imshow`。业务层无需改代码。
 

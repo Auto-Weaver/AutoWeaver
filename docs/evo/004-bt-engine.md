@@ -4,7 +4,7 @@
 最近修订：2026-05-08（EVO-006 影响）
 
 前置文档：[EVO-001: Motion Engine](001-motion-engine.md)、[EVO-002: Motion Stack 分层架构](002-motion-stack.md)、[EVO-003: Rust Motion Runtime](003-motion-runtime.md)
-后续修订：[EVO-006: BT 全局时钟与 Subsystem 模型](006-bt-clock-and-subsystem.md)
+后续修订：[EVO-006: BT 全局时钟与 Subsystem 模型（已废弃，被 EVO-007 取代）](006-superseded-bt-clock-and-subsystem.md)、[EVO-007: BT + Worker + Task 三层模型](007-bt-worker-task.md)
 
 ## 修订记录
 

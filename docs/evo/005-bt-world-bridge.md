@@ -3,7 +3,7 @@
 日期：2026-04-15
 最近修订：2026-05-08（EVO-006 重写）
 
-前置文档：[EVO-004: BT Engine 详细设计](004-bt-engine.md)、[EVO-006: BT 全局时钟与 Subsystem 模型](006-bt-clock-and-subsystem.md)
+前置文档：[EVO-004: BT Engine 详细设计](004-bt-engine.md)、[EVO-006: BT 全局时钟与 Subsystem 模型（已废弃，被 EVO-007 取代）](006-superseded-bt-clock-and-subsystem.md)
 
 ## 修订记录
 

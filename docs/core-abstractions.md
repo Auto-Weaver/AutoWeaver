@@ -13,4 +13,4 @@
 旧文档里的"四个核心抽象"（Pipeline / Task / Workflow / Event）在新模型下：
 Pipeline 不变；Task 降为 Subsystem 内部装配；Workflow 退役（BT 树承担）；Event 退到 Subsystem 内部（跨 Subsystem 走 WorldBoard）。
 
-详见 [architecture.md](architecture.md) 和 [EVO-006](evo/006-bt-clock-and-subsystem.md)。
+详见 [architecture.md](architecture.md) 和 [EVO-007](evo/007-bt-worker-task.md)。

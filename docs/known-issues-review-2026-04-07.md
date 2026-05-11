@@ -5,7 +5,7 @@
 >
 > **2026-05-08 修订**：本文档原列 P0-1（`WorkflowEngine` 没驱动 Task）、P0-2（comm side-task 生命周期）、P1-5（文档与实现漂移）、P2-6（接口仍是草图）。这几条都已在 EVO-006 新模型下被根本性消解——`WorkflowEngine` 主循环退役、`SideTask` 概念被 Subsystem 吃掉、Task 重新定位为 Subsystem 内部装配组件。已删除。
 >
-> 新模型见 `docs/evo/006-bt-clock-and-subsystem.md`。剩余条目（版本漂移、测试缺失）和架构无关、仍然有效。
+> 新模型见 `docs/evo/006-superseded-bt-clock-and-subsystem.md`（已被 0.6.0 的 EVO-007 进一步取代）。剩余条目（版本漂移、测试缺失）和架构无关、仍然有效。
 
 ## 目的
 

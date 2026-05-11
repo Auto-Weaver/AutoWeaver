@@ -1,8 +1,9 @@
 # Architecture
 
-> 面向 0.5.0+。EVO-006 的 BT Clock + Subsystem 模型为基线。
+> 面向 0.6.0+。EVO-007 的 BT + Worker + Task 三层模型为基线。
+> 0.5.x 时（EVO-006）的描述见 [EVO-006（已废弃）](evo/006-superseded-bt-clock-and-subsystem.md)——核心翻转点是 Subsystem → Worker、BT 树从"可选编排"升级到"唯一主动调度方"。本文档其余部分仍按 0.5.x 措辞，迁移到 0.6.0 时将再次校正。
 
-AutoWeaver 是一个工业视觉系统的编排运行时。核心命题是：**BT tick 是整个系统唯一的节拍源，所有有时序行为的组件都是被节拍唤醒的被动 Subsystem**。
+AutoWeaver 是一个工业视觉系统的编排运行时。核心命题是：**BT 树是系统唯一的主动调度方，所有外部世界的对接者（Worker）都是被 BT 通过 note 唤醒的被动单元**。
 
 ## 整体架构
 
@@ -62,8 +63,9 @@ autoweaver 定义"抽象如何协作"，不定义"业务做什么"。
 
 ## 进一步阅读
 
-- [EVO-006: BT 全局时钟与 Subsystem 模型](evo/006-bt-clock-and-subsystem.md) — **本架构的主源文档**
-- [EVO-005: Subsystem 对接 BT 的细节](evo/005-bt-world-bridge.md) — note 模式、双 Board
+- [EVO-007: BT + Worker + Task 三层模型](evo/007-bt-worker-task.md) — **本架构的主源文档**
+- [EVO-006（已废弃）](evo/006-superseded-bt-clock-and-subsystem.md) — 0.5.x 时的设计意图，已被 07 取代
+- [EVO-005: Subsystem 对接 BT 的细节](evo/005-bt-world-bridge.md) — note 模式、双 Board（0.6.0 起 Subsystem → Worker，其它仍适用）
 - [EVO-001: Motion Engine](evo/001-motion-engine.md) — 为什么 motion 不适合事件驱动
 - [EVO-004: BT Engine 详细设计](evo/004-bt-engine.md) — 节点协议 + 运算符 DSL
 - [Migration 0.5](migration-0.5.md) — 0.4 → 0.5 的具体迁移步骤
