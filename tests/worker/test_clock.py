@@ -10,14 +10,14 @@ import pytest
 from autoweaver.motion_policy.action import Action
 from autoweaver.motion_policy.nodes.node import Status, TreeNode
 from autoweaver.motion_policy.world_board import WorldBoard
-from autoweaver.subsystem.async_pool import AsyncPoolRegistry
-from autoweaver.subsystem.base import Subsystem, SubsystemState, TickContext
-from autoweaver.subsystem.clock import BTClock
+from autoweaver.worker.async_pool import AsyncPoolRegistry
+from autoweaver.worker.base import TickContext, Worker, WorkerState
+from autoweaver.worker.clock import BTClock
 
 
 # ---- Fixtures -----------------------------------------------------------
 
-class _RecordingSubsystem(Subsystem):
+class _RecordingWorker(Worker):
     def __init__(self, name: str = "rec"):
         super().__init__()
         self._n = name
@@ -75,17 +75,17 @@ class _CountingTree(TreeNode):
         return Status.RUNNING
 
 
-# ---- Subsystem lifecycle -----------------------------------------------
+# ---- Worker lifecycle --------------------------------------------------
 
 def test_attach_calls_on_attach_then_on_start():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    sub = _RecordingSubsystem()
+    worker = _RecordingWorker()
     try:
-        clock.attach_subsystem(sub)
-        assert sub.attached is True
-        assert sub.started is True
-        assert sub.lifecycle_state is SubsystemState.RUNNING
+        clock.attach_worker(worker)
+        assert worker.attached is True
+        assert worker.started is True
+        assert worker.lifecycle_state is WorkerState.RUNNING
     finally:
         clock.shutdown()
 
@@ -93,13 +93,13 @@ def test_attach_calls_on_attach_then_on_start():
 def test_detach_calls_on_stop_then_on_detach():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    sub = _RecordingSubsystem()
+    worker = _RecordingWorker()
     try:
-        clock.attach_subsystem(sub)
-        clock.detach_subsystem(sub)
-        assert sub.stopped is True
-        assert sub.detached is True
-        assert sub.lifecycle_state is SubsystemState.UNATTACHED
+        clock.attach_worker(worker)
+        clock.detach_worker(worker)
+        assert worker.stopped is True
+        assert worker.detached is True
+        assert worker.lifecycle_state is WorkerState.UNATTACHED
     finally:
         clock.shutdown()
 
@@ -107,14 +107,14 @@ def test_detach_calls_on_stop_then_on_detach():
 def test_attach_failure_marks_faulted_and_calls_on_stop():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    sub = _RecordingSubsystem()
-    sub.fail_on_start = True
+    worker = _RecordingWorker()
+    worker.fail_on_start = True
     try:
         with pytest.raises(RuntimeError, match="start failed"):
-            clock.attach_subsystem(sub)
+            clock.attach_worker(worker)
         # Even after failure, on_stop must have run for cleanup.
-        assert sub.stopped is True
-        assert sub.lifecycle_state is SubsystemState.FAULTED
+        assert worker.stopped is True
+        assert worker.lifecycle_state is WorkerState.FAULTED
     finally:
         clock.shutdown()
 
@@ -122,27 +122,27 @@ def test_attach_failure_marks_faulted_and_calls_on_stop():
 def test_double_attach_raises():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    sub = _RecordingSubsystem()
+    worker = _RecordingWorker()
     try:
-        clock.attach_subsystem(sub)
+        clock.attach_worker(worker)
         with pytest.raises(RuntimeError, match="UNATTACHED"):
-            clock.attach_subsystem(sub)
+            clock.attach_worker(worker)
     finally:
         clock.shutdown()
 
 
-# ---- tick_once: subsystem broadcast ------------------------------------
+# ---- tick_once: worker broadcast --------------------------------------
 
-def test_tick_once_broadcasts_to_running_subsystems():
+def test_tick_once_broadcasts_to_running_workers():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    sub = _RecordingSubsystem()
+    worker = _RecordingWorker()
     try:
-        clock.attach_subsystem(sub)
+        clock.attach_worker(worker)
         clock.tick_once()
         clock.tick_once()
         clock.tick_once()
-        assert sub.tick_ids == [0, 1, 2]
+        assert worker.tick_ids == [0, 1, 2]
     finally:
         clock.shutdown()
 
@@ -160,18 +160,18 @@ def test_tick_id_monotonic_across_ticks():
         clock.shutdown()
 
 
-def test_subsystem_exception_marks_faulted_and_isolates():
-    """One subsystem raising during on_tick must not affect others."""
+def test_worker_exception_marks_faulted_and_isolates():
+    """One worker raising during on_tick must not affect others."""
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    bad = _RecordingSubsystem(name="bad")
+    bad = _RecordingWorker(name="bad")
     bad.fail_on_tick = 0
-    good = _RecordingSubsystem(name="good")
+    good = _RecordingWorker(name="good")
     try:
-        clock.attach_subsystem(bad)
-        clock.attach_subsystem(good)
+        clock.attach_worker(bad)
+        clock.attach_worker(good)
         clock.tick_once()
-        assert bad.lifecycle_state is SubsystemState.FAULTED
+        assert bad.lifecycle_state is WorkerState.FAULTED
         assert good.tick_ids == [0]
 
         # Subsequent ticks: bad is no longer in RUNNING, skipped.
@@ -182,22 +182,22 @@ def test_subsystem_exception_marks_faulted_and_isolates():
         clock.shutdown()
 
 
-def test_paused_subsystem_does_not_receive_tick():
+def test_paused_worker_does_not_receive_tick():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    sub = _RecordingSubsystem()
+    worker = _RecordingWorker()
     try:
-        clock.attach_subsystem(sub)
+        clock.attach_worker(worker)
         clock.tick_once()
-        clock.pause_subsystem(sub)
+        clock.pause_worker(worker)
         clock.tick_once()
         clock.tick_once()
-        assert sub.lifecycle_state is SubsystemState.PAUSED
-        assert sub.tick_ids == [0]  # only the pre-pause tick
+        assert worker.lifecycle_state is WorkerState.PAUSED
+        assert worker.tick_ids == [0]  # only the pre-pause tick
 
-        clock.resume_subsystem(sub)
+        clock.resume_worker(worker)
         clock.tick_once()
-        assert sub.tick_ids == [0, 3]
+        assert worker.tick_ids == [0, 3]
     finally:
         clock.shutdown()
 
@@ -264,12 +264,12 @@ def test_detach_tree_halts_and_skips_in_subsequent_ticks():
 
 # ---- tick_once: ordering -----------------------------------------------
 
-def test_tick_order_drains_then_delivers_then_trees_then_subsystems():
+def test_tick_order_drains_then_delivers_then_trees_then_workers():
     """The four phases must run in order:
         1. drain on_done queue
         2. deliver_notes (pending notes from previous tick)
         3. tick all trees
-        4. broadcast tick to subsystems"""
+        4. broadcast tick to workers"""
     board = WorldBoard()
     clock = BTClock(world_board=board)
     events: list[str] = []
@@ -283,7 +283,7 @@ def test_tick_order_drains_then_delivers_then_trees_then_subsystems():
             events.append("tree_tick")
             return Status.RUNNING
 
-    class _OrderingSub(Subsystem):
+    class _OrderingWorker(Worker):
         @property
         def name(self) -> str:
             return "order"
@@ -294,27 +294,27 @@ def test_tick_order_drains_then_delivers_then_trees_then_subsystems():
             )
 
         def on_tick(self, ctx: TickContext) -> None:
-            events.append("sub_tick")
+            events.append("worker_tick")
 
-    sub = _OrderingSub()
+    worker = _OrderingWorker()
     action = Action(tree=_OrderingTree())
     try:
         clock.attach_tree(action)
-        clock.attach_subsystem(sub)
+        clock.attach_worker(worker)
 
         # Pass a note before the first tick — it must arrive before the
-        # tree tick and the sub tick.
+        # tree tick and the worker tick.
         board.pass_note("order", "ping", {}, sender="test")
         clock.tick_once()
 
-        assert events == ["note_received", "tree_tick", "sub_tick"]
+        assert events == ["note_received", "tree_tick", "worker_tick"]
     finally:
         clock.shutdown()
 
 
 def test_pass_note_during_tree_tick_delivers_on_next_tick():
     """A note passed during a tree's tick is held until the *next* tick's
-    deliver phase. This is the half-tick delay called out in EVO-006."""
+    deliver phase. This is the half-tick delay called out in EVO-007."""
     board = WorldBoard()
     clock = BTClock(world_board=board)
     received: list[int] = []
@@ -334,7 +334,7 @@ def test_pass_note_during_tree_tick_delivers_on_next_tick():
             board.pass_note("rcv", "ping", {"i": self.sent}, sender="tree")
             return Status.RUNNING
 
-    class _Receiver(Subsystem):
+    class _Receiver(Worker):
         @property
         def name(self) -> str:
             return "rcv"
@@ -342,13 +342,10 @@ def test_pass_note_during_tree_tick_delivers_on_next_tick():
         def on_attach(self) -> None:
             self.accept_notes("ping", dict, received.append)
 
-        def on_tick(self, ctx: TickContext) -> None:
-            pass
-
     action = Action(tree=_Sender())
-    sub = _Receiver()
+    worker = _Receiver()
     try:
-        clock.attach_subsystem(sub)
+        clock.attach_worker(worker)
         clock.attach_tree(action)
         # Tick 1: tree sends note #1; received is empty (no prior tick to deliver).
         clock.tick_once()
@@ -371,31 +368,102 @@ def test_run_async_callback_fires_on_subsequent_tick():
     clock = BTClock(world_board=board)
     results: list[int] = []
 
-    class _Worker(Subsystem):
+    class _AsyncWorker(Worker):
         def __init__(self):
             super().__init__()
             self.kicked = False
 
         @property
         def name(self) -> str:
-            return "worker"
+            return "asyncw"
 
         def on_tick(self, ctx: TickContext) -> None:
             if not self.kicked:
                 self.kicked = True
                 self.run_async(lambda: 7, on_done=results.append)
 
-    sub = _Worker()
+    worker = _AsyncWorker()
     try:
-        clock.attach_subsystem(sub)
+        clock.attach_worker(worker)
 
-        # Tick 1 kicks off work; worker runs on a thread.
+        # Tick 1 kicks off work; worker pool runs it on a thread.
         clock.tick_once()
-        # Wait for worker to complete and queue on_done.
+        # Wait for the work to complete and queue on_done.
         time.sleep(0.05)
         # Tick 2 should see results delivered via drain (phase 1).
         clock.tick_once()
         assert results == [7]
+    finally:
+        clock.shutdown()
+
+
+# ---- request_id protocol ----------------------------------------------
+
+def test_request_id_tracked_in_state():
+    """Framework auto-maintains last_request_id / last_completed_id."""
+    board = WorldBoard()
+    clock = BTClock(world_board=board)
+    received: list[dict] = []
+
+    class _TrackedWorker(Worker):
+        @property
+        def name(self) -> str:
+            return "tracked"
+
+        def on_attach(self) -> None:
+            self.accept_notes("do", dict, received.append)
+
+    worker = _TrackedWorker()
+    try:
+        clock.attach_worker(worker)
+        # Sentinels declared at attach.
+        assert board.read_state("tracked.last_request_id") == 0
+        assert board.read_state("tracked.last_completed_id") == 0
+
+        # Pass two notes with explicit request_id.
+        board.pass_note(
+            "tracked", "do", {"__request_id__": 5, "v": "a"}, sender="bt"
+        )
+        clock.tick_once()
+        assert received == [{"v": "a"}]
+        assert board.read_state("tracked.last_request_id") == 5
+        assert board.read_state("tracked.last_completed_id") == 5
+
+        board.pass_note(
+            "tracked", "do", {"__request_id__": 8, "v": "b"}, sender="bt"
+        )
+        clock.tick_once()
+        assert board.read_state("tracked.last_request_id") == 8
+        assert board.read_state("tracked.last_completed_id") == 8
+    finally:
+        clock.shutdown()
+
+
+def test_note_handler_exception_marks_worker_faulted():
+    """Handler exceptions are caught; worker transitions to FAULTED."""
+    board = WorldBoard()
+    clock = BTClock(world_board=board)
+
+    class _BoomWorker(Worker):
+        @property
+        def name(self) -> str:
+            return "boom"
+
+        def on_attach(self) -> None:
+            self.accept_notes("crash", dict, self._on_crash)
+
+        def _on_crash(self, payload: dict) -> None:
+            raise RuntimeError("handler exploded")
+
+    worker = _BoomWorker()
+    try:
+        clock.attach_worker(worker)
+        board.pass_note("boom", "crash", {"__request_id__": 1}, sender="bt")
+        clock.tick_once()
+        assert worker.lifecycle_state is WorkerState.FAULTED
+        # last_error should be populated; last_completed_id NOT advanced.
+        assert "handler exploded" in board.read_state("boom.last_error")
+        assert board.read_state("boom.last_completed_id") == 0
     finally:
         clock.shutdown()
 
@@ -405,9 +473,9 @@ def test_run_async_callback_fires_on_subsequent_tick():
 def test_run_blocks_until_stop():
     board = WorldBoard()
     clock = BTClock(world_board=board, hz=200)
-    sub = _RecordingSubsystem()
+    worker = _RecordingWorker()
     try:
-        clock.attach_subsystem(sub)
+        clock.attach_worker(worker)
 
         thread = threading.Thread(target=clock.run, daemon=True)
         thread.start()
@@ -416,24 +484,24 @@ def test_run_blocks_until_stop():
         thread.join(timeout=1.0)
         assert not thread.is_alive()
         # At ~200 Hz over 50ms we expect a handful of ticks.
-        assert len(sub.tick_ids) >= 2
+        assert len(worker.tick_ids) >= 2
     finally:
         clock.shutdown()
 
 
 # ---- Introspection -----------------------------------------------------
 
-def test_attached_subsystems_lists_only_attached():
+def test_attached_workers_lists_only_attached():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    a = _RecordingSubsystem(name="a")
-    b = _RecordingSubsystem(name="b")
+    a = _RecordingWorker(name="a")
+    b = _RecordingWorker(name="b")
     try:
-        clock.attach_subsystem(a)
-        clock.attach_subsystem(b)
-        assert sorted(clock.attached_subsystems()) == ["a", "b"]
-        clock.detach_subsystem(a)
-        assert clock.attached_subsystems() == ["b"]
+        clock.attach_worker(a)
+        clock.attach_worker(b)
+        assert sorted(clock.attached_workers()) == ["a", "b"]
+        clock.detach_worker(a)
+        assert clock.attached_workers() == ["b"]
     finally:
         clock.shutdown()
 

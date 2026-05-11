@@ -108,9 +108,13 @@ wait_for("perception.last_completed_id >= my_request_id")
 
 框架提供 `notify_and_wait("perception", "snapshot", payload)` 复合节点封装这两步——绝大多数业务用复合节点；分开用的场景是"派完活先去做别的，过会儿回来等"。
 
+> **0.6.0 落地状态**：复合节点 `notify_and_wait` 尚未实现。当前 BT 代码需要手动组合 `NotifyLeaf` + `WaitFor`，并在 `NotifyLeaf` 的 payload 中显式塞入 `{"__request_id__": <id>}`——框架自动从 payload 中弹出该字段并维护 `last_completed_id`。复合节点会在后续 patch 里加上。
+
 ### request_id 由谁生成
 
 框架在 `pass_note` 入口自动分配。BT 节点不需要手动管 id。手动指定的场景：跨流程关联（比如要把"上次扫描的结果"和"这次目标"关联起来），由业务自己造 id。
+
+> **0.6.0 落地状态**：自动分配尚未集成进 `WorldBoard.pass_note` 入口；当前要求 BT 节点在 payload dict 里显式塞 `__request_id__`，可借助 `autoweaver.next_request_id()` 生成。复合节点 `notify_and_wait` 上线后会接管这件事。
 
 ## Task：Worker 内部协作素材
 

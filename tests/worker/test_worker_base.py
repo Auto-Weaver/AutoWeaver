@@ -1,4 +1,4 @@
-"""Tests for Subsystem base class — convenience API and lifecycle helpers.
+"""Tests for Worker base class — convenience API and lifecycle helpers.
 
 Note: full lifecycle integration with BTClock is tested in test_clock.py.
 This module focuses on the subclass-facing API in isolation.
@@ -11,19 +11,19 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 
 from autoweaver.motion_policy.world_board import WorldBoard
-from autoweaver.subsystem.async_pool import AsyncPool
-from autoweaver.subsystem.base import (
+from autoweaver.worker.async_pool import AsyncPool
+from autoweaver.worker.base import (
     AsyncPoolConfig,
-    Subsystem,
-    SubsystemState,
     TickContext,
+    Worker,
+    WorkerState,
 )
 
 
 # ---- Fixtures -----------------------------------------------------------
 
-class _MinimalSubsystem(Subsystem):
-    """Bare-bones concrete Subsystem for protocol tests."""
+class _MinimalWorker(Worker):
+    """Bare-bones concrete Worker for protocol tests."""
 
     def __init__(self, name: str = "demo"):
         super().__init__()
@@ -38,27 +38,27 @@ class _MinimalSubsystem(Subsystem):
         self.tick_count += 1
 
 
-def _wire_subsystem(sub: Subsystem, board: WorldBoard) -> AsyncPool:
+def _wire_worker(worker: Worker, board: WorldBoard) -> AsyncPool:
     """Inject board + a minimal pool the way BTClock would."""
     pool = AsyncPool(
         ThreadPoolExecutor(max_workers=1, thread_name_prefix="t"),
         owns_executor=True,
     )
-    sub._set_board(board)
-    sub._set_async_pool(pool)
+    worker._set_board(board)
+    worker._set_async_pool(pool)
     return pool
 
 
 # ---- Initial state ------------------------------------------------------
 
 def test_initial_state_is_unattached():
-    sub = _MinimalSubsystem()
-    assert sub.lifecycle_state is SubsystemState.UNATTACHED
+    worker = _MinimalWorker()
+    assert worker.lifecycle_state is WorkerState.UNATTACHED
 
 
 def test_default_async_pool_config_is_shared():
-    sub = _MinimalSubsystem()
-    assert sub.async_pool_config.mode == "shared"
+    worker = _MinimalWorker()
+    assert worker.async_pool_config.mode == "shared"
 
 
 # ---- TickContext --------------------------------------------------------
@@ -80,11 +80,11 @@ def test_tick_context_is_immutable():
 
 def test_declare_and_write_state_under_own_namespace():
     board = WorldBoard()
-    sub = _MinimalSubsystem(name="demo")
-    pool = _wire_subsystem(sub, board)
+    worker = _MinimalWorker(name="demo")
+    pool = _wire_worker(worker, board)
     try:
-        sub.declare_state("demo.x", int)
-        sub.write_state("demo.x", 42)
+        worker.declare_state("demo.x", int)
+        worker.write_state("demo.x", 42)
         assert board.read_state("demo.x") == 42
     finally:
         pool.close()
@@ -92,37 +92,37 @@ def test_declare_and_write_state_under_own_namespace():
 
 def test_declare_state_outside_own_namespace_raises():
     board = WorldBoard()
-    sub = _MinimalSubsystem(name="demo")
-    pool = _wire_subsystem(sub, board)
+    worker = _MinimalWorker(name="demo")
+    pool = _wire_worker(worker, board)
     try:
         with pytest.raises(ValueError, match="demo"):
-            sub.declare_state("foreign.x", int)
+            worker.declare_state("foreign.x", int)
     finally:
         pool.close()
 
 
 def test_write_state_outside_own_namespace_raises():
     board = WorldBoard()
-    sub = _MinimalSubsystem(name="demo")
-    pool = _wire_subsystem(sub, board)
+    worker = _MinimalWorker(name="demo")
+    pool = _wire_worker(worker, board)
     try:
         with pytest.raises(ValueError, match="demo"):
-            sub.write_state("foreign.x", 1)
+            worker.write_state("foreign.x", 1)
     finally:
         pool.close()
 
 
 def test_read_state_can_cross_namespaces():
-    """Reading is unrestricted — any subsystem can read any state."""
+    """Reading is unrestricted — any worker can read any state."""
     board = WorldBoard()
     board.declare_state("other.value", int, writer="other")
     board.post_state("other.value", 100, writer="other")
 
-    sub = _MinimalSubsystem(name="demo")
-    pool = _wire_subsystem(sub, board)
+    worker = _MinimalWorker(name="demo")
+    pool = _wire_worker(worker, board)
     try:
-        assert sub.read_state("other.value") == 100
-        assert sub.read_state("nothing", default="x") == "x"
+        assert worker.read_state("other.value") == 100
+        assert worker.read_state("nothing", default="x") == "x"
     finally:
         pool.close()
 
@@ -131,11 +131,11 @@ def test_read_state_can_cross_namespaces():
 
 def test_accept_notes_registers_under_own_namespace():
     board = WorldBoard()
-    sub = _MinimalSubsystem(name="demo")
-    pool = _wire_subsystem(sub, board)
+    worker = _MinimalWorker(name="demo")
+    pool = _wire_worker(worker, board)
     try:
         received = []
-        sub.accept_notes("hello", dict, received.append)
+        worker.accept_notes("hello", dict, received.append)
 
         # Anyone can pass a note addressed to (demo, hello).
         board.pass_note("demo", "hello", {"x": 1}, sender="bt")
@@ -148,17 +148,17 @@ def test_accept_notes_registers_under_own_namespace():
 # ---- Convenience API: run_async ----------------------------------------
 
 def test_run_async_invokes_fn_in_worker_and_on_done_via_drain():
-    """Worker runs immediately; on_done is queued for the next drain."""
+    """Worker pool runs fn immediately; on_done is queued for the next drain."""
     board = WorldBoard()
-    sub = _MinimalSubsystem(name="demo")
-    pool = _wire_subsystem(sub, board)
+    worker = _MinimalWorker(name="demo")
+    pool = _wire_worker(worker, board)
     try:
         results = []
 
         def work():
             return 5
 
-        sub.run_async(work, on_done=results.append)
+        worker.run_async(work, on_done=results.append)
 
         # Wait for the worker to finish, then drain.
         import time
@@ -174,15 +174,15 @@ def test_run_async_invokes_fn_in_worker_and_on_done_via_drain():
 
 def test_declare_state_without_board_raises():
     """Calling subclass APIs before BTClock injection should fail loudly."""
-    sub = _MinimalSubsystem(name="demo")
+    worker = _MinimalWorker(name="demo")
     with pytest.raises(AssertionError):
-        sub.declare_state("demo.x", int)
+        worker.declare_state("demo.x", int)
 
 
 def test_run_async_without_pool_raises():
-    sub = _MinimalSubsystem(name="demo")
+    worker = _MinimalWorker(name="demo")
     with pytest.raises(AssertionError):
-        sub.run_async(lambda: 1)
+        worker.run_async(lambda: 1)
 
 
 # ---- AsyncPoolConfig ----------------------------------------------------

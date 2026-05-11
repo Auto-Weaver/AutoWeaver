@@ -4,7 +4,7 @@ Layering:
 
     CommBase                ← protocol contract (base.py)
     ModbusProtocol / ...    ← concrete protocol mechanics
-    CommSubsystem           ← Subsystem template that wraps a protocol
+    CommWorker              ← Worker template that wraps a protocol
 
 Application code names connections by peer (e.g. ``Nova5Link``,
 ``PlcLink``) and gives messages business meaning, while picking
@@ -13,7 +13,7 @@ which protocol to use.
 
 from .base import CommBase
 from .modbus import ModbusProtocol
-from .subsystem import CommSubsystem
+from .worker import CommWorker
 
 try:
     from .websocket import WebSocketProtocol, WSServerProtocol
@@ -42,7 +42,7 @@ except ModuleNotFoundError as exc:
 
 __all__ = [
     "CommBase",
-    "CommSubsystem",
+    "CommWorker",
     "ModbusProtocol",
     "WebSocketProtocol",
     "WSServerProtocol",

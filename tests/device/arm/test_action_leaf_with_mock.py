@@ -18,7 +18,7 @@ from autoweaver.motion_policy.action import Action
 from autoweaver.motion_policy.nodes.leaf.action_leaf import ActionLeaf
 from autoweaver.motion_policy.nodes.node import Status
 from autoweaver.motion_policy.world_board import WorldBoard
-from autoweaver.subsystem.clock import BTClock
+from autoweaver.worker.clock import BTClock
 
 
 def _close(a: Sequence[float], b: Sequence[float], tol: float = 1e-6) -> bool:

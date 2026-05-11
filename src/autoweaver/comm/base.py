@@ -11,7 +11,7 @@ Two-layer reading guide:
 
     Layer 1: ``CommBase``                 — protocol contract (this file)
     Layer 2: ``ModbusProtocol`` / ...     — concrete protocol mechanics
-    Layer 3: ``CommSubsystem``            — Subsystem template that
+    Layer 3: ``CommWorker``               — Worker template that
                                             adopts a protocol and
                                             integrates it into BTClock
     Layer 4: application code             — assigns a protocol to a

@@ -3,7 +3,7 @@
 from .camera import CameraBase, CameraConfig, DahengCamera, MockCamera
 from .comm import (
     CommBase,
-    CommSubsystem,
+    CommWorker,
     ModbusProtocol,
     WebSocketProtocol,
     WSServerProtocol,
@@ -32,30 +32,32 @@ from .pipeline import (
 )
 from .reactive import EventBus, EventHandler, StateMachine, Transition
 from .sensor import Sensor
-from .subsystem import (
+from .worker import (
     AsyncPool,
     AsyncPoolConfig,
     AsyncPoolRegistry,
     BTClock,
-    Subsystem,
-    SubsystemState,
     TickContext,
     TreeHandle,
+    Worker,
+    WorkerState,
+    next_request_id,
 )
 from .tasks import Task, TaskBase
 
-__version__ = "0.5.2"
+__version__ = "0.6.0"
 
 __all__ = [
-    # Subsystem framework
+    # Worker framework
     "AsyncPool",
     "AsyncPoolConfig",
     "AsyncPoolRegistry",
     "BTClock",
-    "Subsystem",
-    "SubsystemState",
     "TickContext",
     "TreeHandle",
+    "Worker",
+    "WorkerState",
+    "next_request_id",
     # BT engine
     "Action",
     "ActionResult",
@@ -73,7 +75,7 @@ __all__ = [
     "MockCamera",
     # Comm
     "CommBase",
-    "CommSubsystem",
+    "CommWorker",
     "ModbusProtocol",
     "WebSocketProtocol",
     "WSServerProtocol",

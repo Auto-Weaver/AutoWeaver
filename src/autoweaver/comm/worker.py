@@ -1,9 +1,9 @@
-"""CommSubsystem — Subsystem template for protocol-driven communication.
+"""CommWorker — Worker base for protocol-driven communication.
 
-Wraps a ``CommBase`` protocol with the standard Subsystem
-lifecycle. The protocol's polling loop runs as a background thread
+Wraps a ``CommBase`` protocol with the standard Worker lifecycle. The
+protocol's polling loop runs as a background thread
 (``run_background``); incoming messages are handled on the worker
-thread by ``handle_message``, while subsystems that need tick-aligned
+thread by ``handle_message``, while workers that need tick-aligned
 state writes can hand off via ``run_async`` or accept_notes.
 
 This replaces the legacy ``CommSideTask`` (0.4.x), which relied on the
@@ -14,16 +14,16 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Any, Optional
+from typing import Optional
 
 from autoweaver.comm.base import CommBase
-from autoweaver.subsystem.base import Subsystem, TickContext
+from autoweaver.worker.base import TickContext, Worker
 
 logger = logging.getLogger(__name__)
 
 
-class CommSubsystem(Subsystem):
-    """Base Subsystem for protocol-driven I/O.
+class CommWorker(Worker):
+    """Base Worker for protocol-driven I/O.
 
     Subclasses provide the protocol (via constructor) and override
     ``handle_message`` to react to inbound messages. The framework runs
@@ -58,7 +58,7 @@ class CommSubsystem(Subsystem):
 
         Return a dict to send a response, or None to skip. Default no-op.
 
-        Runs on the polling thread. To mutate Subsystem state safely on
+        Runs on the polling thread. To mutate Worker state safely on
         the tick thread, dispatch via ``self.run_async`` or pass a note
         to yourself.
         """
@@ -73,7 +73,7 @@ class CommSubsystem(Subsystem):
         self._protocol.send(message)
 
     # ------------------------------------------------------------------
-    # Subsystem lifecycle integration
+    # Worker lifecycle integration
     # ------------------------------------------------------------------
 
     def on_start(self) -> None:
@@ -91,12 +91,12 @@ class CommSubsystem(Subsystem):
             self._protocol.close()
         except Exception:
             logger.exception(
-                "subsystem '%s' protocol close raised", self.name
+                "worker '%s' protocol close raised", self.name
             )
         super().on_stop()
 
     def on_tick(self, ctx: TickContext) -> None:
-        """Default no-op — comm subsystems are usually driven by the
+        """Default no-op — comm workers are usually driven by the
         polling thread, not the tick. Subclasses may override to do
         periodic tick-aligned work (heartbeats, timeout sweeps, etc.).
         """
@@ -111,7 +111,7 @@ class CommSubsystem(Subsystem):
                 self._drain_messages()
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "subsystem '%s' poll loop error: %s", self.name, exc
+                    "worker '%s' poll loop error: %s", self.name, exc
                 )
             # Use stop_event.wait so we exit promptly when set.
             stop_event.wait(self._poll_interval)
@@ -126,7 +126,7 @@ class CommSubsystem(Subsystem):
                 response = self.handle_message(message)
             except Exception:
                 logger.exception(
-                    "subsystem '%s' handle_message raised", self.name
+                    "worker '%s' handle_message raised", self.name
                 )
                 continue
             if response is not None:
@@ -134,6 +134,5 @@ class CommSubsystem(Subsystem):
                     self._protocol.send(response)
                 except Exception:
                     logger.exception(
-                        "subsystem '%s' response send raised", self.name
+                        "worker '%s' response send raised", self.name
                     )
-

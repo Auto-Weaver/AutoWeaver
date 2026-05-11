@@ -7,8 +7,8 @@ import time
 
 import pytest
 
-from autoweaver.subsystem.async_pool import AsyncPool, AsyncPoolRegistry
-from autoweaver.subsystem.base import AsyncPoolConfig
+from autoweaver.worker.async_pool import AsyncPool, AsyncPoolRegistry
+from autoweaver.worker.base import AsyncPoolConfig
 
 
 # ---- Helpers ------------------------------------------------------------

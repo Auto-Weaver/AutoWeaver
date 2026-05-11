@@ -1,8 +1,8 @@
-"""Worker pool for Subsystem.run_async — see EVO-006.
+"""Worker pool for Worker.run_async — see EVO-007.
 
 Slow work runs in worker threads; the on_done callback is queued and
 fires on the BTClock's main thread at the start of the next tick. This
-keeps state mutation aligned to tick boundaries — subsystems never have
+keeps state mutation aligned to tick boundaries — workers never have
 to think about concurrency in their on_done callbacks.
 """
 
@@ -26,21 +26,21 @@ class _PendingCallback:
 
     on_done: Callable[[Any], None]
     result: Any
-    subsystem_name: str
+    worker_name: str
 
 
 class AsyncPool:
-    """Subsystem-facing facade over a thread pool + main-thread callback queue.
+    """Worker-facing facade over a thread pool + main-thread callback queue.
 
-    Each Subsystem holds an ``AsyncPool`` (shared or dedicated). Work
-    submitted via ``submit(fn, on_done)`` runs in a worker; on completion
-    the framework appends ``(on_done, result)`` to ``_pending``. BTClock
-    drains ``_pending`` at the start of each tick — invoking each
-    callback on the main thread.
+    Each Worker holds an ``AsyncPool`` (shared or dedicated). Work
+    submitted via ``submit(fn, on_done)`` runs in a worker thread; on
+    completion the framework appends ``(on_done, result)`` to
+    ``_pending``. BTClock drains ``_pending`` at the start of each
+    tick — invoking each callback on the main thread.
 
     The two phases (worker run, main-thread callback) are decoupled so
-    that subsystems can do GPU/IO work without blocking ticks, while
-    still mutating state in a tick-safe way.
+    that workers can do GPU/IO work without blocking ticks, while still
+    mutating state in a tick-safe way.
     """
 
     def __init__(self, executor: ThreadPoolExecutor, owns_executor: bool):
@@ -57,7 +57,7 @@ class AsyncPool:
         on_done: Callable[[T], None] | None = None,
         name: str = "",
     ) -> None:
-        """Run ``fn`` in a worker; queue ``on_done(result)`` for next tick."""
+        """Run ``fn`` in a worker thread; queue ``on_done(result)`` for next tick."""
         if self._closed:
             raise RuntimeError("AsyncPool is closed")
 
@@ -66,14 +66,14 @@ class AsyncPool:
                 result = fn()
             except BaseException:
                 logger.exception(
-                    "subsystem '%s' run_async fn raised; on_done suppressed",
+                    "worker '%s' run_async fn raised; on_done suppressed",
                     name,
                 )
                 return
             if on_done is not None:
                 self._pending.put(
                     _PendingCallback(
-                        on_done=on_done, result=result, subsystem_name=name,
+                        on_done=on_done, result=result, worker_name=name,
                     )
                 )
 
@@ -95,8 +95,8 @@ class AsyncPool:
                 pending.on_done(pending.result)
             except BaseException:
                 logger.exception(
-                    "subsystem '%s' on_done callback raised; ignored",
-                    pending.subsystem_name,
+                    "worker '%s' on_done callback raised; ignored",
+                    pending.worker_name,
                 )
 
     def close(self) -> None:
@@ -109,7 +109,7 @@ class AsyncPool:
 class AsyncPoolRegistry:
     """Owns the shared executor and any dedicated pools.
 
-    BTClock holds one of these. Subsystems are handed an ``AsyncPool``
+    BTClock holds one of these. Workers are handed an ``AsyncPool``
     facade pointing at either the shared executor or a freshly-created
     dedicated one based on their ``async_pool_config``.
 
@@ -127,7 +127,7 @@ class AsyncPoolRegistry:
         self._lock = threading.Lock()
 
     def make_pool(self, config) -> AsyncPool:
-        """Create an AsyncPool for one Subsystem according to its config."""
+        """Create an AsyncPool for one Worker according to its config."""
         if config.mode == "shared":
             pool = AsyncPool(self._shared_executor, owns_executor=False)
         elif config.mode == "dedicated":

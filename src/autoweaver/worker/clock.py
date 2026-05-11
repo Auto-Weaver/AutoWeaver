@@ -1,4 +1,4 @@
-"""BT Clock — the system's single tick source. See EVO-006."""
+"""BT Clock — the system's single tick source. See EVO-007."""
 
 from __future__ import annotations
 
@@ -8,8 +8,8 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from autoweaver.subsystem.async_pool import AsyncPoolRegistry
-from autoweaver.subsystem.base import Subsystem, SubsystemState, TickContext
+from autoweaver.worker.async_pool import AsyncPoolRegistry
+from autoweaver.worker.base import TickContext, Worker, WorkerState
 
 if TYPE_CHECKING:
     from autoweaver.motion_policy.action import Action
@@ -31,14 +31,14 @@ class BTClock:
 
     One BTClock per process. It drives a fixed-frequency loop that:
 
-      1. Drains queued worker callbacks (Subsystem.run_async on_done).
+      1. Drains queued worker callbacks (Worker.run_async on_done).
       2. Drains pending notes on the WorldBoard (deliver_notes).
       3. Ticks all attached BT trees in attachment order.
-      4. Broadcasts on_tick to all RUNNING Subsystems in attachment order.
+      4. Broadcasts on_tick to all RUNNING Workers in attachment order.
 
-    Anything time-sensitive must hook into this loop — Subsystems may
-    not maintain their own heartbeats. BT trees and Subsystems can be
-    attached and detached at runtime.
+    Anything time-sensitive must hook into this loop — Workers may not
+    maintain their own heartbeats. BT trees and Workers can be attached
+    and detached at runtime.
 
     Threading:
       - ``run()`` blocks the calling thread; everything in the loop above
@@ -50,7 +50,7 @@ class BTClock:
 
     Testing:
       - ``tick_once()`` runs one tick synchronously without sleeping —
-        the standard way to drive subsystems in tests.
+        the standard way to drive workers in tests.
     """
 
     DEFAULT_HZ = 50
@@ -66,7 +66,7 @@ class BTClock:
         self._async_pool_registry = async_pool or AsyncPoolRegistry()
 
         self._trees: list[TreeHandle] = []
-        self._subsystems: list[Subsystem] = []
+        self._workers: list[Worker] = []
         self._lock = threading.Lock()
 
         self._stopped = False
@@ -101,54 +101,56 @@ class BTClock:
             logger.exception("tree '%s' halt raised during detach", handle.name)
 
     # ------------------------------------------------------------------
-    # Subsystem attach / detach
+    # Worker attach / detach
     # ------------------------------------------------------------------
 
-    def attach_subsystem(self, sub: Subsystem) -> None:
-        """Attach a Subsystem to the clock.
+    def attach_worker(self, worker: Worker) -> None:
+        """Attach a Worker to the clock.
 
         Order:
           1. Inject board + async pool
-          2. on_attach()  — subclass declares state, accepts notes
-          3. on_start()   — subclass opens resources
-          4. Mark RUNNING; start receiving ticks on next iteration
+          2. Pre-declare framework-managed state (last_request_id, ...)
+          3. on_attach()  — subclass declares state, accepts notes
+          4. on_start()   — subclass opens resources
+          5. Mark RUNNING; start receiving ticks on next iteration
 
-        If on_attach or on_start raises, the Subsystem is marked FAULTED
+        If on_attach or on_start raises, the Worker is marked FAULTED
         and on_stop is called for cleanup. The exception propagates so the
         caller knows attach failed.
         """
-        if sub.lifecycle_state is not SubsystemState.UNATTACHED:
+        if worker.lifecycle_state is not WorkerState.UNATTACHED:
             raise RuntimeError(
-                f"Subsystem '{sub.name}' is in {sub.lifecycle_state}, "
+                f"Worker '{worker.name}' is in {worker.lifecycle_state}, "
                 "cannot attach (must be UNATTACHED)"
             )
 
-        pool = self._async_pool_registry.make_pool(sub.async_pool_config)
-        sub._set_board(self._board)
-        sub._set_async_pool(pool)
+        pool = self._async_pool_registry.make_pool(worker.async_pool_config)
+        worker._set_board(self._board)
+        worker._set_async_pool(pool)
 
         try:
-            sub.on_attach()
-            sub._transition(SubsystemState.ATTACHED)
-            sub.on_start()
+            worker._declare_framework_state()
+            worker.on_attach()
+            worker._transition(WorkerState.ATTACHED)
+            worker.on_start()
         except BaseException:
-            sub._transition(SubsystemState.FAULTED)
+            worker._transition(WorkerState.FAULTED)
             try:
-                sub.on_stop()
+                worker.on_stop()
             except BaseException:
                 logger.exception(
-                    "subsystem '%s' on_stop raised during attach failure",
-                    sub.name,
+                    "worker '%s' on_stop raised during attach failure",
+                    worker.name,
                 )
             self._async_pool_registry.remove(pool)
             raise
 
-        sub._transition(SubsystemState.RUNNING)
+        worker._transition(WorkerState.RUNNING)
         with self._lock:
-            self._subsystems.append(sub)
+            self._workers.append(worker)
 
-    def detach_subsystem(self, sub: Subsystem) -> None:
-        """Detach a Subsystem.
+    def detach_worker(self, worker: Worker) -> None:
+        """Detach a Worker.
 
         Order: stop receiving ticks → signal background threads → on_stop
         → join background threads (best-effort) → on_detach → release pool.
@@ -157,7 +159,7 @@ class BTClock:
         """
         with self._lock:
             try:
-                self._subsystems.remove(sub)
+                self._workers.remove(worker)
             except ValueError:
                 pass
 
@@ -165,57 +167,59 @@ class BTClock:
         # observe this event; daemon threads will be killed on process
         # exit if they don't, but graceful shutdown depends on the
         # contract.
-        sub._background_stop.set()
+        worker._background_stop.set()
 
         try:
-            sub.on_stop()
+            worker.on_stop()
         except BaseException:
-            logger.exception("subsystem '%s' on_stop raised during detach", sub.name)
+            logger.exception(
+                "worker '%s' on_stop raised during detach", worker.name
+            )
 
         # Best-effort join with a small timeout — if a background thread
         # ignores stop_event, log and move on.
-        for thread in sub._background_threads:
+        for thread in worker._background_threads:
             thread.join(timeout=1.0)
             if thread.is_alive():
                 logger.warning(
-                    "subsystem '%s' background thread '%s' did not exit "
+                    "worker '%s' background thread '%s' did not exit "
                     "within 1s — leaking thread",
-                    sub.name, thread.name,
+                    worker.name, thread.name,
                 )
-        sub._background_threads.clear()
+        worker._background_threads.clear()
 
-        sub._transition(SubsystemState.STOPPED)
+        worker._transition(WorkerState.STOPPED)
         try:
-            sub.on_detach()
+            worker.on_detach()
         except BaseException:
             logger.exception(
-                "subsystem '%s' on_detach raised during detach", sub.name
+                "worker '%s' on_detach raised during detach", worker.name
             )
-        sub._transition(SubsystemState.UNATTACHED)
-        # Reset the stop event so the Subsystem can be re-attached.
-        sub._background_stop.clear()
+        worker._transition(WorkerState.UNATTACHED)
+        # Reset the stop event so the Worker can be re-attached.
+        worker._background_stop.clear()
 
     # ------------------------------------------------------------------
     # Pause / resume
     # ------------------------------------------------------------------
 
-    def pause_subsystem(self, sub: Subsystem) -> None:
-        if sub.lifecycle_state is not SubsystemState.RUNNING:
+    def pause_worker(self, worker: Worker) -> None:
+        if worker.lifecycle_state is not WorkerState.RUNNING:
             return
         try:
-            sub.on_pause()
+            worker.on_pause()
         except BaseException:
-            logger.exception("subsystem '%s' on_pause raised", sub.name)
-        sub._transition(SubsystemState.PAUSED)
+            logger.exception("worker '%s' on_pause raised", worker.name)
+        worker._transition(WorkerState.PAUSED)
 
-    def resume_subsystem(self, sub: Subsystem) -> None:
-        if sub.lifecycle_state is not SubsystemState.PAUSED:
+    def resume_worker(self, worker: Worker) -> None:
+        if worker.lifecycle_state is not WorkerState.PAUSED:
             return
         try:
-            sub.on_resume()
+            worker.on_resume()
         except BaseException:
-            logger.exception("subsystem '%s' on_resume raised", sub.name)
-        sub._transition(SubsystemState.RUNNING)
+            logger.exception("worker '%s' on_resume raised", worker.name)
+        worker._transition(WorkerState.RUNNING)
 
     # ------------------------------------------------------------------
     # Tick execution
@@ -240,7 +244,9 @@ class BTClock:
         except BaseException:
             logger.exception("async pool drain raised; continuing")
 
-        # 2. Deliver pending notes to receivers.
+        # 2. Deliver pending notes to receivers. Worker.accept_notes wraps
+        #    user handlers so that a raising handler transitions its own
+        #    Worker to FAULTED and does not propagate out of deliver_notes.
         try:
             self._board.deliver_notes()
         except BaseException:
@@ -257,19 +263,19 @@ class BTClock:
                     "tree '%s' tick raised; continuing", handle.name
                 )
 
-        # 4. Broadcast on_tick to RUNNING Subsystems.
+        # 4. Broadcast on_tick to RUNNING Workers.
         with self._lock:
-            subs = list(self._subsystems)
-        for sub in subs:
-            if sub.lifecycle_state is not SubsystemState.RUNNING:
+            workers = list(self._workers)
+        for worker in workers:
+            if worker.lifecycle_state is not WorkerState.RUNNING:
                 continue
             try:
-                sub.on_tick(ctx)
+                worker.on_tick(ctx)
             except BaseException:
                 logger.exception(
-                    "subsystem '%s' on_tick raised; marking FAULTED", sub.name
+                    "worker '%s' on_tick raised; marking FAULTED", worker.name
                 )
-                sub._transition(SubsystemState.FAULTED)
+                worker._transition(WorkerState.FAULTED)
 
         return ctx
 
@@ -304,31 +310,31 @@ class BTClock:
         with self._lock:
             return [h.name for h in self._trees]
 
-    def attached_subsystems(self) -> list[str]:
+    def attached_workers(self) -> list[str]:
         with self._lock:
-            return [s.name for s in self._subsystems]
+            return [w.name for w in self._workers]
 
     # ------------------------------------------------------------------
     # Teardown
     # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Detach all subsystems and trees, shut down worker pools.
+        """Detach all workers and trees, shut down worker pools.
 
         Best-effort — exceptions logged, never raised.
         """
         self._stopped = True
 
         with self._lock:
-            subs = list(self._subsystems)
+            workers = list(self._workers)
             trees = list(self._trees)
 
-        for sub in subs:
+        for worker in workers:
             try:
-                self.detach_subsystem(sub)
+                self.detach_worker(worker)
             except BaseException:
                 logger.exception(
-                    "shutdown: detach_subsystem('%s') raised", sub.name
+                    "shutdown: detach_worker('%s') raised", worker.name
                 )
 
         for handle in trees:
