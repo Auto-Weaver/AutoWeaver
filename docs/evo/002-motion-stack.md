@@ -30,10 +30,12 @@ EVO-001 确立了 Motion Engine 的概念架构：BT 做编排，Action 做消�
 │                                     │
 │  gRPC Server                        │
 │    └── 轴管理器 + CiA402 状态机      │
-│          └── ethercrab（EtherCAT）   │
+│          └── IgH EtherCAT Master    │
+│              (FFI → libethercat.so) │
 │                │                    │
 └────────────────┼────────────────────┘
-                 │ raw socket
+                 │ /dev/EtherCAT0
+                 │ (ec_master.ko + ec_generic.ko)
                  │
 ┌────────────────▼────────────────────┐
 │          硬件层                      │
@@ -179,13 +181,15 @@ Not Ready → Switch On Disabled → Ready to Switch On → Switched On → Oper
 Operation Enabled → Fault → Fault Reset → Switch On Disabled → ...
 ```
 
-**ethercrab**
+**IgH EtherCAT Master**
 
-纯 Rust EtherCAT master 库。负责：
+工业事实标准的 EtherCAT 主站，内核模块 + 用户态库双层架构。负责：
 
-- EtherCAT 从站扫描与配置
+- EtherCAT 从站扫描与配置（PDO 映射、SDO 启动参数、DC 时钟同步）
 - 周期性 PDO（过程数据对象）读写
 - 和驱动器的底层通信
+
+motion-runtime 通过手写的 thin FFI（`src/ethercat/igh_ffi.rs`，约 25 个 `ecrt_*` 函数）调用 `libethercat.so`，由 `build.rs` 在编译期 `cargo:rustc-link-lib=dylib=ethercat`。
 
 ### 语言选择：Rust
 
@@ -193,15 +197,22 @@ EtherCAT 通信需要稳定的周期性执行（毫秒级）。Rust 提供：
 
 - 无 GC 停顿，确定性延迟
 - async 生态（tokio）和 gRPC（tonic）天然搭配
-- ethercrab 是纯 Rust 实现，无需 FFI
+- 通过 FFI 调 IgH 的 unsafe 边界被局限在 `igh_ffi.rs` 一个模块内
 
-### 为什么不用 IgH 或 SOEM
+### 为什么用 IgH 而不是 ethercrab / SOEM
 
-当前驱动器（汇川 SV660、鸣志 STF05-ECX-H）都支持 PP（Profile Position）模式——轨迹规划和伺服闭环由驱动器自己完成。master 侧不需要做 1ms 硬实时插补。
+> **简短版**：最初选型 ethercrab，实际接入汇川 SV660N 时跑不通 DC SYNC，切换到 IgH 后工作正常。完整历史见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)，详细技术权衡见 [EVO-003](003-motion-runtime.md#ethercat-masterigh替代了最初选型的-ethercrab)。
 
-在这个前提下，ethercrab 的用户态方案足够。不需要 IgH 的内核模块，不需要 PREEMPT_RT 补丁，部署复杂度大幅降低。
+要点：
 
-如果将来需要 CSP（Cyclic Synchronous Position）模式——master 侧做插补、每 1ms 发一个位置点——再评估升级到 IgH。
+- **ethercrab 的架构限制**：其类型状态机 API 只允许在 SAFEOP 之后配置 DC，但 SV660N 要求 DC 在 PREOP→SAFEOP 转换前就配好。这不是参数问题，是接口设计层面的约束。结果是 SV660N 永远进不了 OP。ethercrab 对不需要 DC 的简单 IO 模块仍然可用，但对带 DC SYNC 的伺服驱动器（汇川、倍福等）不可用。
+- **IgH 的 DC 时序可控**：`ecrt_slave_config_dc()` 可以在 `activate` 之前任意时机调用，能匹配 SV660N。
+- **IgH 是工业事实标准**：stable-1.5 多年验证，已知 pitfall 都有公开记录。
+- **代价**：必须装内核模块、重编译加 `--disable-eoe`（避开 EoE 抢占 CoE 邮箱）、以 root 启动或对 `/dev/EtherCAT0` 授权。部署比 ethercrab 重，但这是一次性配置。
+
+PP 模式不依赖内核级实时这条结论本身没变——IgH 在标准 Linux + isolcpus 上跑 1ms 周期完全胜任，不需要 PREEMPT_RT。换到 IgH 是为了 DC SYNC 时序，不是为了实时性。
+
+如果将来需要 CSP 模式（master 侧做插补、每 1ms 发一个位置点），IgH 也已经覆盖；那时再评估是否上 PREEMPT_RT。
 
 ### 资源隔离
 
@@ -274,7 +285,7 @@ Linux 工控机（双网口）
 |------|------|
 | Python 做编排，Rust 做实时 | BT tick 是微秒级逻辑，Python 够用。EtherCAT 是毫秒级周期，需要确定性延迟 |
 | gRPC 做 Python-Rust 通信 | Goal/Feedback/Result 天然映射到 gRPC 的 unary/streaming 调用。两端都有成熟库（grpcio / tonic） |
-| ethercrab 而非 IgH/SOEM | PP 模式下不需要内核级实时。纯 Rust、用户态、无需改内核，部署最简 |
+| IgH 而非 ethercrab / SOEM | 最初选型 ethercrab（纯 Rust 用户态、部署最简），但 SV660N 要求在 PREOP 阶段配置 DC SYNC，ethercrab 接口架构上做不到，驱动器永远进不了 OP。切到 IgH 后跑通。详见 [EVO-003](003-motion-runtime.md#ethercat-masterigh替代了最初选型的-ethercrab) 和 [pitfalls 文档](../pitfalls/igh-ethercat-sv660n.md) |
 | 机械臂不走 Rust 层 | 机械臂控制器自带运动规划，Python 直接调 API 即可 |
 | 电机本体不作为控制对象 | 电机是执行件，真正的网络控制节点是驱动器 |
 | 先 PP 模式，后续按需升级 CSP | 够用优先。CSP 需要 master 侧插补 + 可能的内核级实时，复杂度高一个量级 |

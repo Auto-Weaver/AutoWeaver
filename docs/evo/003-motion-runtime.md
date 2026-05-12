@@ -24,58 +24,43 @@ Rust 层只负责一件事：**怎么让电机到那个位置**。
 - Rust 不缓存业务状态，每个 Goal 是独立的
 - Rust 不做多轴协调——多轴协调是 BT 的事，Rust 每次只处理一个轴的一个目标
 
-## 模块结构
+## 模块划分
 
-```
-motion-runtime/
-├── src/
-│   ├── main.rs
-│   ├── ethercat/       # ethercrab 封装
-│   │   ├── mod.rs
-│   │   └── master.rs   # Master 初始化，从站扫描，PDO 周期循环
-│   ├── cia402/         # CiA402 状态机
-│   │   ├── mod.rs
-│   │   ├── state.rs    # 状态枚举，转换逻辑
-│   │   └── word.rs     # controlword / statusword 位操作
-│   ├── device/         # 设备管理
-│   │   ├── mod.rs
-│   │   ├── axis.rs     # 运动轴（伺服 + 步进）
-│   │   ├── io.rs       # IO 模块（数字量输入输出）
-│   │   └── manager.rs  # 设备注册，Goal 分发，状态汇总
-│   ├── grpc/           # gRPC server
-│   │   ├── mod.rs
-│   │   └── service.rs  # tonic service 实现，proto ↔ 内部类型转换
-│   └── proto/
-│       └── motion.proto
-├── Cargo.toml
-└── build.rs            # prost 编译 proto
-```
+实时层切成四块，每块只做一件事：
 
-四个模块，各管一件事：
+| 模块 | 职责 |
+|------|------|
+| ethercat | EtherCAT 总线：从站扫描、PDO 映射、周期 process-data、DC 时钟同步。封装 IgH master，对上层屏蔽 FFI。 |
+| cia402 | CiA402 状态机：statusword 解码、controlword 计算、PP-mode 握手。纯逻辑层，不碰 PDO 字节，不持有 I/O 句柄。 |
+| device | 设备抽象：把从站语义化为"运动轴"或"IO 模块"，承接 Goal/Feedback/Result，被周期循环每 tick 调用一次。 |
+| grpc | 通信适配：proto 类型 ↔ device 内部类型互转。除此之外不做任何事，所有副作用都发生在 device。 |
 
-| 模块 | 职责 | 对外暴露 |
-|------|------|----------|
-| ethercat/ | ethercrab 封装，从站扫描，PDO 周期循环 | Master handle |
-| cia402/ | CiA402 状态机，controlword/statusword 操作 | 状态查询，指令写入 |
-| device/ | 设备注册，Goal 分发，状态汇总 | 设备列表，设备操作 |
-| grpc/ | tonic gRPC server，proto 类型和内部类型转换 | gRPC 端点 |
+具体文件名、类型签名、`ecrt_*` API 调用顺序以代码为准，本文档不复述。
 
 ## 依赖方向
 
-模块间依赖严格单向：
-
 ```
-grpc → device → cia402 → ethercat → ethercrab (外部 crate)
+grpc ─────► device ─────► cia402
+              ▲
+ethercat ─────┘
 ```
 
-- grpc 调 device 的接口分发指令
-- device 调 cia402 操作驱动器状态机
-- cia402 调 ethercat 读写 PDO
-- ethercat 调 ethercrab 做底层 EtherCAT 通信
+两条**写入路径**汇入 `device`：
 
-**无反向依赖，无循环。** 下层不知道上层的存在。ethercat 不知道有 cia402，cia402 不知道有 device，device 不知道有 grpc。
+- **请求侧**：`grpc` 把外部 Goal / Halt / IO 命令翻译成 device 内部类型，写进设备实例的"待执行状态"。这条路径完全异步，可能在任意时刻被触发。
+- **执行侧**：`ethercat` 拥有周期循环。每个 tick 读回输入 PDO，喂给 device 的 tick 入口，让设备产出输出 PDO，再写回总线。
 
-每一层只和直接下层对话，和 EVO-002 的全栈分层原则一致。
+`device` 内部需要计算控制字时单向调用 `cia402`。`cia402` 不依赖任何其他模块——它是纯函数式的状态机，输入 statusword，输出 controlword。
+
+**核心不变量：**
+
+- cia402 不知道有 ethercat，也不知道有 device。换从站类型不动 cia402。
+- device 不知道有 grpc。换通信层（gRPC → ROS2 / 共享内存）不动 device。
+- ethercat 不知道有 grpc。
+
+**真正的控制字写入永远只发生在 ethercat 的周期循环里**——`grpc` 路径只改"待执行状态"标志位，不直接动 PDO。这条规则保证 1ms 节拍内没有跨线程竞争，是整个运行时正确性的基石。
+
+唯一允许的"反向"耦合是类型层面：`device` 在初始化时（从扫描结果建设备实例）会读 `ethercat` 暴露的从站元信息类型。这是一次性初始化路径，不是运行时调用，可以容忍。
 
 ## CiA402 状态机详解
 
@@ -382,49 +367,22 @@ BT tick M+1: IsVacuumSealed leaf → get_digital_input(1, 7)           → SUCCE
 
 ## 启动流程
 
-```
-main()
-├── 1. 解析配置（网口名、gRPC 端口、设备映射）
-├── 2. 初始化 ethercrab Master
-│     └── 指定 EtherCAT 网口（如 enp2s0）
-├── 3. 扫描从站
-│     └── ethercrab 自动发现菊花链上所有从站
-├── 4. 注册设备
-│     ├── 遍历从站列表
-│     ├── 根据 vendor_id + product_code 识别类型
-│     │     ├── 匹配伺服驱动器 → 注册为 MotionAxis
-│     │     ├── 匹配步进驱动器 → 注册为 MotionAxis
-│     │     └── 匹配 IO 模块   → 注册为 IoModule
-│     └── 对运动轴执行 CiA402 使能流程
-│           └── Not Ready → ... → Operation Enabled
-├── 5. 启动 gRPC server
-│     └── 监听配置端口（默认 50051）
-└── 6. 进入 EtherCAT 周期循环
-      └── loop {
-              read_pdo()        // 读所有从站输入
-              update_devices()  // 更新设备状态
-              write_pdo()       // 写所有从站输出
-              sleep(cycle_time) // 典型 1-4ms
-          }
-```
+启动概念上分三阶段：
 
-步骤 5 和 6 并行运行——gRPC server 在 tokio runtime 上异步处理请求，PDO 周期循环在独立的 tokio task 中运行。两者通过共享的 DeviceManager（带锁）交互。
+1. **进程起来**：解析配置、起日志、建共享的 `DeviceManager`、`spawn` gRPC server。
+2. **总线起来**：拿 master handle → 扫从站 → 按厂商/类型把从站注册成 device 实例 → 配置 PDO 映射 / SDO 启动参数 / DC 同步 → 激活 master → 等从站走到 SAFEOP。
+3. **周期循环起来**：从此进入永不返回的 1ms 循环，每拍做 `receive → process → DC sync → 各设备 tick → queue → send`。
 
-启动时从站识别示例：
+阶段 1 异步、阶段 3 占据主线程，两者通过共享的 `DeviceManager` 交互。**异步路径只写"待执行状态"，从不直接动 PDO**；这条规则保证 1ms 节拍内没有跨线程竞争，是整个运行时正确性的基石。
 
-```rust
-// vendor_id 和 product_code 来自 EtherCAT SII (Slave Information Interface)
-fn identify_device(vendor_id: u32, product_code: u32) -> DeviceKind {
-    match (vendor_id, product_code) {
-        (0x00100000, 0x0286_0002) => DeviceKind::MotionAxis(sv660_config()),
-        (0x000007DD, 0x0000_0005) => DeviceKind::MotionAxis(stf05_config()),
-        (0x00100000, 0x1032_0001) => DeviceKind::IoModule(ec3a_io1632_config()),
-        _ => panic!("Unknown slave: vendor={:#010x} product={:#010x}", vendor_id, product_code),
-    }
-}
-```
+具体的 `ecrt_*` 调用顺序、PDO 索引、SDO 启动值等都是实现细节，参见代码。
 
-注：vendor_id 和 product_code 为示意值，实际值需要从驱动器 ESI 文件或 EtherCAT 扫描中获取。
+### 设计要点（不会随代码变的部分）
+
+- **从站识别按厂商特征**。运行时按从站名字/vendor/product 把从站归类成"运动轴"或"IO 模块"。名单和判别条件会随支持的硬件演进，但映射的目标永远是 `DeviceKind` 这套小封闭集合。
+- **DC 必须在 activate 之前配好**。这条不是优化，是 SV660N 等汇川驱动器的硬性要求——也是当初从 ethercrab 切到 IgH 的根本原因（见 [pitfalls 文档](../pitfalls/igh-ethercat-sv660n.md)）。换 master 实现时必须验证这一点。
+- **PDO 是覆盖式通道，每个映射进 PDO 的字段都必须每周期写**。漏写一个字段，驱动器会按 0 处理，可能直接锁死运动（典型坑见 pitfalls Pitfall 7）。SDO 启动值在进入 OP 后会被 PDO 立刻覆盖，因此真正起作用的是 tick 中写入的值。
+- **暖机循环和正式循环必须用同样的报文节奏**。从 PREOP 走到 OP 期间，从站要看到稳定的 DC 时钟和 process-data 心跳；如果只跑配置不跑节拍，从站永远进不了 OP。
 
 ## 资源与部署
 
@@ -458,52 +416,47 @@ P 核（性能核心）：Python 进程 — 推理、图像处理、BT tick
 E 核（效率核心）：Rust Motion Runtime — EtherCAT 周期循环
 ```
 
-### raw socket 权限
+### IgH 部署形态
 
-ethercrab 使用 raw socket 直接操作以太网帧（EtherCAT 是 L2 协议，不走 TCP/IP 栈）。需要 `CAP_NET_RAW` 权限：
+IgH 是"内核模块 + 用户态库"双层架构：motion-runtime 通过 FFI 调用用户态 `libethercat.so`，库通过字符设备 `/dev/EtherCAT0` 和内核模块对话，内核模块直接操作 NIC 发收 EtherCAT 帧。
 
-```bash
-# 方式 1：setcap（推荐，不需要 root 运行）
-sudo setcap cap_net_raw=ep ./motion-runtime
+这条路径带来三类一次性部署成本：内核模块要编译安装、配置文件要写、网卡要预先 up。每一项都有过踩坑历史（包括重编译时必须加的特定开关），详见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)。仓库脚本 `scripts/install-igh-ethercat.sh` 把这些固化为一次性安装。
 
-# 方式 2：以 root 运行（开发阶段简单但不推荐生产使用）
-sudo ./motion-runtime
-```
+**架构上需要记住的一点**：因为走的是字符设备而非 raw socket，旧的 "setcap cap_net_raw + 非 root 运行" 方案不再适用——当前以 root 启动 motion-runtime，或对 `/dev/EtherCAT0` 单独授权。
 
-### 不需要内核补丁
+### 不需要 PREEMPT_RT
 
 PP 模式下，master 侧的时序要求：
 
 | 指标 | 要求 | 说明 |
 |------|------|------|
-| PDO 周期 | 1-4ms | ethercrab 在标准内核上可稳定做到 |
-| 允许抖动 | 数毫秒 | PP 模式由驱动器闭环，master 抖动不影响运动质量 |
+| PDO 周期 | 1ms | IgH 在标准内核 + isolcpus 上可稳定达成 |
+| 允许抖动 | 数毫秒 | PP 模式下驱动器自己闭环，master 抖动不影响运动质量 |
 | BT tick | 20-50Hz (20-50ms) | Python 级别，宽裕 |
 
-标准 Linux 内核 + isolcpus 即可满足。不需要 PREEMPT_RT 补丁，不需要 Xenomai，不需要任何内核模块。
+标准 Linux 内核 + isolcpus 即可满足。当前实际部署在 Ubuntu 24.04 RT kernel 上（来自 pitfalls 文档环境记录），但 RT kernel 不是 PP 模式的硬性前提。Xenomai 不需要。
 
 ## 技术选型
 
-### ethercrab
+### EtherCAT master：IgH
 
-纯 Rust EtherCAT master 实现。
+最初选型是 ethercrab（纯 Rust、用户态、部署最简）。实际接入汇川 SV660N 后跑不通，切到 IgH 才工作。
 
-选择理由：
-- **纯 Rust**：没有 C FFI，没有 unsafe 外部依赖
-- **用户态**：不需要内核模块（IgH 需要），部署简单
-- **async**：基于 tokio，和 tonic gRPC server 共享同一个 async runtime
-- **适合 PP 模式**：PP 模式对 master 侧实时性要求低，ethercrab 完全胜任
+**为什么 ethercrab 不行**：汇川 SV660N 这类伺服驱动器要求 **DC SYNC 必须在 PREOP→SAFEOP 转换之前配好**。ethercrab 的类型状态机 API 在架构上不允许 SAFEOP 之前配置 DC——这不是参数问题，是接口设计层面的约束。SV660N 因此永远走不到 OP。完整现象与排查记录见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)。
 
-不选 IgH/SOEM 的理由见 EVO-002。简要重申：PP 模式下不需要内核级实时，ethercrab 够用且部署最简。
+**为什么选 IgH**：
+
+- DC 配置时机不受类型状态机约束，能匹配带 DC 的驱动器。
+- 工业 EtherCAT 主站事实标准，已知问题都有公开解决方案。
+- 代价是依赖内核模块和一次性的部署配置——可写脚本固化，可接受。
+
+未来如果出现一个既能用户态部署、又允许任意时机配 DC 的纯 Rust 方案，可以再评估。SOEM 不在视野内：相对 IgH 没有显著优势，Linux 兼容性记录更少。
+
+**实现层面**走手写 thin FFI 而非 `bindgen`：IgH 的某些结构体（如 `ec_slave_info_t`）含变长嵌套字段，正确的内存布局必须在目标平台 `offsetof()` 实测才能确定，bindgen 的自动生成不可靠（见 pitfalls Pitfall 3）。
 
 ### tonic + prost
 
-Rust gRPC 标准方案：
-
-- **tonic**：基于 tokio 的 gRPC server/client，和 ethercrab 同属 tokio 生态
-- **prost**：protobuf 编译器，从 .proto 生成 Rust 类型
-
-Python 侧用 grpcio（标准 gRPC Python 库）。两端从同一份 .proto 文件生成代码，接口一致性有保证。
+Rust gRPC 的标准选择。和 EtherCAT 周期循环共享同一个 tokio runtime——gRPC 一个 task，周期循环占主线程，靠共享的 `DeviceManager` 同步。Python 侧用 grpcio，两端从同一份 `.proto` 生成代码，接口一致性由编译器保证。
 
 ### PP 模式优先
 
@@ -534,9 +487,9 @@ master 侧只需要：
 | gRPC unary 调用而非 streaming | BT 每次 tick 主动轮询一次，符合 unary request-response 模式。streaming 增加复杂度无收益 |
 | 从站类型自动识别 | vendor_id + product_code 唯一标识设备类型，无需手动配置从站映射 |
 | 独立二进制独立进程 | 进程隔离：Python 崩溃不影响电机安全，Rust 可独立重启 |
-| ethercrab 而非 IgH | PP 模式不需要内核级实时，纯 Rust 用户态方案部署最简 |
+| IgH 而非 ethercrab | 最初选型 ethercrab，但 ethercrab 无法在 PREOP 阶段配置 DC SYNC，SV660N 卡在 SAFEOP 永远进不了 OP。IgH 的 DC 配置时序可控，且成熟稳定，是工业事实标准。代价是要装内核模块（`--disable-eoe` 重编译） |
 | PP 模式优先，推迟 CSP | 当前驱动器支持 PP 且满足需求。CSP 需要 master 插补 + 可能的 PREEMPT_RT，复杂度高一个量级 |
-| raw socket + setcap | 不需要 root 运行，最小权限原则 |
+| IgH 内核模块 + root 运行 | IgH 走字符设备 `/dev/EtherCAT0`，不走 raw socket，`setcap cap_net_raw` 已不适用；当前以 root 启动 motion-runtime，或对 `/dev/EtherCAT0` 单独授权 |
 | isolcpus 绑核 | 保证 PDO 周期稳定，不被推理负载抢占。标准 Linux 功能，零额外部署成本 |
 
 ## 本文档不覆盖
@@ -548,4 +501,4 @@ master 侧只需要：
 - 坐标变换（编码器脉冲 ↔ 物理单位 ↔ 工件坐标系）
 - 多轴协调运动（BT 层面的 Parallel 编排，不是 Rust 层面的）
 - 回零（Homing）流程的详细设计
-- ethercrab 版本选择和具体 API 用法
+- IgH 版本选择、`ecrt.h` API 完整用法、FFI 结构体布局的实测方法（见 pitfalls Pitfall 3）
