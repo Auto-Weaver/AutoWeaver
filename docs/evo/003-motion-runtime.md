@@ -1,6 +1,6 @@
 # EVO-003: Rust Motion Runtime
 
-日期：2026-04-12
+日期：2026-04-12（初版）/ 2026-05-12（0.7.0 重构：薄翻译层）
 
 前置文档：[EVO-001: Motion Engine](001-motion-engine.md)、[EVO-002: Motion Stack 分层架构](002-motion-stack.md)
 
@@ -8,21 +8,70 @@
 
 EVO-001 定义了双引擎架构——Perception Engine 事件驱动，Motion Engine tick 驱动，BT 做编排，Action 做消费。
 
-EVO-002 定义了分层——Python 编排层负责"做什么"，Rust 实时层负责"怎么做"，gRPC 传递 Goal/Feedback/Result。
+EVO-002 定义了分层——Python 编排层负责"做什么"，Rust 实时层负责"怎么做"，gRPC 在两层之间传递语义。
 
-本文档向下展开 Rust 实时层的内部设计：模块结构、CiA402 状态机、设备抽象、gRPC 接口、启动流程。
+本文档展开 Rust 实时层（motion-runtime）的内部设计。
+
+## 演进说明
+
+0.6.0 及之前的 motion-runtime 是一份**为验证 EtherCAT 链路打通而写的临时实现**：
+针对汇川 SV660N 写死了 PDO 布局、CiA402 状态机、PP-mode 握手，对外暴露 `SendGoal / GetFeedback / GetResult / Halt` 这套面向电机的 gRPC 接口。
+
+实际接入 Epson LS6（SCARA 机器人，控制器自带 SPEL+ 运行时）时发现：
+机器人这类"控制器自包含"的设备不适合用 CiA402 抽象——它的"目标位置"是写进选件板用户数据区的几个字节、配上一个 Trigger 位，而不是 `0x607A` 目标位置 + controlword bit 4。
+强行把 LS6 套进 `MotionAxis + CiA402StateMachine` 是削足适履。
+
+0.7.0 起 motion-runtime 重构为**薄翻译层**——本文档描述这个目标态。
+老实现的代码（`MotionAxis` / `Cia402StateMachine` / `tick_axis_sv660n` 等）会被替换为基于字段名↔字节翻译的通用机制；要看老代码请 checkout `0.6.0` tag。
+
+CiA402 相关的协议知识降级为参考资料，见 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md)。
+LS6 单总线方案的研究记录见 [research/ethercat-unified-bus-ls6-rc90b.md](../research/ethercat-unified-bus-ls6-rc90b.md)。
 
 ## 职责边界
 
-Rust 层只负责一件事：**怎么让电机到那个位置**。
+**motion-runtime 是一个薄翻译层。**
 
-它不知道 BT，不知道业务逻辑，不知道"先拍照再移动"还是"先移动再拍照"。Python 通过 gRPC 说"轴 1 去位置 50000，速度 1000，超时 5 秒"，Rust 执行，然后反馈进度和结果。
+它只做两件事：
 
-这条边界是刚性的：
+1. **管 EtherCAT 总线**——起 IgH master、扫从站、跑 PDO 周期循环、维护 DC 同步、维护 PDO domain 缓冲区。这块是和 IgH 打交道的硬皮，没办法薄。
+2. **做"字段名 ↔ 字节"的双向翻译**——leaf 用字段名读写，runtime 按外置 YAML 契约查表，找到对应从站的 PDO 偏移、字节宽度、字节序，做实际的字节级 PDO 操作。
 
-- Rust 不主动发起任何动作，只响应 gRPC 请求
-- Rust 不缓存业务状态，每个 Goal 是独立的
-- Rust 不做多轴协调——多轴协调是 BT 的事，Rust 每次只处理一个轴的一个目标
+它**不做**的事情：
+
+- 不懂业务语义。不知道"target_x"代表 X 坐标，不知道"trigger=1"代表执行运动，不知道"done=1"代表运动完成。
+- 不做设备分类。不再有"运动轴 / IO 模块 / 机器人"的硬编码二分；所有从站都是"挂着一份 YAML 契约的字段端点"。
+- 不做语义校验。leaf 让写哪就写哪，写错了是 leaf 的责任。
+- 不做协议握手（暂时）。CiA402 状态机这种协议级 helper 0.7.0 不实现，等真有电机要接再回来加。
+
+这是个**强约束**：将来任何"要不要在 runtime 里加点 X"的争论，都先回到这一条来对。runtime 越薄、它能支持的设备越广、能跑的业务场景越多。
+
+## 三方耦合面
+
+motion-runtime 处在三方之间的中间位置：
+
+```
+                              ┌── 业务语义 ──┐
+   BT leaf / Python ───────────────────────► motion-runtime ─────────► 外部控制器
+   （知道字段名 + 业务时序）                  （只懂字段名↔字节）       （SPEL+ / 驱动器固件 / IO 控制器）
+                                                  ▲                          │
+                                                  │                          │
+                                              contract.yaml ◄────────────────┘
+                                              （字段名 ↔ 字节布局；同时也
+                                                是外部控制器代码的对照源）
+```
+
+三方之间**只通过"字段名集合"耦合**：
+
+- **BT leaf / Python** 知道字段叫什么、什么时候写、什么时候读、字段的业务含义
+- **motion-runtime** 知道字段名 ↔ 字节的精确映射
+- **外部控制器代码**（如 Epson 的 SPEL+ 项目）知道字段名 ↔ 控制器内部变量的映射
+- **contract.yaml** 是这三者之间的**单一真源**
+
+改字段布局：动 YAML + 外部控制器代码（两边对照同一份字段表），**不动 leaf、不动 runtime 代码**。
+加新字段：动 YAML + 外部控制器代码 + leaf（leaf 要用新字段），**不动 runtime 代码**。
+换一台新机器人：写新的 YAML + 新的控制器项目，leaf 按字段名调，**runtime 代码完全不动**。
+
+这个耦合面的形状决定了：**runtime 的代码体积应当几乎不随支持的设备数量增长**。
 
 ## 模块划分
 
@@ -31,371 +80,122 @@ Rust 层只负责一件事：**怎么让电机到那个位置**。
 | 模块 | 职责 |
 |------|------|
 | ethercat | EtherCAT 总线：从站扫描、PDO 映射、周期 process-data、DC 时钟同步。封装 IgH master，对上层屏蔽 FFI。 |
-| cia402 | CiA402 状态机：statusword 解码、controlword 计算、PP-mode 握手。纯逻辑层，不碰 PDO 字节，不持有 I/O 句柄。 |
-| device | 设备抽象：把从站语义化为"运动轴"或"IO 模块"，承接 Goal/Feedback/Result，被周期循环每 tick 调用一次。 |
-| grpc | 通信适配：proto 类型 ↔ device 内部类型互转。除此之外不做任何事，所有副作用都发生在 device。 |
+| contract | 加载、解析、索引 YAML 契约；提供"字段名 → (slave, offset, type, dir)"查询。 |
+| translate | 字段 ↔ 字节翻译：按 contract 描述把字段值编码成字节写进 PDO domain buffer，或反向解码读出来。 |
+| grpc | 通信适配：proto `write_field` / `read_field` 等 ↔ translate 内部调用互转。 |
 
-具体文件名、类型签名、`ecrt_*` API 调用顺序以代码为准，本文档不复述。
+具体文件名、类型签名、ecrt 调用顺序以代码为准，本文档不复述。
+
+说明：
+
+- 没有"device"这层模块。0.6.0 时期的 `MotionAxis` / `IoModule` 二分法消失，因为它本质是在 runtime 里塞设备语义——现在每个从站都退化为"一份契约 + 一个 slave position"，runtime 围绕**契约**而不是设备类型组织代码。
+- `cia402` 模块在 0.7.0 重构后**不再存在**。CiA402 协议知识搬到 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md)，将来真的要接电机时按"路 B 协议 helper"重新落地，到时候会作为新的可选模块加进来。
 
 ## 依赖方向
 
 ```
-grpc ─────► device ─────► cia402
-              ▲
-ethercat ─────┘
+grpc ─────► translate ─────► contract
+              ▲                  ▲
+              │                  │
+ethercat ─────┘             （启动时一次性加载）
 ```
 
-两条**写入路径**汇入 `device`：
-
-- **请求侧**：`grpc` 把外部 Goal / Halt / IO 命令翻译成 device 内部类型，写进设备实例的"待执行状态"。这条路径完全异步，可能在任意时刻被触发。
-- **执行侧**：`ethercat` 拥有周期循环。每个 tick 读回输入 PDO，喂给 device 的 tick 入口，让设备产出输出 PDO，再写回总线。
-
-`device` 内部需要计算控制字时单向调用 `cia402`。`cia402` 不依赖任何其他模块——它是纯函数式的状态机，输入 statusword，输出 controlword。
+- **请求侧**：`grpc` 收到 `write_field(device, field, value)`，调 `translate` 查 `contract` 找到目标字节位置，把编码后的字节写进 ethercat 维护的 PDO output buffer 对应位置。
+- **执行侧**：`ethercat` 周期循环每 tick 读回输入 PDO，然后任由 buffer 在那；`read_field` 请求来了再走 `translate` 解出字段值。
+- **启动期**：`ethercat` 扫到从站后，`contract` 加载所有 YAML 并按 `slave_match` 把契约绑到具体的 slave position 上。这是一次性的初始化路径。
 
 **核心不变量：**
 
-- cia402 不知道有 ethercat，也不知道有 device。换从站类型不动 cia402。
-- device 不知道有 grpc。换通信层（gRPC → ROS2 / 共享内存）不动 device。
-- ethercat 不知道有 grpc。
+- contract 不依赖任何其他模块——它是纯数据 + 查询。
+- translate 不知道 EtherCAT 协议细节，只知道"按这个偏移和类型把字段写进 byte buffer"。
+- ethercat 不知道字段名、不知道契约、不知道 grpc。
+- grpc 是协议适配，不存放任何运行时状态。
 
-**真正的控制字写入永远只发生在 ethercat 的周期循环里**——`grpc` 路径只改"待执行状态"标志位，不直接动 PDO。这条规则保证 1ms 节拍内没有跨线程竞争，是整个运行时正确性的基石。
+**真正的字节写入永远只发生在 ethercat 的周期循环里**——`grpc` 路径只往 output buffer 写预备值，发出到总线由周期循环负责。这条规则保证 1ms 节拍内没有跨线程竞争，是整个运行时正确性的基石。
 
-唯一允许的"反向"耦合是类型层面：`device` 在初始化时（从扫描结果建设备实例）会读 `ethercat` 暴露的从站元信息类型。这是一次性初始化路径，不是运行时调用，可以容忍。
+## YAML 契约
 
-## CiA402 状态机详解
+每台设备一份 YAML 契约。形态示例（具体 schema 等第一个真实场景验证后定稿，以下仅示意）：
 
-### 为什么需要状态机
-
-电机驱动器不能通电就动。一个伺服驱动器上电后，电机处于自由状态——绕组没有电流，轴可以手动转动。如果直接灌入运动指令，可能：
-
-- 电机瞬间通电产生不可控运动
-- 在不确定的起始位置开始运动
-- 绕过安全检查直接使能
-
-CiA402 标准定义了一个状态机，强制驱动器按固定步骤从"上电"走到"可运动"。每一步都需要 master 显式发送指令，确保操作者和程序知道驱动器处于什么状态。
-
-### 状态流转
-
-完整状态图：
-
-```
-                    ┌────────────────────────────────┐
-                    │                                │
-                    ▼                                │
-              ┌──────────┐                           │
-              │Not Ready │   （驱动器自检中，         │
-              │to Switch │    master 无法干预）       │
-              │  On      │                           │
-              └────┬─────┘                           │
-                   │ 自动                            │
-                   ▼                                 │
-              ┌──────────┐                           │
-              │Switch On │   （自检完成，等待         │
-              │Disabled  │    master 指令）           │
-              └────┬─────┘                           │
-                   │ Shutdown 指令                   │
-                   ▼                                 │
-              ┌──────────┐                           │
-              │Ready to  │   （主电路准备就绪，       │
-              │Switch On │    电机未通电）            │
-              └────┬─────┘                           │
-                   │ Switch On 指令                  │
-                   ▼                                 │
-              ┌──────────┐                           │
-              │Switched  │   （电机通电，但不响应     │
-              │  On      │    运动指令）              │
-              └────┬─────┘                           │
-                   │ Enable Operation 指令           │
-                   ▼                                 │
-              ┌──────────┐                           │
-              │Operation │   （可以执行运动指令）     │
-              │ Enabled  │                           │
-              └────┬─────┘                           │
-                   │ 故障发生                        │
-                   ▼                                 │
-              ┌──────────┐     Fault Reset 指令      │
-              │  Fault   │ ─────────────────────────►│
-              └──────────┘      回到 Switch On Disabled
+```yaml
+device_kind: raw_bytes        # 可选，给 runtime 内置 helper 用的提示；不填就是纯字节字段读写
+slave_match:                  # 启动时按这个匹配到具体 slave position
+  vendor_id: 0x...
+  product_code: 0x...
+  # 或者 name_contains: "EPSON RC90"
+fields:
+  target_x:    { offset: 0,  type: f32,  dir: out }
+  target_y:    { offset: 4,  type: f32,  dir: out }
+  trigger:     { offset: 19, bit: 0,     type: bool, dir: out }
+  done:        { offset: 19, bit: 1,     type: bool, dir: in  }
+  error_code:  { offset: 20, type: u16,  dir: in  }
+protocol_version: 1           # 和外部控制器代码协商的版本号，启动时可校验
 ```
 
-正常启动路径是五步：`Not Ready → Switch On Disabled → Ready to Switch On → Switched On → Operation Enabled`。master 需要逐步发送 controlword 指令推进。
+契约文件本身的关键约束：
 
-故障恢复路径：`Fault → (Fault Reset) → Switch On Disabled → 重新走正常路径`。
+- **启动时一次性加载**。运行时改契约要重启 runtime——往往伴随外部控制器代码变更，重启可以接受。
+- **YAML 是单一真源**。外部控制器代码（如 SPEL+ 项目）要么手抄一份对齐表、要么从 YAML 生成。两边都引用同一份字段定义。
+- **`device_kind` 是选择性提示**。`raw_bytes` 是兜底默认值，runtime 只做字段读写；未来如果引入 CiA402 helper，会通过 `cia402_pp` 这类 hint 启用。
 
-### controlword 和 statusword
+## 契约文件的组织
 
-驱动器通过两个 16-bit 寄存器和 master 通信：
+所有契约文件集中在 motion-runtime 仓库内一个专用目录下。**runtime 启动时按一份显式清单加载契约**——清单里没列的契约不会被加载，仓库里存在但未声明的契约文件不会被识别。具体的目录结构（按功能分类还是按厂商分类、嵌套几层）以及启动清单的形态（YAML 配置 / CLI 参数 / 别的）属于实现层面的约定，以仓库实际状态为准，本文档不复述。
 
-- **controlword**（0x6040）：master 写入，控制状态转换
-- **statusword**（0x6041）：驱动器写入，反馈当前状态
+组织上的几条原则：
 
-controlword 关键位定义：
+- **加载哪些契约由启动配置显式声明**，不靠扫描目录决定。这让"这次跑用了哪些设备"成为一个可读、可版本化的事实，且允许同一套代码服务于不同产线配置（同样的 runtime 二进制 + 同样的契约仓库，不同产线只是启动清单不同）。
+- **每台设备一个目录**，里面同时放契约 YAML、外部控制器代码（如 SPEL+ 项目源码）、README 等配套资料。**runtime 二进制只读契约 YAML**，其他文件不读，放在那里只是为了：人类可见、版本一致、将来拷贝方便。
+- **以控制器型号命名，不是被控物型号**。同一个控制器接不同被控物本体时，控制器代码本身通常可以共用。
+- **类型分组只是组织手段，不是 runtime 抽象**。可以按"机械臂 / IO / 伺服 / 步进 / ……"分目录方便人浏览，但 runtime 代码不依赖目录结构来理解设备类型——它只看契约里写了什么。
 
-| 位 | 名称 | 作用 |
-|----|------|------|
-| 0 | Switch On | 合闸 |
-| 1 | Enable Voltage | 使能电压 |
-| 2 | Quick Stop | 快速停止（低有效） |
-| 3 | Enable Operation | 使能运行 |
-| 4 | 操作模式相关 | PP 模式下为 New Set-Point |
-| 7 | Fault Reset | 故障复位（上升沿触发） |
+## 外部控制器代码的设计原则
 
-状态转换对应的 controlword 值：
+以 Epson RC90-B 上的 SPEL+ 项目为例。原则同样适用于将来接的其他厂商控制器。
 
-```rust
-// Shutdown: Switch On Disabled → Ready to Switch On
-const SHUTDOWN: u16       = 0b0000_0110;  // bits 2,1 = 1, bit 0 = 0
+**目标：写成"参数解释器"，让常规扩展不改控制器代码。**
 
-// Switch On: Ready to Switch On → Switched On
-const SWITCH_ON: u16      = 0b0000_0111;  // bits 2,1,0 = 1
+具体做法：
 
-// Enable Operation: Switched On → Operation Enabled
-const ENABLE_OP: u16      = 0b0000_1111;  // bits 3,2,1,0 = 1
+- 控制器代码做成一个 dispatch 循环：看到 `Trigger=1` 就按 `Routine` 字段切换不同动作（Case 1: Go / Case 2: Jump / Case 3: Move / Case 4: Home / ……）
+- 所有位姿、速度、加减速参数都从数据区读，不写死在代码里
+- 错误回传用统一字段（出错就写 `ErrorCode` + 置 `Done=1`），不用厂商特定的事件机制
+- 在数据区里留几个 Spare 字段为未来扩展预备
 
-// Disable Operation: Operation Enabled → Switched On
-const DISABLE_OP: u16     = 0b0000_0111;  // bit 3 = 0
-
-// Fault Reset: Fault → Switch On Disabled
-const FAULT_RESET: u16    = 0b1000_0000;  // bit 7 上升沿
-```
-
-statusword 状态判断：
-
-```rust
-fn parse_state(statusword: u16) -> CiA402State {
-    let masked = statusword & 0b0110_1111;
-    match masked {
-        w if w & 0b0100_1111 == 0b0100_0000 => SwitchOnDisabled,
-        w if w & 0b0110_1111 == 0b0010_0001 => ReadyToSwitchOn,
-        w if w & 0b0110_1111 == 0b0010_0011 => SwitchedOn,
-        w if w & 0b0110_1111 == 0b0010_0111 => OperationEnabled,
-        w if w & 0b0100_1111 == 0b0000_1111 => FaultReactionActive,
-        w if w & 0b0100_1111 == 0b0000_1000 => Fault,
-        _ => NotReadyToSwitchOn,
-    }
-}
-```
-
-### 故障检测和复位
-
-每个 PDO 周期都读 statusword。如果检测到 Fault 状态：
-
-1. 记录故障码（通过 SDO 读 0x603F error code）
-2. 上报给 device 层，device 标记轴状态为 Fault
-3. gRPC 返回的 Feedback/Result 中携带故障信息
-4. Python 侧 BT 节点收到 FAILURE，触发 Fallback 或 Retry
-5. 复位时，发送 Fault Reset controlword（bit 7 上升沿），然后重新走使能流程
-
-### 汇川 SV660 和鸣志 STF05 的兼容性
-
-两款驱动器都实现了 CiA402 标准，在软件层面协议完全相同：
-
-- 相同的 controlword/statusword 位定义
-- 相同的状态流转逻辑
-- 相同的 PP 模式对象（0x607A 目标位置，0x6081 速度，0x6040 controlword）
-
-差异仅在硬件参数（电流、编码器分辨率、加速度限制），通过 SDO 在启动时配置，运行时代码路径一致。
-
-## 设备抽象
-
-### DeviceKind
-
-Rust 层管理两类 EtherCAT 从站：
-
-```rust
-enum DeviceKind {
-    MotionAxis(AxisConfig),   // 运动轴：伺服 or 步进
-    IoModule(IoConfig),       // IO 模块：数字量输入输出
-}
-```
-
-### 运动轴
-
-伺服驱动器（SV660）和步进驱动器（STF05）在软件层面共用同一个抽象。两者都走 CiA402 PP（Profile Position）模式：
-
-- master 写入目标位置（0x607A）和速度（0x6081）
-- 设置 controlword 的 New Set-Point 位（bit 4）
-- 驱动器自己做轨迹规划和伺服/步进闭环
-- master 通过 statusword 的 Target Reached 位（bit 10）判断到位
-
-运动轴的核心数据结构：
-
-```rust
-struct MotionAxis {
-    id: u8,                    // 轴号
-    slave_index: usize,        // EtherCAT 从站索引
-    cia402: CiA402StateMachine,// 状态机实例
-    current_goal: Option<Goal>,// 当前运动目标
-    state: AxisState,          // Idle / Moving / Reached / Fault
-}
-
-enum AxisState {
-    Idle,                      // 无目标，Operation Enabled
-    Moving,                    // 正在执行目标
-    Reached,                   // 目标到达，等待下一个指令
-    Fault(u16),                // 故障，携带错误码
-}
-```
-
-### IO 模块
-
-EC3A-IO1632 是纯数字量 IO 模块，16 路 DI + 16 路 DO。它是 EtherCAT 从站，但**没有 CiA402 状态机**——不需要使能流程，上电即可读写。
-
-IO 操作是直接的位操作：
-
-```rust
-struct IoModule {
-    id: u8,                    // 模块号
-    slave_index: usize,        // EtherCAT 从站索引
-    output_state: u16,         // 16-bit DO 当前值
-    input_state: u16,          // 16-bit DI 当前值
-}
-
-impl IoModule {
-    fn set_output(&mut self, channel: u8, value: bool) {
-        if value {
-            self.output_state |= 1 << channel;
-        } else {
-            self.output_state &= !(1 << channel);
-        }
-    }
-
-    fn get_input(&self, channel: u8) -> bool {
-        (self.input_state >> channel) & 1 == 1
-    }
-}
-```
-
-每个 PDO 周期，output_state 整体写出，input_state 整体读回。Python 侧通过 gRPC 按通道操作，Rust 侧翻译成位操作。
-
-### DeviceManager
-
-DeviceManager 持有所有设备实例，负责：
-
-- 启动时根据从站类型自动注册设备
-- 将 gRPC 请求分发到对应设备
-- 在每个 PDO 周期内更新所有设备状态
-
-```rust
-struct DeviceManager {
-    axes: HashMap<u8, MotionAxis>,
-    io_modules: HashMap<u8, IoModule>,
-}
-```
-
-## gRPC 接口
-
-所有 Python → Rust 的通信通过以下接口完成：
-
-### 运动控制
-
-```protobuf
-service MotionService {
-    // 发送运动目标
-    rpc SendGoal(GoalRequest) returns (GoalResponse);
-    // 查询中间状态
-    rpc GetFeedback(FeedbackRequest) returns (FeedbackResponse);
-    // 查询最终结果
-    rpc GetResult(ResultRequest) returns (ResultResponse);
-    // 立即停止
-    rpc Halt(HaltRequest) returns (HaltResponse);
-}
-```
-
-**send_goal(axis_id, position, velocity, timeout)**
-
-发送运动目标。Rust 侧接收后：
-1. 检查轴状态，必须处于 Operation Enabled
-2. 写入目标位置和速度到 PDO
-3. 设置 New Set-Point 位
-4. 启动超时计时器
-5. 轴状态切换为 Moving
-
-**get_feedback(axis_id) → current_position, state, progress**
-
-查询实时反馈。每次 BT tick 调用一次。返回：
-- current_position：当前实际位置（从 PDO 读回的 0x6064）
-- state：轴状态（Moving / Reached / Fault）
-- progress：完成百分比（当前位置和目标位置的比值）
-
-**get_result(axis_id) → success, final_position, error**
-
-查询最终结果。当轴状态为 Reached 或 Fault 时返回有意义的值：
-- success：是否到达目标位置
-- final_position：最终实际位置
-- error：如有故障，返回错误码和描述
-
-**halt(axis_id)**
-
-立即停止运动。Rust 侧：
-1. 清除 New Set-Point 位
-2. 触发 Quick Stop 或设置速度为 0（取决于驱动器配置）
-3. 轴状态切换为 Idle
-
-### IO 控制
-
-```protobuf
-service IoService {
-    // 设置数字输出
-    rpc SetDigitalOutput(SetDoRequest) returns (SetDoResponse);
-    // 读取数字输入
-    rpc GetDigitalInput(GetDiRequest) returns (GetDiResponse);
-}
-```
-
-**set_digital_output(module_id, channel, value)**
-
-设置指定 IO 模块的指定通道。channel 范围 0-15。写入后在下一个 PDO 周期生效。
-
-**get_digital_input(module_id, channel) → value**
-
-读取指定 IO 模块的指定通道。返回上一个 PDO 周期读回的值。
-
-### 接口到 BT 的映射
-
-```
-BT tick N:  MoveToPosition leaf → send_goal(1, 50000, 1000, 5000)   → RUNNING
-BT tick N+1:  同一 leaf          → get_feedback(1) → Moving, 30%     → RUNNING
-BT tick N+2:  同一 leaf          → get_feedback(1) → Moving, 75%     → RUNNING
-BT tick N+k:  同一 leaf          → get_result(1) → success, 50000    → SUCCESS
-
-BT tick M:  SetVacuum leaf       → set_digital_output(1, 3, true)    → SUCCESS（立即）
-BT tick M+1: IsVacuumSealed leaf → get_digital_input(1, 7)           → SUCCESS / FAILURE
-```
-
-运动指令是异步的（跨多个 tick），IO 指令是同步的（一个 tick 完成）。对 BT 来说都是 Action leaf，区别只在于 RUNNING 的持续时间。
+**目标不是"永远不改"，是"常规扩展不改"。** 引入根本性新能力（多设备同步、复杂轨迹、视觉引导、动态工具坐标系切换……）该改还得改。承认这是封闭机器人控制器的本性。
 
 ## 启动流程
 
-启动概念上分三阶段：
+启动概念上分四阶段：
 
-1. **进程起来**：解析配置、起日志、建共享的 `DeviceManager`、`spawn` gRPC server。
-2. **总线起来**：拿 master handle → 扫从站 → 按厂商/类型把从站注册成 device 实例 → 配置 PDO 映射 / SDO 启动参数 / DC 同步 → 激活 master → 等从站走到 SAFEOP。
-3. **周期循环起来**：从此进入永不返回的 1ms 循环，每拍做 `receive → process → DC sync → 各设备 tick → queue → send`。
+1. **进程起来**：解析配置、起日志、起共享 buffer、spawn gRPC server。
+2. **契约加载**：按启动清单加载指定的契约文件，全部解析进内存。
+3. **总线起来**：拿 master handle → 扫从站 → 按各契约的 `slave_match` 把契约绑到具体 slave position → 配置 PDO 映射 / DC 同步 → 激活 master → 等从站走到 SAFEOP。
+4. **周期循环起来**：从此进入永不返回的 1ms 循环，每拍做 `receive → process → DC sync → queue → send`。
 
-阶段 1 异步、阶段 3 占据主线程，两者通过共享的 `DeviceManager` 交互。**异步路径只写"待执行状态"，从不直接动 PDO**；这条规则保证 1ms 节拍内没有跨线程竞争，是整个运行时正确性的基石。
+阶段 1-3 顺序执行；阶段 4 占据主线程，gRPC server 在独立 task 里跑，两者通过共享的 PDO buffer 交互。**异步路径（gRPC）只写"预备字节"，从不直接动总线**；这条规则保证 1ms 节拍内没有跨线程竞争。
 
 具体的 `ecrt_*` 调用顺序、PDO 索引、SDO 启动值等都是实现细节，参见代码。
 
 ### 设计要点（不会随代码变的部分）
 
-- **从站识别按厂商特征**。运行时按从站名字/vendor/product 把从站归类成"运动轴"或"IO 模块"。名单和判别条件会随支持的硬件演进，但映射的目标永远是 `DeviceKind` 这套小封闭集合。
-- **DC 必须在 activate 之前配好**。这条不是优化，是 SV660N 等汇川驱动器的硬性要求——也是当初从 ethercrab 切到 IgH 的根本原因（见 [pitfalls 文档](../pitfalls/igh-ethercat-sv660n.md)）。换 master 实现时必须验证这一点。
-- **PDO 是覆盖式通道，每个映射进 PDO 的字段都必须每周期写**。漏写一个字段，驱动器会按 0 处理，可能直接锁死运动（典型坑见 pitfalls Pitfall 7）。SDO 启动值在进入 OP 后会被 PDO 立刻覆盖，因此真正起作用的是 tick 中写入的值。
-- **暖机循环和正式循环必须用同样的报文节奏**。从 PREOP 走到 OP 期间，从站要看到稳定的 DC 时钟和 process-data 心跳；如果只跑配置不跑节拍，从站永远进不了 OP。
+- **从站绑定靠契约的 `slave_match`，不靠 runtime 硬编码的启发式**。runtime 启动时把扫描到的每个 slave 和加载到的每份契约做匹配——契约里写 `vendor_id=X` 或 `name_contains="Y"` 这类条件，runtime 按条件挑契约。runtime 代码本身对"什么牌子的设备"一无所知。
+- **DC 必须在 activate 之前配好**。这条不是优化，是 SV660N 等带 DC 同步的设备的硬性要求——也是当初从 ethercrab 切到 IgH 的根本原因（见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)）。换 master 实现时必须验证这一点。
+- **PDO 是覆盖式通道，每个映射进 PDO 的字段都必须每周期写**。漏写一个字段，从站会按 0 处理，可能直接锁死设备（典型坑见 pitfalls Pitfall 7）。SDO 启动值在进入 OP 后会被 PDO 立刻覆盖，因此真正起作用的是周期循环里的字节值。这条对契约设计的影响：**契约中 `dir: out` 的字段必须有合理默认值**，确保 PDO 在没有显式写入时也不至于发出零字节。
+- **暖机循环和正式循环必须用同样的报文节奏**。从 PREOP 走到 OP 期间，从站要看到稳定的 DC 时钟和 process-data 心跳；只跑配置不跑节拍，从站永远进不了 OP。
 
 ## 资源与部署
 
 ### 独立进程
 
-Rust Motion Runtime 编译为一个独立二进制文件，独立于 Python 进程运行：
+motion-runtime 编译为一个独立二进制，独立于 Python 进程运行：
 
 ```
 autoweaver-python  ←─ gRPC ─→  motion-runtime
-  (Python BT)                    (Rust EtherCAT)
+  (Python BT)                   (Rust EtherCAT)
 ```
 
-两个进程独立启动，独立停止。Python 崩溃不影响 Rust 侧（电机保持当前状态），Rust 崩溃对 Python 表现为 gRPC 断连。
+两个进程独立启动、独立停止。Python 崩溃不影响 Rust 侧（设备保持当前状态），Rust 崩溃对 Python 表现为 gRPC 断连。
 
 ### CPU 绑核
 
@@ -413,7 +213,7 @@ taskset -c 6 ./motion-runtime
 
 ```
 P 核（性能核心）：Python 进程 — 推理、图像处理、BT tick
-E 核（效率核心）：Rust Motion Runtime — EtherCAT 周期循环
+E 核（效率核心）：Rust motion-runtime — EtherCAT 周期循环
 ```
 
 ### IgH 部署形态
@@ -426,15 +226,17 @@ IgH 是"内核模块 + 用户态库"双层架构：motion-runtime 通过 FFI 调
 
 ### 不需要 PREEMPT_RT
 
-PP 模式下，master 侧的时序要求：
+master 侧的时序要求：
 
 | 指标 | 要求 | 说明 |
 |------|------|------|
 | PDO 周期 | 1ms | IgH 在标准内核 + isolcpus 上可稳定达成 |
-| 允许抖动 | 数毫秒 | PP 模式下驱动器自己闭环，master 抖动不影响运动质量 |
+| 允许抖动 | 数毫秒 | 控制闭环都在外部控制器侧（机械臂 / 驱动器 / SPEL+），master 抖动不影响控制质量 |
 | BT tick | 20-50Hz (20-50ms) | Python 级别，宽裕 |
 
-标准 Linux 内核 + isolcpus 即可满足。当前实际部署在 Ubuntu 24.04 RT kernel 上（来自 pitfalls 文档环境记录），但 RT kernel 不是 PP 模式的硬性前提。Xenomai 不需要。
+标准 Linux 内核 + isolcpus 即可满足。当前实际部署在 Ubuntu 24.04 RT kernel 上（pitfalls 文档环境记录），但 RT kernel 不是硬性前提。Xenomai 不需要。
+
+**注**：上面的"控制闭环都在外部控制器侧"对当前接的设备（LS6 走 SPEL+、Beckhoff IO 没闭环、未来 SV660 走 PP 模式由驱动器闭环）成立。如果将来引入 CSP 模式（master 侧做插补），时序要求会显著变严，届时再评估是否上 PREEMPT_RT。
 
 ## 技术选型
 
@@ -456,49 +258,43 @@ PP 模式下，master 侧的时序要求：
 
 ### tonic + prost
 
-Rust gRPC 的标准选择。和 EtherCAT 周期循环共享同一个 tokio runtime——gRPC 一个 task，周期循环占主线程，靠共享的 `DeviceManager` 同步。Python 侧用 grpcio，两端从同一份 `.proto` 生成代码，接口一致性由编译器保证。
+Rust gRPC 的标准选择。和 EtherCAT 周期循环共享同一个 tokio runtime——gRPC 一个 task，周期循环占主线程，靠共享的 PDO buffer 同步。Python 侧用 grpcio，两端从同一份 `.proto` 生成代码，接口一致性由编译器保证。
 
-### PP 模式优先
+### YAML 作为契约格式
 
-Profile Position（PP）模式下，驱动器自己负责：
+候选格式有 YAML / TOML / JSON / Protobuf descriptor / 自创 DSL 等。选 YAML 的理由：
 
-- 轨迹规划（加减速曲线）
-- 伺服闭环（位置环 + 速度环 + 电流环）
-- 到位判断
+- 人写人读门槛低，业务侧改字段表不需要额外工具
+- 表达层次结构（fields 嵌套 offset/type/dir）自然
+- Rust 侧 `serde_yaml` 成熟稳定
 
-master 侧只需要：
-
-- 写入目标位置和速度
-- 触发启动
-- 读取状态和当前位置
-
-这让 master 侧逻辑极其简单。复杂的运动控制算法全部由驱动器固件完成。
-
-如果将来需要 CSP（Cyclic Synchronous Position）模式——master 侧每个周期发送一个插补位置点，需要微秒级抖动控制——再评估是否升级到 IgH + PREEMPT_RT。当前阶段不引入这个复杂度。
+不选 TOML：表达嵌套字段表稍显笨拙。不选 JSON：手写不便、不支持注释（契约文件需要大量注释解释每个字段的业务含义）。不选 Protobuf descriptor：把"字段名 → 字节布局"和 proto 类型耦合，不够灵活。
 
 ## 设计决策
 
 | 决策 | 理由 |
 |------|------|
-| 四模块单向依赖 | grpc → device → cia402 → ethercat，无循环依赖，每层可独立测试 |
-| CiA402 状态机独立封装 | 状态机逻辑和设备管理解耦。状态机只关心 controlword/statusword，不关心是哪个设备 |
-| 伺服和步进共用 MotionAxis | 两者都走 CiA402 PP 模式，协议层面完全一致，无需区分 |
-| IO 模块不走 CiA402 | EC3A-IO1632 没有 CiA402 状态机，上电直接读写。强行套 CiA402 是过度抽象 |
-| gRPC unary 调用而非 streaming | BT 每次 tick 主动轮询一次，符合 unary request-response 模式。streaming 增加复杂度无收益 |
-| 从站类型自动识别 | vendor_id + product_code 唯一标识设备类型，无需手动配置从站映射 |
-| 独立二进制独立进程 | 进程隔离：Python 崩溃不影响电机安全，Rust 可独立重启 |
-| IgH 而非 ethercrab | 最初选型 ethercrab，但 ethercrab 无法在 PREOP 阶段配置 DC SYNC，SV660N 卡在 SAFEOP 永远进不了 OP。IgH 的 DC 配置时序可控，且成熟稳定，是工业事实标准。代价是要装内核模块（`--disable-eoe` 重编译） |
-| PP 模式优先，推迟 CSP | 当前驱动器支持 PP 且满足需求。CSP 需要 master 插补 + 可能的 PREEMPT_RT，复杂度高一个量级 |
-| IgH 内核模块 + root 运行 | IgH 走字符设备 `/dev/EtherCAT0`，不走 raw socket，`setcap cap_net_raw` 已不适用；当前以 root 启动 motion-runtime，或对 `/dev/EtherCAT0` 单独授权 |
+| runtime 是薄翻译层 | 业务语义在 leaf，字节布局在 YAML，runtime 只懂字段名↔字节翻译。这让 runtime 的代码体积几乎不随支持的设备数量增长 |
+| 字段名是三方耦合面 | leaf / runtime / 外部控制器代码之间只通过字段名集合耦合，YAML 是单一真源 |
+| YAML 启动时一次性加载 | 改契约几乎一定伴随外部控制器代码变更，需要重启外部设备，runtime 重启可以接受 |
+| 没有"device_kind 硬分类" | 不再有"运动轴 / IO 模块"的硬编码二分；所有从站都是"挂着一份契约的字段端点"。`device_kind` 只是给可选 helper 的提示 |
+| `write_field` 异步落 buffer，下一周期发出 | 半个周期延迟可接受，且统一所有字段行为，不为某些"握手位"开特例 |
+| CiA402 helper 暂不实现 | 当前业务验证场景是 LS6-B602C，没有电机要接。等真有电机且发现 leaf 端写 controlword 重复严重，再回来加。是个 YAGNI 决策 |
+| 外部控制器代码放进 runtime 仓库 | 代码同居、运行时解耦：和契约 YAML 放在同一个设备目录里方便看、方便改、方便拷贝；runtime 二进制不读它 |
+| 外部控制器代码朝"参数解释器"方向写 | 让常规扩展（加一种动作）不改控制器代码，只改 YAML + leaf。重大能力扩展才改控制器代码 |
+| 独立二进制独立进程 | 进程隔离：Python 崩溃不影响设备状态，Rust 可独立重启 |
+| IgH 而非 ethercrab | ethercrab 在 PREOP 阶段配不了 DC SYNC，SV660N 永远进不了 OP。IgH 的 DC 配置时序可控，且成熟稳定 |
+| IgH 内核模块 + root 运行 | IgH 走字符设备 `/dev/EtherCAT0`，不走 raw socket，`setcap cap_net_raw` 已不适用 |
 | isolcpus 绑核 | 保证 PDO 周期稳定，不被推理负载抢占。标准 Linux 功能，零额外部署成本 |
 
 ## 本文档不覆盖
 
-以下主题将在后续 evo 文档中展开：
+以下主题在动手做时再展开（场景驱动，不预先空想）：
 
-- gRPC proto 详细定义（字段类型、错误码枚举、版本策略）
+- contract.yaml 的精确 schema（支持哪些字段类型、数组怎么表达、位字段怎么写、`dir: out` 字段的默认值怎么定）
+- gRPC proto 的精确形态（`write_field` / `read_field` 的消息结构、value 的 oneof 表达）
+- 错误处理细节（契约加载失败、字段名不存在、类型不匹配、slave 离线等的行为）
+- 协议级 helper（CiA402 状态机等）什么时候、以什么形态加进来
 - Safety Monitor 设计（急停、限位、碰撞检测）
-- 坐标变换（编码器脉冲 ↔ 物理单位 ↔ 工件坐标系）
-- 多轴协调运动（BT 层面的 Parallel 编排，不是 Rust 层面的）
-- 回零（Homing）流程的详细设计
+- 坐标变换、回零流程等业务层逻辑（属于 leaf / 外部控制器，不属于 runtime）
 - IgH 版本选择、`ecrt.h` API 完整用法、FFI 结构体布局的实测方法（见 pitfalls Pitfall 3）
