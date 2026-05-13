@@ -1,4 +1,4 @@
-pub mod cia402;
-pub mod device;
+pub mod contract;
 pub mod ethercat;
 pub mod grpc;
+pub mod translate;

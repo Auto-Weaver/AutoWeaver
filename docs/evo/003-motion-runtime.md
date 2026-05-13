@@ -45,6 +45,41 @@ LS6 单总线方案的研究记录见 [research/ethercat-unified-bus-ls6-rc90b.m
 
 这是个**强约束**：将来任何"要不要在 runtime 里加点 X"的争论，都先回到这一条来对。runtime 越薄、它能支持的设备越广、能跑的业务场景越多。
 
+## 0.7.0 的支持边界
+
+0.7.0 只支持一类 EtherCAT 从站：**"连续字节型 PDO"的设备**。具体是指——
+
+> 从站的 RxPDO / TxPDO 各自是**一片固定长度的连续字节区**，PDO 映射在配置阶段就是"映射这块连续区域"，不需要按 CoE 对象逐项 `ecrt_slave_config_reg_pdo_entry`。
+
+这类设备包括：
+
+- **机器人控制器的 EtherCAT 选件板**（Epson RC90-B、ABB / Yaskawa 同类产品）——主站和控制器之间通过一片"用户数据区"传参数 + 触发位
+- **数字量 IO 模块**（Beckhoff EK/EL 系列、汇川 EC3A-IO1632 等）——一片 DI 字节 + 一片 DO 字节
+- 任何"主站只是发字节、字节内字段含义由从站内部解释"的设备
+
+**0.7.0 显式不支持** "按 CoE 对象索引映射 PDO" 的设备，典型代表是 **CiA402 伺服 / 步进驱动器**（汇川 SV660、鸣志 STF05 等）。这类设备的每个 PDO 字段对应一个 CoE 对象（如 `0x607A` target position、`0x6040` controlword），映射时要逐项 `ecrt_slave_config_reg_pdo_entry`，且通常涉及 SDO 启动参数、DC SYNC 配置等额外步骤。把这套支持进来会让契约 schema 复杂一个量级，runtime 也得多一层"映射策略"的分支。
+
+将来要接电机时，工作流是：
+
+1. checkout 0.6.0 tag 看老 motion-runtime 的 SV660N 实现（`MotionAxis` / `Cia402StateMachine` / `tick_axis_sv660n`）作为参考
+2. 在 0.7.0 的薄翻译层基础上扩展契约 schema 增加"按对象映射"分支
+3. 评估是否需要内置 CiA402 helper（见 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md) 的"路 A / 路 B"讨论）
+
+不预先付这部分架构税。这是个 YAGNI 决策：**对不熟悉的领域提前设计兼容性，做出来的多半是错的，还得改。**
+
+## 0.7.0 重构期的取舍
+
+0.7.0 的初始落地分两个阶段：**先把薄翻译层的代码骨架和上层接口完整搭好，最后接 LS6 真机才完成 EtherCAT 驱动那一段**。这个顺序有意识地分开了"在没硬件时可以推进的事"和"需要看真实从站 ESI 才能做的事"，避免靠猜代码。
+
+具体取舍：
+
+- **去除而不是改造老电机代码**。0.6.0 的 `device/MotionAxis`、`cia402/`、`ethercat/master.rs` 里针对 SV660N 的 PDO 配置和 PP-mode 握手逻辑——这些**直接删掉**，不试图重构成"既能跑机械臂又兼容老电机"的中间形态。将来要接电机时，从 [0.6.0 tag](https://github.com/Auto-Weaver/AutoWeaver/releases/tag/0.6.0) 看老实现作参考，按 0.7.0 薄翻译层重新加。
+- **Cargo 依赖保守保留**。即便某些 crate（如 tonic、prost、tokio）在当前阶段没用满，依赖表保持完整。这样将来加回 EtherCAT 真实驱动 / CiA402 helper 时不用反复调依赖。
+- **`ethercat` 模块的真实驱动延后到接真机时再写**。当前阶段只搭骨架——`PdoBuffers` 共享缓冲区先就位（grpc 写 / 读它），但"扫总线 → 按契约 slave_match 绑定 → 用 IgH API 配 PDO → 跑 1ms 周期循环"那一段在没有 LS6 选件板真机 + 真实 ESI 的情况下写出来必然是猜的，**留作 stub**。等接真机时跑 `ethercat slaves -v` / `ethercat pdos -p 0` / `ethercat sdos -p 0` 看 LS6 选件板的 PDO 真实结构，再一次性把这段做对。
+- **`igh` Cargo feature**。默认 build 不链接 libethercat，开发机 / CI 跑 `cargo test` 无碍；接真机部署时 `cargo build --release --features igh` 启用 IgH 链接。
+
+这套取舍下，0.7.0 第一阶段交付物是：**代码骨架 + 完整单元测试 + 一份 LS6 stub 契约 + 启动 YAML 示例**。可以在 dev 机器上 build / test / 启动（但跑不通真实总线，因为 ethercat 主循环是 stub）。第二阶段接真机时只动 `ethercat/master.rs` 这一个文件，其他模块都不动。
+
 ## 三方耦合面
 
 motion-runtime 处在三方之间的中间位置：

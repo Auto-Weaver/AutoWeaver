@@ -1,0 +1,166 @@
+' ============================================================================
+' controller_program.spel — parameter interpreter running on Epson RC90-B.
+' ============================================================================
+'
+' The master (motion-runtime) and this program agree on a byte layout in the
+' EtherCAT slave option board's data area. See contract.yaml in this directory
+' for the authoritative field table; change one side and you MUST change the
+' other.
+'
+' Why "Fieldbus" calls and not "EtherCAT" calls
+' ---------------------------------------------
+' On the SPEL+ side the EtherCAT option board's user data area is exposed as
+' regular Fieldbus Slave I/O. There is no EtherCAT-specific API. The data
+' area is mapped into the controller's I/O port space starting at bit 512 by
+' default (configurable in RC+ → System Configuration → Fieldbus I/O).
+' See esi-notes.md for the full port-number derivation. Quick reference:
+'   base_bit  = 512
+'   base_byte = 64    (= 512 / 8)
+'   base_word = 32    (= 512 / 16)
+'
+' Wire layout (must match contract.yaml exactly)
+' ----------------------------------------------
+'   ── Input area (master writes, SPEL+ reads) — fieldbus port arithmetic ──
+'   target_x   : REAL at byte offset  0  →  InReal(32)         (base_word + 0/2)
+'   target_y   : REAL at byte offset  4  →  InReal(34)         (base_word + 4/2)
+'   target_z   : REAL at byte offset  8  →  InReal(36)         (base_word + 8/2)
+'   target_u   : REAL at byte offset 12  →  InReal(38)         (base_word + 12/2)
+'   speed      : u16  at byte offset 16  →  InW(40)            (base_word + 16/2)
+'   routine    : u8   at byte offset 18  →  In(82)             (base_byte + 18)
+'   trigger    : bit  at byte 19 bit 0   →  Sw(664)            (base_bit + 19*8 + 0)
+'
+'   ── Output area (SPEL+ writes, master reads) ──
+'   done       : bit  at byte 0 bit 0    →  On 512 / Off 512   (base_bit + 0*8 + 0)
+'   busy       : bit  at byte 0 bit 1    →  On 513 / Off 513   (base_bit + 0*8 + 1)
+'   error_code : u16  at byte offset 2   →  OutW 33, value     (base_word + 2/2)
+'
+' Design principle (see docs/evo/003-motion-runtime.md "External controller
+' code conventions"):
+' This is a "parameter interpreter" — when the trigger bit goes high, dispatch
+' on the routine byte, run the corresponding motion command with parameters
+' read from the data area, and report status / errors via the unified output
+' fields. Common extensions (adding a new motion type) only require adding a
+' Case branch here and updating the routine note in contract.yaml; the runtime
+' code and BT leaves do not change.
+'
+' Byte order: REAL / WORD values on the wire are little-endian (IgH master
+' default). Confirm on bring-up by writing 1.0f from master and reading
+' back via InReal(32) — should yield 1.0; if it yields some scrambled value
+' the master is sending big-endian and the contract needs an adjustment.
+' ============================================================================
+
+' ----------------------------------------------------------------------------
+' Port-number constants (kept inline for clarity; if RC+ is configured with a
+' different Fieldbus base bit, regenerate these and update contract.yaml's
+' design intent comment).
+' ----------------------------------------------------------------------------
+#define IN_TARGET_X     32
+#define IN_TARGET_Y     34
+#define IN_TARGET_Z     36
+#define IN_TARGET_U     38
+#define IN_SPEED        40
+#define IN_ROUTINE      82
+#define IN_TRIGGER     664
+
+#define OUT_DONE       512
+#define OUT_BUSY       513
+#define OUT_ERROR_CODE  33
+
+' Error code values (mirrors RxPDO routine byte semantics).
+' Keep in sync with how the BT leaf interprets error_code.
+#define ERR_NONE              0
+#define ERR_UNKNOWN_ROUTINE   1001
+#define ERR_MOTION_FAILED     1002
+
+Function Main
+
+    Real target_x, target_y, target_z, target_u
+    Integer speed, routine
+    Integer trigger
+
+    Motor On
+    Power High
+
+    ' Initialize output area to "idle".
+    Off OUT_BUSY
+    Off OUT_DONE
+    OutW OUT_ERROR_CODE, ERR_NONE
+
+    Print "controller_program: ready, waiting for trigger"
+
+    Do
+        trigger = Sw(IN_TRIGGER)
+
+        If trigger = 1 Then
+            ' --------------------------------------------------------------
+            ' Enter "busy" state: clear done, raise busy, clear error.
+            ' This is the snapshot that the master sees while we work.
+            ' --------------------------------------------------------------
+            Off OUT_DONE
+            On OUT_BUSY
+            OutW OUT_ERROR_CODE, ERR_NONE
+
+            ' Read all parameters from the input area.
+            target_x = InReal(IN_TARGET_X)
+            target_y = InReal(IN_TARGET_Y)
+            target_z = InReal(IN_TARGET_Z)
+            target_u = InReal(IN_TARGET_U)
+            speed = InW(IN_SPEED)
+            routine = In(IN_ROUTINE)
+
+            Print "trigger received: routine=", routine, " speed=", speed
+            Print "target x=", target_x, " y=", target_y, " z=", target_z, " u=", target_u
+
+            ' Set motion speed for this move; controller-side defaults can
+            ' override this if needed (e.g. Accel was set in a separate setup
+            ' routine; we don't tune Accel per trigger here).
+            Speed speed
+
+            ' --------------------------------------------------------------
+            ' Dispatch on routine. Any motion error caught by OnErr drops to
+            ' the MoveFailed label below which sets error_code and finishes
+            ' the handshake.
+            ' --------------------------------------------------------------
+            OnErr GoTo MoveFailed
+
+            Select Case routine
+                Case 1
+                    Go XY(target_x, target_y, target_z, target_u)
+                Case 2
+                    Jump XY(target_x, target_y, target_z, target_u)
+                Case 3
+                    Move XY(target_x, target_y, target_z, target_u)
+                Case 4
+                    Home
+                Default
+                    OutW OUT_ERROR_CODE, ERR_UNKNOWN_ROUTINE
+            Send
+
+            ' --------------------------------------------------------------
+            ' Motion (or error-code write) completed: raise done, drop busy.
+            ' --------------------------------------------------------------
+            Off OUT_BUSY
+            On OUT_DONE
+
+            ' Wait for the master to clear the trigger bit before accepting a
+            ' new request. This is the falling-edge half of the handshake and
+            ' prevents one trigger from being executed twice on consecutive
+            ' polls. We do NOT clear done here — done stays high until the
+            ' next trigger rising edge, so a master that polls done after
+            ' clearing trigger still sees the true completion state.
+            Wait Sw(IN_TRIGGER) = 0
+        EndIf
+
+        Wait 0.01
+    Loop
+
+MoveFailed:
+    ' OnErr fall-through: motion command raised an exception. Report a
+    ' generic motion-failed code; richer diagnostics (Err / ErrMsg$) could
+    ' be stuffed into reserved output bytes in a future contract version.
+    OutW OUT_ERROR_CODE, ERR_MOTION_FAILED
+    Off OUT_BUSY
+    On OUT_DONE
+    Wait Sw(IN_TRIGGER) = 0
+    EResume Next
+Fend

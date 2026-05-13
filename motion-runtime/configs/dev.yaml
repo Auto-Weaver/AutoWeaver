@@ -1,0 +1,14 @@
+# motion-runtime startup configuration (development).
+#
+# Usage:
+#   cargo run -- --config configs/dev.yaml
+#
+# Explicit list of contracts to load on startup. The runtime does NOT scan
+# directories — only files listed here are loaded. Paths are resolved
+# relative to the directory containing this config file.
+
+contracts:
+  - ../contracts/arm/epson-rc90b/contract.yaml
+
+  # Future devices (uncomment when wired up):
+  # - ../contracts/io/beckhoff-ek1100/contract.yaml
