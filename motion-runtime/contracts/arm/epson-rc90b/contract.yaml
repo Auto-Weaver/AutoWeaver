@@ -25,20 +25,29 @@ slave_match:
   vendor_id: 0x057E
   product_code: 0x00000003
 
-# PDO mapping — default USINT 32-byte assemblies (RxPDO 0x1600, TxPDO 0x1A00).
-# Both directions: 32 bytes each, master-side byte offset addressing,
+# PDO mapping — USINT byte-granular assemblies (RxPDO 0x1600, TxPDO 0x1A00).
+# Both directions: 128 bytes each, master-side byte offset addressing,
 # corresponding to CoE objects 0x2100 (output) and 0x2000 (input) subindex
-# 1..32 (each subindex = 1 byte / USINT).
+# 1..128 (each subindex = 1 byte / USINT).
+#
+# Why 128 not 32: the ESI declares 0x1600 = "RxPDO(USINT32byte)" but the
+# live RC90-B reports 0x1600 with 128 entries (verified via `ethercat pdos
+# -p 0` on bring-up — see esi-notes.md "Observed live config"). The slave
+# uses "Enable Upload at startup", so its actual PDO assignment overrides
+# the ESI's static declaration. We mirror what hardware actually exposes.
+#
+# Only bytes 0..19 carry meaningful fields; bytes 20..127 are reserved.
 #
 # On the SPEL+ side the same bytes appear as Fieldbus I/O starting at bit
 # offset 512 (default). Byte 0 of the master's RxPDO output corresponds to
 # SPEL+ port In(64); see esi-notes.md "Port-number arithmetic" for the
-# conversion rules.
+# conversion rules. RC+ Fieldbus I/O Input/Output sizes must be set to 128B
+# to match.
 pdo_mapping:
   rx_pdo_index: 0x1600
-  rx_pdo_size: 32
+  rx_pdo_size: 128
   tx_pdo_index: 0x1A00
-  tx_pdo_size: 32
+  tx_pdo_size: 128
 
 # ---- Field table ----
 # dir: out  → master writes; offset is the byte position within RxPDO (0..31)
@@ -57,10 +66,10 @@ fields:
   speed:       { offset: 16, type: u16,  dir: out }
   routine:     { offset: 18, type: u8,   dir: out }   # 1=Go, 2=Jump, 3=Move, 4=Home
   trigger:     { offset: 19, type: bool, dir: out, bit: 0 }
-  # bytes 20..31 reserved for future fields; do not write garbage from leaf side
+  # bytes 20..127 reserved for future fields; do not write garbage from leaf side
 
   # ── TxPDO (SPEL+ → master) ──
   done:        { offset: 0,  type: bool, dir: in,  bit: 0 }
   busy:        { offset: 0,  type: bool, dir: in,  bit: 1 }
   error_code:  { offset: 2,  type: u16,  dir: in }
-  # bytes 4..31 reserved for future fields (e.g. live position, controller status word)
+  # bytes 4..127 reserved for future fields (e.g. live position, controller status word)

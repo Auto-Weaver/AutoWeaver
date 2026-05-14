@@ -112,10 +112,9 @@ CiA402 servo drive:
   re-configure PDOs at runtime via SDO. The master must pick one of the
   predefined PDO assemblies listed above.
 
-## Our choice: default USINT, 32 B each direction
+## Our choice: USINT 128 B each direction
 
-For the LS6 contract we use **RxPDO `0x1600` (32 B USINT) + TxPDO `0x1A00`
-(32 B USINT)** — the default.
+For the LS6 contract we use **RxPDO `0x1600` + TxPDO `0x1A00`, 128 B each**.
 
 Rationale:
 
@@ -126,12 +125,41 @@ Rationale:
 - The REAL PDO would force everything to be 4-byte aligned; squeezing
   bits (trigger / done) and small ints (error code) into REAL slots is
   awkward (would need bit-level bit_cast hacks on both sides).
-- 32 bytes is enough headroom for the current field set (~24 bytes used).
-- It is the default — picking it means no SDO PDO-assign step is needed.
+- 128 B size: forced by what the live slave reports, see "Observed live
+  config" below. Only ~20 bytes are actually used; the rest is headroom
+  for future telemetry fields without another PDO renegotiation.
 
-If we ever outgrow 32 B (more parameters, longer error strings, telemetry
-streams), the natural upgrade is `0x1601` + `0x1A01` (USINT 64 B), still in
-the same family.
+## Observed live config (bring-up 2026-05-14)
+
+The ESI declares 0x1600 as "RxPDO(USINT32byte)" with `DefaultSize="32"`.
+But running `ethercat pdos -p 0` against the real RC90-B yields:
+
+```
+SM2: PhysAddr 0x1000, DefaultSize 128
+  RxPDO 0x1600 "RxPDO"
+    PDO entry 0x2100:01 .. 0x2100:80    (128 entries × 8 bit)
+SM3: PhysAddr 0x1600, DefaultSize 128
+  TxPDO 0x1a00 "TxPDO"
+    PDO entry 0x2000:01 .. 0x2000:80    (128 entries × 8 bit)
+```
+
+i.e. the live PDO is **128 bytes**, not 32. The slave advertises
+`Enable Upload at startup: yes`, which means at PREOP the master
+re-reads the actual PDO assignment from the slave object dictionary —
+that read overrides the ESI's static declaration. The slave's actual
+configuration appears to be controlled by the RC+ Fieldbus I/O size
+setting on the controller side.
+
+**Decision**: trust hardware. `contract.yaml` declares 128 B, our master
+allocates a 128 B domain in each direction, the SPEL+ side should be
+configured for 128 B in RC+ Fieldbus I/O. If we later want 32 B for
+bandwidth reasons, change RC+ first, re-run `ethercat pdos -p 0` to
+confirm, then bring `contract.yaml` down to match.
+
+If we ever need to switch families (e.g. to REAL PDOs for some reason),
+the natural upgrade is `0x1605` + `0x1A05` (REAL 32 B = 8 REALs), but
+note that would also need to wait for an RC+ Fieldbus I/O config change
+to take effect on the slave side.
 
 ## Controller-side access (SPEL+)
 

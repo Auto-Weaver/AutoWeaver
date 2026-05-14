@@ -21,14 +21,20 @@ motion-runtime **只读 `contract.yaml`**，不读 `.spel` 文件——SPEL+ 代
 
 ## 真机验证 checklist
 
-本契约是 0.7.0 第一阶段的 stub，**数值未经真机验证**。接真机时需要确认：
+第一阶段 stub 数值的真机比对。完成时间见后面的勾。
 
-- [ ] `slave_match.name_contains` 实际匹配 `ethercat slaves` 输出的设备名
-- [ ] `pdo_mapping.rx_pdo_index` / `tx_pdo_index` 和 `ethercat pdos -p N` 显示的 PDO assembly index 一致
-- [ ] `rx_pdo_size` / `tx_pdo_size` 不超过选件板暴露的用户数据区容量
-- [ ] SPEL+ 这边的 `EcReadReal` / `EcWriteByte` 等 API 替换成真实 Epson SPEL+ 函数（参考 Epson EtherCAT 选件板编程手册）
-- [ ] 数据区字节序确认（Epson 默认 little-endian？需要查文档或实测）
-- [ ] 通过一个最简的运动指令（如 `routine=4` Home）确认整个回路打通
+- [x] `slave_match.vendor_id` / `product_code` 匹配 `ethercat slaves -v` 输出
+      （0x057E / 0x00000003 / rev 0x00000001，2026-05-14 验证）
+- [x] `pdo_mapping.rx_pdo_index` / `tx_pdo_index` 和 `ethercat pdos -p 0` 显示一致
+      （0x1600 / 0x1A00，2026-05-14 验证）
+- [x] `rx_pdo_size` / `tx_pdo_size` 与从站汇报的 PDO 实际容量一致
+      （128B / 128B，按从站 live config 修正，2026-05-14）
+- [x] SPEL+ 这边的 API 是真实可用的 Fieldbus I/O 调用（`InReal` / `Sw` / `On` / `Off` / `OutW`）
+      —— codex 互联网调研结果对齐
+- [ ] 数据区字节序确认：master 写 1.0f → SPEL+ `InReal(32)` 读回 1.0
+      （需 SPEL+ 程序部署后做）
+- [ ] RC+ → Setup → System Configuration → Fieldbus I/O 设为 **128B / 128B**，base bit 512
+- [ ] 通过最简运动指令（建议先 `routine=4` Home）确认整个回路打通
 
 ## 扩展约定
 
