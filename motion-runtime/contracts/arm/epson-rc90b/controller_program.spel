@@ -75,7 +75,8 @@
 Function Main
 
     Real target_x, target_y, target_z, target_u
-    Integer speed, routine
+    Integer move_speed
+    Integer routine
     Integer trigger
 
     Motor On
@@ -105,25 +106,32 @@ Function Main
             target_y = InReal(IN_TARGET_Y)
             target_z = InReal(IN_TARGET_Z)
             target_u = InReal(IN_TARGET_U)
-            speed = InW(IN_SPEED)
+            move_speed = InW(IN_SPEED)
             routine = In(IN_ROUTINE)
 
-            Print "trigger received: routine=", routine, " speed=", speed
+            Print "trigger received: routine=", routine, " speed=", move_speed
             Print "target x=", target_x, " y=", target_y, " z=", target_z, " u=", target_u
 
             ' Set motion speed for this move; controller-side defaults can
             ' override this if needed (e.g. Accel was set in a separate setup
             ' routine; we don't tune Accel per trigger here).
-            Speed speed
+            ' Variable name is `move_speed` (not `speed`) because `Speed` is
+            ' a SPEL+ keyword — using `speed` as a variable triggers a parse
+            ' ambiguity on the `Speed <var>` line.
+            Speed move_speed
 
             ' --------------------------------------------------------------
             ' Dispatch on routine. Any motion error caught by OnErr drops to
             ' the MoveFailed label below which sets error_code and finishes
             ' the handshake.
+            '
+            ' SPEL+ Select syntax is `Select <expr>` (no `Case` after Select),
+            ' then `Case <value>` arms and `Default` for the fall-through.
+            ' Block terminator is `Send`, not `End Select`.
             ' --------------------------------------------------------------
             OnErr GoTo MoveFailed
 
-            Select Case routine
+            Select routine
                 Case 1
                     Go XY(target_x, target_y, target_z, target_u)
                 Case 2
