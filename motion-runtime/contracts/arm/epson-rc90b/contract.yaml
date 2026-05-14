@@ -17,7 +17,7 @@
 
 device: arm
 description: "Epson LS6-B602C via RC90-B EtherCAT slave option board"
-protocol_version: 1
+protocol_version: 2
 
 # Identify the slave by Epson's vendor + product code (from ESI).
 # vendor_id 0x057E = Epson; product_code 0x00000003 = RC90_Slave.
@@ -59,17 +59,53 @@ pdo_mapping:
 # matches typical x86 master behavior). Confirm on bring-up.
 fields:
   # ── RxPDO (master → SPEL+) ──
+  # Motion target in robot world coordinates. mm for x/y/z, deg for u.
   target_x:    { offset: 0,  type: f32,  dir: out }
   target_y:    { offset: 4,  type: f32,  dir: out }
   target_z:    { offset: 8,  type: f32,  dir: out }
   target_u:    { offset: 12, type: f32,  dir: out }
-  speed:       { offset: 16, type: u16,  dir: out }
-  routine:     { offset: 18, type: u8,   dir: out }   # 1=Go, 2=Jump, 3=Move, 4=Home
-  trigger:     { offset: 19, type: bool, dir: out, bit: 0 }
-  # bytes 20..127 reserved for future fields; do not write garbage from leaf side
+  # Speed / Accel as percentages 0..100 of the controller's max. Both are
+  # applied per trigger (the SPEL+ side runs `Speed speed` and
+  # `Accel accel, accel` before each Select arm), so leaves can dial them
+  # per motion — gentle for delicate placement, aggressive for long traverses.
+  speed:        { offset: 16, type: u16,  dir: out }
+  accel:        { offset: 18, type: u16,  dir: out }
+  # Routine selector. SPEL+'s Select arm runs the corresponding command.
+  #   1  = Go XY  (PTP, arc-shaped path, fastest)
+  #   2  = Jump XY  (Z-up then PTP then Z-down — common pick/place pattern)
+  #   3  = Move XY  (straight-line interpolation)
+  #   4  = Home  (move to configured Home position; absolute, not relative)
+  #   10 = ReportPose  (capture CX/CY/CZ/CU(Here) into current_x..u; no motion)
+  #   11 = ReportJoints  (capture PAgl(RealPos, N) into joint_1..4; no motion)
+  #   12 = SetMotors  (routine_arg bit 0: 1=Motor On / Power High,
+  #                                       0=Motor Off; no motion)
+  routine:      { offset: 20, type: u8,   dir: out }
+  # Generic 1-byte argument for the few routines that need one (routine=12).
+  # All other routines ignore it.
+  routine_arg:  { offset: 21, type: u8,   dir: out }
+  # Rising edge of trigger kicks off whatever `routine` selects. The master
+  # is responsible for setting routine + parameters BEFORE flipping trigger
+  # to 1, and for waiting until done=1 then clearing trigger to 0 to
+  # complete the half-duplex handshake.
+  trigger:      { offset: 22, type: bool, dir: out, bit: 0 }
+  # bytes 23..127 reserved for future fields; do not write garbage from leaf side
 
   # ── TxPDO (SPEL+ → master) ──
   done:        { offset: 0,  type: bool, dir: in,  bit: 0 }
   busy:        { offset: 0,  type: bool, dir: in,  bit: 1 }
   error_code:  { offset: 2,  type: u16,  dir: in }
-  # bytes 4..127 reserved for future fields (e.g. live position, controller status word)
+  # Current world-frame pose. mm for x/y/z, deg for u. Refreshed only by
+  # routine=10 (snapshot semantics — stale until next ReportPose).
+  current_x:   { offset: 4,  type: f32,  dir: in }
+  current_y:   { offset: 8,  type: f32,  dir: in }
+  current_z:   { offset: 12, type: f32,  dir: in }
+  current_u:   { offset: 16, type: f32,  dir: in }
+  # Current joint positions. SPEL+ side reads them with
+  # PAgl(RealPos, jointN) which returns engineering units directly:
+  # deg for revolute joints (J1/J2/J4), mm for the prismatic Z joint (J3).
+  # Refreshed only by routine=11 (snapshot semantics).
+  joint_1:     { offset: 20, type: f32,  dir: in }
+  joint_2:     { offset: 24, type: f32,  dir: in }
+  joint_3:     { offset: 28, type: f32,  dir: in }
+  joint_4:     { offset: 32, type: f32,  dir: in }
+  # bytes 36..127 reserved for future fields

@@ -5,7 +5,8 @@
 ' The master (motion-runtime) and this program agree on a byte layout in the
 ' EtherCAT slave option board's data area. See contract.yaml in this directory
 ' for the authoritative field table; change one side and you MUST change the
-' other.
+' other. `protocol_version` in contract.yaml is the canary — bump it when
+' the layout changes so a stale master detects the drift.
 '
 ' Why "Fieldbus" calls and not "EtherCAT" calls
 ' ---------------------------------------------
@@ -18,21 +19,31 @@
 '   base_byte = 64    (= 512 / 8)
 '   base_word = 32    (= 512 / 16)
 '
-' Wire layout (must match contract.yaml exactly)
-' ----------------------------------------------
+' Wire layout (must match contract.yaml exactly — protocol_version 2)
+' --------------------------------------------------------------------
 '   ── Input area (master writes, SPEL+ reads) — fieldbus port arithmetic ──
-'   target_x   : REAL at byte offset  0  →  InReal(32)         (base_word + 0/2)
-'   target_y   : REAL at byte offset  4  →  InReal(34)         (base_word + 4/2)
-'   target_z   : REAL at byte offset  8  →  InReal(36)         (base_word + 8/2)
-'   target_u   : REAL at byte offset 12  →  InReal(38)         (base_word + 12/2)
-'   speed      : u16  at byte offset 16  →  InW(40)            (base_word + 16/2)
-'   routine    : u8   at byte offset 18  →  In(82)             (base_byte + 18)
-'   trigger    : bit  at byte 19 bit 0   →  Sw(664)            (base_bit + 19*8 + 0)
+'   target_x    : REAL at byte offset  0  →  InReal(32)         (base_word + 0/2)
+'   target_y    : REAL at byte offset  4  →  InReal(34)         (base_word + 4/2)
+'   target_z    : REAL at byte offset  8  →  InReal(36)         (base_word + 8/2)
+'   target_u    : REAL at byte offset 12  →  InReal(38)         (base_word + 12/2)
+'   speed       : u16  at byte offset 16  →  InW(40)            (base_word + 16/2)
+'   accel       : u16  at byte offset 18  →  InW(41)            (base_word + 18/2)
+'   routine     : u8   at byte offset 20  →  In(84)             (base_byte + 20)
+'   routine_arg : u8   at byte offset 21  →  In(85)             (base_byte + 21)
+'   trigger     : bit  at byte 22 bit 0   →  Sw(688)            (base_bit + 22*8 + 0)
 '
 '   ── Output area (SPEL+ writes, master reads) ──
 '   done       : bit  at byte 0 bit 0    →  On 512 / Off 512   (base_bit + 0*8 + 0)
 '   busy       : bit  at byte 0 bit 1    →  On 513 / Off 513   (base_bit + 0*8 + 1)
 '   error_code : u16  at byte offset 2   →  OutW 33, value     (base_word + 2/2)
+'   current_x  : REAL at byte offset  4  →  OutReal 34, value  (base_word + 4/2)
+'   current_y  : REAL at byte offset  8  →  OutReal 36, value  (base_word + 8/2)
+'   current_z  : REAL at byte offset 12  →  OutReal 38, value  (base_word + 12/2)
+'   current_u  : REAL at byte offset 16  →  OutReal 40, value  (base_word + 16/2)
+'   joint_1    : REAL at byte offset 20  →  OutReal 42, value  (base_word + 20/2)
+'   joint_2    : REAL at byte offset 24  →  OutReal 44, value  (base_word + 24/2)
+'   joint_3    : REAL at byte offset 28  →  OutReal 46, value  (base_word + 28/2)
+'   joint_4    : REAL at byte offset 32  →  OutReal 48, value  (base_word + 32/2)
 '
 ' Design principle (see docs/evo/003-motion-runtime.md "External controller
 ' code conventions"):
@@ -44,30 +55,49 @@
 ' code and BT leaves do not change.
 '
 ' Byte order: REAL / WORD values on the wire are little-endian (IgH master
-' default). Confirm on bring-up by writing 1.0f from master and reading
-' back via InReal(32) — should yield 1.0; if it yields some scrambled value
-' the master is sending big-endian and the contract needs an adjustment.
+' default). Confirmed on bring-up.
+'
+' SCARA configuration flag `/R`
+' -----------------------------
+' Every motion command targeting an XY() point includes `/R` (right-arm
+' configuration). SCARA arms have two configurations that can reach the
+' same point — the controller will pick one if you don't say which, and
+' a silent configuration flip mid-motion is one of the classic ways a
+' machine surprises a fixture. We pin it to /R uniformly; if a leaf ever
+' needs lefty config it gets its own routine.
 ' ============================================================================
 
 ' ----------------------------------------------------------------------------
-' Port-number constants (kept inline for clarity; if RC+ is configured with a
-' different Fieldbus base bit, regenerate these and update contract.yaml's
-' design intent comment).
+' RxPDO port-number constants (master → SPEL+).
 ' ----------------------------------------------------------------------------
 #define IN_TARGET_X     32
 #define IN_TARGET_Y     34
 #define IN_TARGET_Z     36
 #define IN_TARGET_U     38
 #define IN_SPEED        40
-#define IN_ROUTINE      82
-#define IN_TRIGGER     664
+#define IN_ACCEL        41
+#define IN_ROUTINE      84
+#define IN_ROUTINE_ARG  85
+#define IN_TRIGGER     688
 
+' ----------------------------------------------------------------------------
+' TxPDO port-number constants (SPEL+ → master).
+' ----------------------------------------------------------------------------
 #define OUT_DONE       512
 #define OUT_BUSY       513
 #define OUT_ERROR_CODE  33
+#define OUT_CURRENT_X   34
+#define OUT_CURRENT_Y   36
+#define OUT_CURRENT_Z   38
+#define OUT_CURRENT_U   40
+#define OUT_JOINT_1     42
+#define OUT_JOINT_2     44
+#define OUT_JOINT_3     46
+#define OUT_JOINT_4     48
 
-' Error code values (mirrors RxPDO routine byte semantics).
-' Keep in sync with how the BT leaf interprets error_code.
+' ----------------------------------------------------------------------------
+' Error codes (mirrored on the leaf side via error_code u16 field).
+' ----------------------------------------------------------------------------
 #define ERR_NONE              0
 #define ERR_UNKNOWN_ROUTINE   1001
 #define ERR_MOTION_FAILED     1002
@@ -76,9 +106,13 @@ Function Main
 
     Real target_x, target_y, target_z, target_u
     Integer move_speed
+    Integer move_accel
     Integer routine
+    Integer routine_arg
     Integer trigger
 
+    ' Default to motors-on / high-power so the very first trigger lands on a
+    ' ready arm. routine=12 can flip motors later (e.g. for safe teach).
     Motor On
     Power High
 
@@ -107,39 +141,82 @@ Function Main
             target_z = InReal(IN_TARGET_Z)
             target_u = InReal(IN_TARGET_U)
             move_speed = InW(IN_SPEED)
+            move_accel = InW(IN_ACCEL)
             routine = In(IN_ROUTINE)
+            routine_arg = In(IN_ROUTINE_ARG)
 
-            Print "trigger received: routine=", routine, " speed=", move_speed
-            Print "target x=", target_x, " y=", target_y, " z=", target_z, " u=", target_u
-
-            ' Set motion speed for this move; controller-side defaults can
-            ' override this if needed (e.g. Accel was set in a separate setup
-            ' routine; we don't tune Accel per trigger here).
-            ' Variable name is `move_speed` (not `speed`) because `Speed` is
-            ' a SPEL+ keyword — using `speed` as a variable triggers a parse
-            ' ambiguity on the `Speed <var>` line.
-            Speed move_speed
+            Print "trigger received: routine=", routine, " arg=", routine_arg
+            Print "  speed=", move_speed, " accel=", move_accel
+            Print "  target x=", target_x, " y=", target_y, " z=", target_z, " u=", target_u
 
             ' --------------------------------------------------------------
-            ' Dispatch on routine. Any motion error caught by OnErr drops to
-            ' the MoveFailed label below which sets error_code and finishes
-            ' the handshake.
+            ' Dispatch on routine. Any motion error caught by OnErr drops
+            ' to the MoveFailed label below which sets error_code and
+            ' finishes the handshake.
+            '
+            ' Speed / Accel are applied only inside motion arms (Case 1/2/3)
+            ' — the report / state arms (10/11/12/13) have no motion and
+            ' don't need them set. This also prevents bogus speed=0/accel=0
+            ' values (e.g. when leaves call routine=10 without filling the
+            ' rate fields) from crashing the task with "Invalid speed".
             '
             ' SPEL+ Select syntax is `Select <expr>` (no `Case` after Select),
             ' then `Case <value>` arms and `Default` for the fall-through.
             ' Block terminator is `Send`, not `End Select`.
+            ' Variable names are `move_speed` / `move_accel` (not `speed` /
+            ' `accel`) because `Speed` and `Accel` are SPEL+ keywords —
+            ' using them as variables makes the `Speed <var>` line ambiguous
+            ' to the parser.
             ' --------------------------------------------------------------
             OnErr GoTo MoveFailed
 
             Select routine
                 Case 1
-                    Go XY(target_x, target_y, target_z, target_u)
+                    Speed move_speed
+                    Accel move_accel, move_accel
+                    Go XY(target_x, target_y, target_z, target_u) /R
                 Case 2
-                    Jump XY(target_x, target_y, target_z, target_u)
+                    Speed move_speed
+                    Accel move_accel, move_accel
+                    Jump XY(target_x, target_y, target_z, target_u) /R
                 Case 3
-                    Move XY(target_x, target_y, target_z, target_u)
+                    Speed move_speed
+                    Accel move_accel, move_accel
+                    Move XY(target_x, target_y, target_z, target_u) /R
                 Case 4
+                    Speed move_speed
+                    Accel move_accel, move_accel
                     Home
+                Case 10
+                    ' Report current pose, no motion. CX/CY/CZ/CU of Here read
+                    ' the system's current commanded position; OutReal pushes
+                    ' each f32 into the TxPDO image. Leaves use this for
+                    ' relative-move planning (current + delta -> target).
+                    OutReal OUT_CURRENT_X, CX(Here)
+                    OutReal OUT_CURRENT_Y, CY(Here)
+                    OutReal OUT_CURRENT_Z, CZ(Here)
+                    OutReal OUT_CURRENT_U, CU(Here)
+                Case 11
+                    ' Report joint angles in engineering units (deg / mm).
+                    ' PAgl(RealPos, jointN) converts the live encoder
+                    ' position into joint-space units directly — no need
+                    ' to do pulses-per-rev math on the leaf side.
+                    OutReal OUT_JOINT_1, PAgl(RealPos, 1)
+                    OutReal OUT_JOINT_2, PAgl(RealPos, 2)
+                    OutReal OUT_JOINT_3, PAgl(RealPos, 3)
+                    OutReal OUT_JOINT_4, PAgl(RealPos, 4)
+                Case 12
+                    ' Set motor / power state from routine_arg bit 0.
+                    '   bit 0 = 1  →  Motor On + Power High  (ready for motion)
+                    '   bit 0 = 0  →  Motor Off              (safe for teach)
+                    ' This is the only routine that ignores the target_*
+                    ' fields; the leaf doesn't need to send valid coords.
+                    If (routine_arg And 1) = 1 Then
+                        Motor On
+                        Power High
+                    Else
+                        Motor Off
+                    EndIf
                 Default
                     OutW OUT_ERROR_CODE, ERR_UNKNOWN_ROUTINE
             Send
@@ -166,6 +243,9 @@ MoveFailed:
     ' OnErr fall-through: motion command raised an exception. Report a
     ' generic motion-failed code; richer diagnostics (Err / ErrMsg$) could
     ' be stuffed into reserved output bytes in a future contract version.
+    ' The next trigger entry automatically clears OUT_ERROR_CODE back to
+    ' ERR_NONE, so leaves don't need a separate "ack error" call to
+    ' recover — just issue the next motion.
     OutW OUT_ERROR_CODE, ERR_MOTION_FAILED
     Off OUT_BUSY
     On OUT_DONE
