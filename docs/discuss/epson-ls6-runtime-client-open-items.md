@@ -20,101 +20,138 @@ EpsonLS6 接入 BT 这条主路径上，**RuntimeClient 文件本身**之外还�
 
 剩下要讨论的：
 
-- **B**（Trigger 边沿协议）—— 待聊
-- **C**（SPEL+ 项目模板）—— 跟 B 强耦合，B 拍完顺手
+- ~~**B**（Trigger 边沿协议）~~ —— 拍：原子批量 `WriteFields` + B2 goal_id 配对，见本文档 B 节
+- **C**（SPEL+ 项目模板）—— B 已落，C 接着展开
 - **D**（EpsonLS6 driver 形态）—— B / C 拍完后展开
 - **E**（多设备 wiring）—— 不阻塞 RuntimeClient
 - ~~**F**（contract.yaml 在 Python 端的角色）~~ —— 拍 F1：Python 端不读 contract，见本文档 F 节
 
 ---
 
-## B. Trigger 边沿协议
+## B. Trigger 边沿协议 ✅
 
 ### 一句话
 
-EpsonLS6.move_l 内部要"写 6 个 pose 字段 + 写 routine + 翻 trigger 边沿"——这个"翻 trigger"的具体序列怎么走。
+EpsonLS6.move_l 内部要"写 6 个 pose 字段 + 写 routine + 发开始信号"——这个完整序列怎么走。
 
-### 背景
+### 拍板：原子批量 `WriteFields` + B2 goal_id 配对（2026-05-16）
 
-EVO-003 已经定调："SPEL+ 项目写成参数解释器"。具体形态是 SPEL+ 主循环每个周期检测：
+**两个层面叠起来**：
+
+1. **传输层**：proto 加 `WriteFields` RPC（一次写一组字段）。motion-runtime 在共享内存里做 double buffer——所有字段写到影子区、提交时整组原子切换。SPEL+ **永远看不到撕裂状态**。
+2. **协议层**：用 goal_id 自增配对——不用 trigger 字段、不用边沿语义。SPEL+ 看到 `goal_id != accepted_goal_id` 就执行，执行完写回 `accepted_goal_id = goal_id`。`goal_id` 这个名字和 BT leaf 那边已有的 goal_id（Dobot driver 的 `_current_goal_id`）统一，halt 协议（NEXT-011）直接复用。
+
+### 拍板理由
+
+#### 为什么走原子批量（不是单字段串行）
+
+原始问题：单字段写 6 次 RPC，SPEL+ 主循环可能读到 `target_x=新, target_y=旧` 的撕裂状态。三个候选解决路线：
+
+- **路线 a：协议约束**——"trigger 必须最后写"+ SPEL+ 只在边沿时刻读 pose
+- **路线 b：runtime 机制**——原子批量 RPC + double buffer
+- **路线 c：driver 重试**——写完读回校验
+
+路线 a 把"正确性"挂在"每个 driver 实现者都记得最后写 trigger"上——易碎；路线 c 双倍 RTT。**路线 b 用机制根除问题**，每个 driver 只要把字段堆进 batch 就对了。
+
+#### 为什么 goal_id 配对（不是 trigger 边沿）
+
+批量原子后撕裂问题消失，B 节本来的三个候选只剩"信号语义"的差别：
+
+| 方案 | 一次 move 几次 RPC | 复杂度 |
+|---|---|---|
+| B1 边沿（先 0 后 1） | 两次批量（必须分开） | SPEL+ 端需要边沿检测 |
+| B2 goal_id 自增 | 一次批量 | SPEL+ 端比对 `goal_id ≠ accepted_goal_id` |
+| B3 电平+busy | 一次批量 | SPEL+ 端需要 busy 字段防重入 |
+
+B2 一次 RPC 搞定、SPEL+ 端逻辑最简（一个比较，没有边沿状态机、没有 busy 字段），并且 **goal_id 字段天然和 BT leaf 那边的 goal_id 概念统一**——halt 协议（NEXT-011）落地时直接拿来对齐，不用再加字段。
+
+### 落地形态
+
+#### 1. proto 加 `WriteFields` RPC
+
+`proto/motion.proto`：
+
+```protobuf
+rpc WriteFields(WriteFieldsRequest) returns (WriteFieldsResponse);
+
+message FieldValue {
+  string field = 1;
+  Value  value = 2;
+}
+
+message WriteFieldsRequest {
+  string device = 1;
+  repeated FieldValue fields = 2;
+}
+
+message WriteFieldsResponse {
+  bool   ok           = 1;
+  string error        = 2;
+  string failed_field = 3;   // 第一个验证失败的字段
+}
+```
+
+motion-runtime 收到后：**先全部验证**（字段名、类型），任何一个不过 = `ok=false` 且不提交任何字段；全部通过才一次性 commit 共享内存。
+
+#### 2. Python 端 builder 风格 API
+
+`RuntimeClient.batch(device)` 返回 `WriteBatch`，链式累加然后 `.commit()`：
+
+```python
+(client.batch("ls6_1")
+    .f32("target_x", x)
+    .f32("target_y", y)
+    .f32("target_z", z)
+    .f32("target_rx", rx)
+    .f32("target_ry", ry)
+    .f32("target_rz", rz)
+    .i32("routine", ROUTINE_MOVE)
+    .i32("goal_id", next_id)
+    .commit())
+```
+
+每个 setter 在签名上锁死值类型（`f32` 收 `float`、`i32` 收 `int`），pyright 在调用点就能抓错。`commit()` 失败抛 `RuntimeFieldError(device, failed_field, reason)`。
+
+#### 3. EpsonLS6.move_l 形态
+
+```python
+def move_l(self, target):
+    x, y, z, rx, ry, rz = target
+    self._goal_counter += 1
+    (self._client.batch(self.device_name)
+        .f32("target_x", x).f32("target_y", y).f32("target_z", z)
+        .f32("target_rx", rx).f32("target_ry", ry).f32("target_rz", rz)
+        .i32("routine", ROUTINE_MOVE)
+        .i32("goal_id", self._goal_counter)
+        .commit())
+    return self._goal_counter  # goal_id
+```
+
+#### 4. SPEL+ 主循环骨架
 
 ```spel+
-' SPEL+ 主循环大致样子
 Do
     WaitDataAttachment
-    If trigger = 1 And accepted_id <> cmd_id Then
-        ' 看到新的 trigger 边沿，按 routine 执行
+    If goal_id <> accepted_goal_id Then
         Select routine
-            Case ROUTINE_MOVE: Move XY(target_x, target_y, target_z, target_u)
-            Case ROUTINE_GO:   Go XY(...)
-            ...
+            Case ROUTINE_MOVE:        Move XY(target_x, target_y, target_z, ...)
+            Case ROUTINE_GO:          Go XY(...)
+            Case ROUTINE_GO_JOINTS:   Go J1(target_j1), J2(target_j2), ...
         Send
         done = 1
-        accepted_id = cmd_id
+        accepted_goal_id = goal_id
     EndIf
 Loop
 ```
 
-Python 端要写哪几个字段、按什么顺序，才能让 SPEL+ 看到"一次新的运动请求"——就是这条要聊的。
+没有 trigger 字段、没有边沿状态机。
 
-### 候选方案
+### 影响面
 
-**方案 B1：纯边沿**
-
-```python
-def move_l(self, target):
-    # 1. 写 target
-    self._write_pose(target)
-    # 2. 写 routine
-    self._client.write_field_i32(self.name, "routine", ROUTINE_MOVE)
-    # 3. 翻 trigger 0→1
-    self._client.write_field_bool(self.name, "trigger", False)  # 强制先归零
-    self._client.write_field_bool(self.name, "trigger", True)   # 上升沿
-    return self._next_goal_id()
-```
-
-SPEL+ 那边看到 trigger 从 0 跳到 1 就执行；执行完自己把 trigger 写回 0。
-
-**方案 B2：cmd_id 配对（不依赖边沿）**
-
-```python
-def move_l(self, target):
-    cmd_id = self._next_goal_id()
-    self._write_pose(target)
-    self._client.write_field_i32(self.name, "routine", ROUTINE_MOVE)
-    self._client.write_field_i32(self.name, "cmd_id", cmd_id)  # 新 id 触发执行
-    return cmd_id
-```
-
-SPEL+ 看到 `cmd_id` 跟 `accepted_id` 不一样就执行，执行完写 `accepted_id = cmd_id`。**不需要 trigger 字段、不需要边沿语义**。
-
-**方案 B3：电平 + busy 字段**
-
-```python
-def move_l(self, target):
-    self._write_pose(target)
-    self._client.write_field_i32(self.name, "routine", ROUTINE_MOVE)
-    self._client.write_field_bool(self.name, "trigger", True)
-    return self._next_goal_id()
-```
-
-SPEL+ 看到 trigger=1 且 busy=0 就执行，执行期间 busy=1。leaf 不复位 trigger，SPEL+ 自己看 busy 防重入。
-
-### 要回答的子问题
-
-1. **跨 RPC 的字段写入顺序保证**：write_field 是分多次发的（写 target_x 一次、target_y 一次、...），SPEL+ 主循环可能在中间某次看到"target_x 是新的、target_y 还是旧的"。怎么避免？
-2. **每次 move 之前先翻 0 是否必要**：B1 强制先归零，B3 不归零靠 busy。哪种鲁棒？
-3. **goal_id 在 Python 端和 SPEL+ 端都需要存吗**：B2 是双向的（驱动写、SPEL+ 写回），B1/B3 只有驱动写
-
-### 我的初判
-
-倾向 **B2**——cmd_id 配对：
-
-- **不依赖时序**——只要 `cmd_id` 跟之前不同，SPEL+ 就执行；写入顺序不影响正确性
-- **天然 goal_id 对齐**：Dobot 那边 driver 内部存 `_current_goal_id` 防陈旧 halt，B2 让 SPEL+ 那边也存一份，halt 协议（NEXT-011）落地时直接对接
-- **无 trigger 字段**：少一个字段、少一类边沿协议歧义
-
-但 B2 要求 SPEL+ 主循环逻辑稍复杂（"看到 cmd_id 不同→执行→写回 accepted_id"）。如果倾向 SPEL+ 端最简，B1 也行。
+- **AutoWeaver / proto**：`motion.proto` 加 `WriteFields` + 三个 message（已落）
+- **AutoWeaver / RuntimeClient**：加 `WriteBatch` builder，单字段 API 保留（halt、单 bool 翻转还是单字段更顺手）（已落）
+- **motion-runtime (Rust)**：实现共享内存 double buffer + `WriteFields` RPC handler（跨仓库工作，本次不在此仓库内）
+- **SPEL+ 项目模板**：见 C 节展开
 
 ---
 
@@ -142,7 +179,7 @@ EVO-003 提到"参数解释器"作为外部控制器代码的设计原则。这�
 
 ### 我的初判
 
-C 本质上是 EVO-003 的"外部控制器代码"那一节的实例化——和 B 强耦合（trigger / cmd_id 形态决定 SPEL+ 主循环骨架）。**先聊 B、C 跟着定**。
+C 本质上是 EVO-003 的"外部控制器代码"那一节的实例化——和 B 强耦合（trigger / goal_id 形态决定 SPEL+ 主循环骨架）。**先聊 B、C 跟着定**。
 
 ---
 
@@ -160,7 +197,7 @@ EpsonLS6 类内部的几个具体设计点：goal_id 生成、move 完成判定�
 
 1. **goal_id 怎么生成**：
    - 选项 D1：跟 Dobot 一样，driver 内部自增整数。SPEL+ 不参与
-   - 选项 D2：driver 生成、SPEL+ 也存一份（`accepted_cmd_id`），双向确认。需要 cmd_id 字段
+   - 选项 D2：driver 生成、SPEL+ 也存一份（`accepted_goal_id`），双向确认。需要 goal_id 字段
    - 跟 B 强耦合——B 选 B2 时这里自然 D2
 
 2. **move 完成判定**：
@@ -261,7 +298,7 @@ client.write_field_f32("ls6_1", "target_x", 100.0)
 ### 落地形态
 
 - `RuntimeClient` 不接受 `contract_path` 参数、不持有 contract 元数据
-- `EpsonLS6` driver 代码里硬编码字段名（如 `"target_x"`、`"done"`、`"cmd_id"`）
+- `EpsonLS6` driver 代码里硬编码字段名（如 `"target_x"`、`"done"`、`"goal_id"`）
 - RuntimeClient 的 `write_field_*` / `read_field_*` 调用直接打 proto、由 runtime 校验
 - 字段错时 driver 把 gRPC 那边的 `WriteFieldResponse.ok=false` 翻译成 `RuntimeFieldError(field, reason)` 向上抛
 
@@ -272,9 +309,9 @@ client.write_field_f32("ls6_1", "target_x", 100.0)
 | 顺序 | 块 | 理由 |
 |---|---|---|
 | ~~1~~ | ~~**F**（contract Python 角色）~~ | **已拍 F1**（2026-05-16） |
-| 1 | **B**（Trigger 边沿） | EpsonLS6 第一个具体方法（move_l）的核心协议 |
-| 2 | **C**（SPEL+ 模板） | 跟 B 强耦合，B 拍完顺手 |
-| 3 | **D**（EpsonLS6 driver） | 用 B + C 落地 |
-| 4 | **E**（多设备 wiring） | 不阻塞 RuntimeClient、可推到最后 |
+| ~~2~~ | ~~**B**（Trigger 边沿）~~ | **已拍：原子批量 + B2 goal_id**（2026-05-16） |
+| 1 | **C**（SPEL+ 模板） | 跟 B 强耦合，B 已拍、C 接着展开 |
+| 2 | **D**（EpsonLS6 driver） | 用 B + C 落地 |
+| 3 | **E**（多设备 wiring） | 不阻塞 RuntimeClient、可推到最后 |
 
 但你可以挑任何顺序聊——上面只是我的依赖判断。
