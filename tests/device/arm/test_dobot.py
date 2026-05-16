@@ -56,10 +56,32 @@ def test_construction_does_not_open_sockets():
     assert arm._feedback is None
 
 
-def test_move_j_uses_joint_mode_by_default():
+def test_move_j_uses_pose_mode():
+    """ArmBase contract: move_j target is Cartesian → MovJ + COORD_POSE."""
     arm = Dobot(ip="127.0.0.1", name="d1")
     arm._dashboard = _FakeDashboard()
     gid = arm.move_j((10, 20, 30, 40, 50, 60))
+    assert gid == 1
+    name, args, _kwargs = arm._dashboard.calls[0]
+    assert name == "MovJ"
+    assert args[-1] == COORD_POSE
+    assert args[:6] == (10.0, 20.0, 30.0, 40.0, 50.0, 60.0)
+
+
+def test_move_l_uses_pose_mode():
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    arm._dashboard = _FakeDashboard()
+    arm.move_l((1, 2, 3, 4, 5, 6))
+    name, args, _kwargs = arm._dashboard.calls[0]
+    assert name == "MovL"
+    assert args[-1] == COORD_POSE
+
+
+def test_move_j_joints_uses_joint_mode_and_movj():
+    """move_j_joints sends the target as joint angles → MovJ + COORD_JOINT."""
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    arm._dashboard = _FakeDashboard()
+    gid = arm.move_j_joints((10, 20, 30, 40, 50, 60))
     assert gid == 1
     name, args, _kwargs = arm._dashboard.calls[0]
     assert name == "MovJ"
@@ -67,21 +89,18 @@ def test_move_j_uses_joint_mode_by_default():
     assert args[:6] == (10.0, 20.0, 30.0, 40.0, 50.0, 60.0)
 
 
-def test_move_j_pose_mode_when_configured():
-    arm = Dobot(ip="127.0.0.1", name="d1", joint_coord_mode=False)
+def test_move_j_joints_passes_speed_through():
+    arm = Dobot(ip="127.0.0.1", name="d1")
     arm._dashboard = _FakeDashboard()
-    arm.move_j((1, 2, 3, 4, 5, 6))
-    args = arm._dashboard.calls[0][1]
-    assert args[-1] == COORD_POSE
+    arm.move_j_joints((1, 2, 3, 4, 5, 6), speed=15)
+    _name, _args, kwargs = arm._dashboard.calls[0]
+    assert kwargs == {"v": 15}
 
 
-def test_move_l_always_uses_pose_mode():
-    arm = Dobot(ip="127.0.0.1", name="d1", joint_coord_mode=True)
-    arm._dashboard = _FakeDashboard()
-    arm.move_l((1, 2, 3, 4, 5, 6))
-    name, args, _kwargs = arm._dashboard.calls[0]
-    assert name == "MovL"
-    assert args[-1] == COORD_POSE
+def test_move_j_joints_before_start_raises():
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    with pytest.raises(RuntimeError):
+        arm.move_j_joints((0, 0, 0, 0, 0, 0))
 
 
 def test_move_before_start_raises():

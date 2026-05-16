@@ -22,13 +22,18 @@ class MockArm:
     """In-memory arm for tests and dry runs (NEXT-008 pull model).
 
     Behavior:
-      - ``move_j`` / ``move_l`` "complete" the move by jumping the
-        simulated pose / joint to the target after ``move_duration``
-        seconds (default 0 — completes immediately).
+      - ``move_j`` / ``move_l`` take a Cartesian target and "complete" by
+        jumping ``_pose`` to it after ``move_duration`` seconds.
+      - ``move_j_joints`` takes a joint-angle target and jumps ``_joint``.
       - ``halt`` clears the in-flight goal and freezes pose / joint at
         the current value.
       - ``get_flange_pose()`` returns a 4×4 matrix derived from the
         current simulated pose (same convention as Dobot SDK).
+
+    The mock does not do IK or FK — ``move_j(cartesian)`` does not update
+    ``_joint``, and ``move_j_joints(joints)`` does not update ``_pose``.
+    Tests that need to assert on the other-axis state should call
+    ``set_pose()`` directly.
 
     All control calls are recorded in ``self.calls`` so tests can assert
     on the sequence of interactions without spying.
@@ -52,7 +57,7 @@ class MockArm:
         self._running: bool = False
 
         self._goal_target: tuple[float, ...] | None = None
-        self._goal_kind: str | None = None  # "j" or "l"
+        self._goal_kind: str | None = None  # "j" | "l" | "j_joints"
         self._goal_started_at: float = 0.0
 
         self._lock = threading.Lock()
@@ -65,6 +70,9 @@ class MockArm:
 
     def move_l(self, target: Sequence[float]) -> GoalId:
         return self._start_goal("l", target)
+
+    def move_j_joints(self, target: Sequence[float]) -> GoalId:
+        return self._start_goal("j_joints", target)
 
     def halt(self, goal_id: GoalId) -> None:
         with self._lock:
@@ -120,7 +128,7 @@ class MockArm:
     # --- internal goal simulation ---
 
     def _advance_goal(self) -> None:
-        """If the in-flight goal's duration has elapsed, snap pose/joint
+        """If the in-flight goal's duration has elapsed, snap pose or joint
         to the target. Driven on-demand by readers — no background thread.
         """
         with self._lock:
@@ -129,9 +137,10 @@ class MockArm:
             elapsed = time.monotonic() - self._goal_started_at
             if elapsed < self._move_duration:
                 return
-            if self._goal_kind == "j":
+            if self._goal_kind == "j_joints":
                 self._joint = self._goal_target
             else:
+                # "j" and "l" both have Cartesian targets.
                 self._pose = self._goal_target
             self._goal_target = None
             self._goal_kind = None

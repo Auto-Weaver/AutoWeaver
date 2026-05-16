@@ -73,11 +73,9 @@ class Dobot:
         self,
         ip: str,
         name: str,
-        joint_coord_mode: bool = True,
     ):
         self.name = name
         self.ip = ip
-        self._joint_default = COORD_JOINT if joint_coord_mode else COORD_POSE
 
         self._dashboard: DobotApiDashboard | None = None
         self._feedback: DobotApiFeedBack | None = None
@@ -90,12 +88,20 @@ class Dobot:
     # --- control ---
 
     def move_j(self, target: Sequence[float], speed: int | None = None) -> GoalId:
-        return self._send_move("j", target, self._joint_default, speed=speed)
+        # ArmBase contract: move_j target is Cartesian (x,y,z,rx,ry,rz).
+        # For joint-angle targets use move_j_joints.
+        return self._send_move("j", target, COORD_POSE, speed=speed)
 
     def move_l(self, target: Sequence[float], speed: int | None = None) -> GoalId:
         # MovL is Cartesian-only in practice — joint-space MovL doesn't
-        # have a clean physical meaning. Force pose mode.
+        # have a clean physical meaning.
         return self._send_move("l", target, COORD_POSE, speed=speed)
+
+    def move_j_joints(self, target: Sequence[float], speed: int | None = None) -> GoalId:
+        # Joint-angle target: skips IK. Same MovJ SDK call as move_j but
+        # with COORD_JOINT — Dobot's SDK uses the coord mode flag to
+        # distinguish Cartesian vs joint targets.
+        return self._send_move("j", target, COORD_JOINT, speed=speed)
 
     def halt(self, goal_id: GoalId) -> None:
         with self._lock:

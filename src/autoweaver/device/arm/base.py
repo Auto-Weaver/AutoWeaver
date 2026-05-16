@@ -17,6 +17,21 @@ class ArmBase(Protocol):
     level synchronous waiting (e.g. TCP RPC ACK) is expected and
     acceptable as long as it stays well within the BT tick budget.
 
+    Three motion primitives matching the universal industrial-arm core
+    (Dobot MovJ/MovL, KUKA PTP/LIN, ABB MoveJ/MoveL/MoveAbsJ, etc.):
+
+      - ``move_j`` — Cartesian target, joint-interpolated path (PTP).
+        Tool tip follows whatever curve falls out of the joint motion.
+      - ``move_l`` — Cartesian target, Cartesian-linear path. Tool tip
+        moves in a straight line; controller does continuous IK.
+      - ``move_j_joints`` — Joint-angle target, joint-interpolated path.
+        Skips IK entirely; useful for unambiguous home/service poses.
+
+    The ``j`` / ``l`` letters describe path shape, not target format.
+    Cartesian targets are always 6-tuples ``(x, y, z, rx, ry, rz)`` in
+    mm + degrees (ZYX intrinsic). Joint-target length is arm-dependent
+    (6 for 6-DOF arms, 4 for SCARA).
+
     Feedback is pull-style (NEXT-008): leaves call ``get_flange_pose()``
     on demand. The driver is responsible for converting the SDK's native
     pose representation into a standard 4×4 matrix; leaves never see the
@@ -28,11 +43,15 @@ class ArmBase(Protocol):
     # --- control (fire-and-forget) ---
 
     def move_j(self, target: Sequence[float]) -> GoalId:
-        """Joint-space move. Returns a goal id usable with ``halt()``."""
+        """PTP to a Cartesian target. Returns a goal id usable with ``halt()``."""
         ...
 
     def move_l(self, target: Sequence[float]) -> GoalId:
-        """Linear (Cartesian) move. Returns a goal id usable with ``halt()``."""
+        """Linear move to a Cartesian target. Returns a goal id usable with ``halt()``."""
+        ...
+
+    def move_j_joints(self, target: Sequence[float]) -> GoalId:
+        """PTP to a joint-angle target. Returns a goal id usable with ``halt()``."""
         ...
 
     def halt(self, goal_id: GoalId) -> None:
