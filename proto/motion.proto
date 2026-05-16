@@ -17,6 +17,16 @@ service MotionService {
   // It goes out on the next EtherCAT cycle.
   rpc WriteField(WriteFieldRequest) returns (WriteFieldResponse);
 
+  // Atomic multi-field write. Runtime stages all fields, validates the
+  // whole set, then commits them in one shared-memory snapshot — the
+  // external controller (SPEL+) never sees a torn write where some
+  // fields are new and some still hold previous values.
+  //
+  // Semantics: all-or-nothing. If any field is unknown / type-mismatched
+  // / rejected, ok=false and nothing is committed; failed_field names
+  // the first offender.
+  rpc WriteFields(WriteFieldsRequest) returns (WriteFieldsResponse);
+
   // Decode a field from the slave's most-recent TxPDO input buffer.
   rpc ReadField(ReadFieldRequest) returns (ReadFieldResponse);
 }
@@ -32,6 +42,22 @@ message WriteFieldRequest {
 message WriteFieldResponse {
   bool   ok    = 1;
   string error = 2;    // Populated when ok=false (unknown field, type mismatch, etc.)
+}
+
+message FieldValue {
+  string field = 1;
+  Value  value = 2;
+}
+
+message WriteFieldsRequest {
+  string device = 1;
+  repeated FieldValue fields = 2;
+}
+
+message WriteFieldsResponse {
+  bool   ok           = 1;
+  string error        = 2;   // Error description when ok=false
+  string failed_field = 3;   // First field that failed validation (empty when ok=true)
 }
 
 message ReadFieldRequest {

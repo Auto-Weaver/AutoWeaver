@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cmotion.proto\x12\x06motion\"P\n\x11WriteFieldRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\r\n\x05\x66ield\x18\x02 \x01(\t\x12\x1c\n\x05value\x18\x03 \x01(\x0b\x32\r.motion.Value\"/\n\x12WriteFieldResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"1\n\x10ReadFieldRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\r\n\x05\x66ield\x18\x02 \x01(\t\"L\n\x11ReadFieldResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x1c\n\x05value\x18\x03 \x01(\x0b\x32\r.motion.Value\"\x9a\x01\n\x05Value\x12\x10\n\x06v_bool\x18\x01 \x01(\x08H\x00\x12\x0f\n\x05v_i32\x18\x02 \x01(\x05H\x00\x12\x0f\n\x05v_u32\x18\x03 \x01(\rH\x00\x12\x0f\n\x05v_i64\x18\x04 \x01(\x03H\x00\x12\x0f\n\x05v_u64\x18\x05 \x01(\x04H\x00\x12\x0f\n\x05v_f32\x18\x06 \x01(\x02H\x00\x12\x0f\n\x05v_f64\x18\x07 \x01(\x01H\x00\x12\x11\n\x07v_bytes\x18\x08 \x01(\x0cH\x00\x42\x06\n\x04kind2\x96\x01\n\rMotionService\x12\x43\n\nWriteField\x12\x19.motion.WriteFieldRequest\x1a\x1a.motion.WriteFieldResponse\x12@\n\tReadField\x12\x18.motion.ReadFieldRequest\x1a\x19.motion.ReadFieldResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cmotion.proto\x12\x06motion\"P\n\x11WriteFieldRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\r\n\x05\x66ield\x18\x02 \x01(\t\x12\x1c\n\x05value\x18\x03 \x01(\x0b\x32\r.motion.Value\"/\n\x12WriteFieldResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"9\n\nFieldValue\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\x1c\n\x05value\x18\x02 \x01(\x0b\x32\r.motion.Value\"H\n\x12WriteFieldsRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\"\n\x06\x66ields\x18\x02 \x03(\x0b\x32\x12.motion.FieldValue\"F\n\x13WriteFieldsResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x14\n\x0c\x66\x61iled_field\x18\x03 \x01(\t\"1\n\x10ReadFieldRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\r\n\x05\x66ield\x18\x02 \x01(\t\"L\n\x11ReadFieldResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x1c\n\x05value\x18\x03 \x01(\x0b\x32\r.motion.Value\"\x9a\x01\n\x05Value\x12\x10\n\x06v_bool\x18\x01 \x01(\x08H\x00\x12\x0f\n\x05v_i32\x18\x02 \x01(\x05H\x00\x12\x0f\n\x05v_u32\x18\x03 \x01(\rH\x00\x12\x0f\n\x05v_i64\x18\x04 \x01(\x03H\x00\x12\x0f\n\x05v_u64\x18\x05 \x01(\x04H\x00\x12\x0f\n\x05v_f32\x18\x06 \x01(\x02H\x00\x12\x0f\n\x05v_f64\x18\x07 \x01(\x01H\x00\x12\x11\n\x07v_bytes\x18\x08 \x01(\x0cH\x00\x42\x06\n\x04kind2\xde\x01\n\rMotionService\x12\x43\n\nWriteField\x12\x19.motion.WriteFieldRequest\x1a\x1a.motion.WriteFieldResponse\x12\x46\n\x0bWriteFields\x12\x1a.motion.WriteFieldsRequest\x1a\x1b.motion.WriteFieldsResponse\x12@\n\tReadField\x12\x18.motion.ReadFieldRequest\x1a\x19.motion.ReadFieldResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -35,12 +35,18 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_WRITEFIELDREQUEST']._serialized_end=104
   _globals['_WRITEFIELDRESPONSE']._serialized_start=106
   _globals['_WRITEFIELDRESPONSE']._serialized_end=153
-  _globals['_READFIELDREQUEST']._serialized_start=155
-  _globals['_READFIELDREQUEST']._serialized_end=204
-  _globals['_READFIELDRESPONSE']._serialized_start=206
-  _globals['_READFIELDRESPONSE']._serialized_end=282
-  _globals['_VALUE']._serialized_start=285
-  _globals['_VALUE']._serialized_end=439
-  _globals['_MOTIONSERVICE']._serialized_start=442
-  _globals['_MOTIONSERVICE']._serialized_end=592
+  _globals['_FIELDVALUE']._serialized_start=155
+  _globals['_FIELDVALUE']._serialized_end=212
+  _globals['_WRITEFIELDSREQUEST']._serialized_start=214
+  _globals['_WRITEFIELDSREQUEST']._serialized_end=286
+  _globals['_WRITEFIELDSRESPONSE']._serialized_start=288
+  _globals['_WRITEFIELDSRESPONSE']._serialized_end=358
+  _globals['_READFIELDREQUEST']._serialized_start=360
+  _globals['_READFIELDREQUEST']._serialized_end=409
+  _globals['_READFIELDRESPONSE']._serialized_start=411
+  _globals['_READFIELDRESPONSE']._serialized_end=487
+  _globals['_VALUE']._serialized_start=490
+  _globals['_VALUE']._serialized_end=644
+  _globals['_MOTIONSERVICE']._serialized_start=647
+  _globals['_MOTIONSERVICE']._serialized_end=869
 # @@protoc_insertion_point(module_scope)

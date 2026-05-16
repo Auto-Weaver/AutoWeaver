@@ -17,7 +17,7 @@ from typing import Any, Type
 from autoweaver.motion_policy.runtime_client import RuntimeFieldError
 
 
-__all__ = ["MockRuntimeClient"]
+__all__ = ["MockRuntimeClient", "MockWriteBatch"]
 
 
 class MockRuntimeClient:
@@ -36,6 +36,12 @@ class MockRuntimeClient:
       - All calls are appended to ``self.calls`` as
         ``(op, device, field, value)`` tuples for assertions; reads use
         the value field for the value returned.
+
+    Batch writes (``client.batch(device).f32(...).commit()``) apply all
+    fields atomically and record as a single
+    ``("batch_write", device, [(field, variant, value), ...])`` entry in
+    ``self.calls`` — mirrors the all-or-nothing semantics of the real
+    ``WriteFields`` RPC.
 
     Test helpers:
       - ``preload(device, field, value, variant)`` seeds a value without
@@ -101,6 +107,11 @@ class MockRuntimeClient:
     def write_field_bytes(self, device: str, field: str, value: bytes) -> None:
         self._write(device, field, "v_bytes", value)
 
+    # --- batch write ---
+
+    def batch(self, device: str) -> "MockWriteBatch":
+        return MockWriteBatch(self, device)
+
     # --- read ---
 
     def read_field_bool(self, device: str, field: str) -> bool:
@@ -153,3 +164,63 @@ class MockRuntimeClient:
             )
         self.calls.append(("read", device, field, value))
         return value
+
+    # --- internals used by MockWriteBatch ---
+
+    def _commit_batch(
+        self, device: str, fields: list[tuple[str, str, Any]]
+    ) -> None:
+        for field, variant, value in fields:
+            self._store[(device, field)] = (variant, value)
+        self.calls.append(("batch_write", device, list(fields)))
+
+
+class MockWriteBatch:
+    """In-memory equivalent of ``WriteBatch`` for driver tests.
+
+    Mirrors the chainable builder shape but commits straight into the
+    mock client's store. All fields apply atomically (i.e. the test
+    can't observe a partial commit), matching the real runtime contract.
+    """
+
+    def __init__(self, client: MockRuntimeClient, device: str):
+        self._client = client
+        self._device = device
+        self._fields: list[tuple[str, str, Any]] = []
+
+    def bool(self, field: str, value: bool) -> "MockWriteBatch":
+        self._fields.append((field, "v_bool", value))
+        return self
+
+    def i32(self, field: str, value: int) -> "MockWriteBatch":
+        self._fields.append((field, "v_i32", value))
+        return self
+
+    def u32(self, field: str, value: int) -> "MockWriteBatch":
+        self._fields.append((field, "v_u32", value))
+        return self
+
+    def i64(self, field: str, value: int) -> "MockWriteBatch":
+        self._fields.append((field, "v_i64", value))
+        return self
+
+    def u64(self, field: str, value: int) -> "MockWriteBatch":
+        self._fields.append((field, "v_u64", value))
+        return self
+
+    def f32(self, field: str, value: float) -> "MockWriteBatch":
+        self._fields.append((field, "v_f32", value))
+        return self
+
+    def f64(self, field: str, value: float) -> "MockWriteBatch":
+        self._fields.append((field, "v_f64", value))
+        return self
+
+    def bytes(self, field: str, value: bytes) -> "MockWriteBatch":
+        self._fields.append((field, "v_bytes", value))
+        return self
+
+    def commit(self) -> None:
+        if not self._fields:
+            return
+        self._client._commit_batch(self._device, self._fields)

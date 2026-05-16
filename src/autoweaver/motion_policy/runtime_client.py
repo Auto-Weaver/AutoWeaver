@@ -13,6 +13,11 @@ Design points (locked 2026-05-16):
   - One method per Value oneof variant — ``write_field_f32`` /
     ``read_field_bool`` / etc. Method name pins the type; pyright catches
     mismatches at the call site.
+  - Multi-field writes go through ``client.batch(device).f32(...).i32(...).commit()``
+    so the runtime can stage them in a shadow buffer and atomically swap
+    in one snapshot — the external controller never sees a torn write.
+    This makes the trigger/cmd_id signalling (B-section in the discuss
+    doc) a pure semantics question rather than a write-ordering one.
   - Three explicit exception classes: ``RuntimeConnectionError``,
     ``RuntimeTimeoutError``, ``RuntimeFieldError``. Callers never see
     raw ``grpc.RpcError``.
@@ -36,6 +41,7 @@ __all__ = [
     "RuntimeConnectionError",
     "RuntimeTimeoutError",
     "RuntimeFieldError",
+    "WriteBatch",
 ]
 
 
@@ -128,6 +134,23 @@ class RuntimeClient:
     def write_field_bytes(self, device: str, field: str, value: bytes) -> None:
         self._write(device, field, motion_pb2.Value(v_bytes=value))
 
+    # --- batch write ---
+
+    def batch(self, device: str) -> "WriteBatch":
+        """Start a chainable atomic write batch for a single device.
+
+        Example:
+            (client.batch("ls6_1")
+                .f32("target_x", 100.0)
+                .f32("target_y", 200.0)
+                .i32("routine", ROUTINE_MOVE)
+                .i32("cmd_id", next_id)
+                .commit())
+
+        See ``WriteBatch`` for semantics.
+        """
+        return WriteBatch(self, device)
+
     # --- read ---
 
     def read_field_bool(self, device: str, field: str) -> bool:
@@ -199,3 +222,73 @@ class RuntimeClient:
         return RuntimeConnectionError(
             f"motion-runtime RPC failed (code={code}): {details}"
         )
+
+
+class WriteBatch:
+    """Chainable accumulator for atomic multi-field writes.
+
+    Constructed via ``RuntimeClient.batch(device)``. Each chainable
+    setter (``.bool`` / ``.i32`` / ``.f32`` / ...) queues one field write
+    against the same device; ``.commit()`` sends them in a single
+    ``WriteFields`` RPC.
+
+    Atomicity is enforced by motion-runtime: it stages all fields in a
+    shadow buffer, validates the whole set, and only on success swaps
+    them into the shared-memory snapshot the external controller reads.
+    On any validation failure (unknown field, type mismatch) nothing is
+    committed and ``RuntimeFieldError`` carries the first failing field.
+
+    Batches are intended to be single-use — build, commit, drop. Calling
+    ``.commit()`` twice resends the same writes; an empty batch is a
+    no-op (no RPC issued).
+    """
+
+    def __init__(self, client: "RuntimeClient", device: str):
+        self._client = client
+        self._device = device
+        self._fields: list[motion_pb2.FieldValue] = []
+
+    # --- chainable setters ---
+
+    def bool(self, field: str, value: bool) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_bool=value))
+
+    def i32(self, field: str, value: int) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_i32=value))
+
+    def u32(self, field: str, value: int) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_u32=value))
+
+    def i64(self, field: str, value: int) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_i64=value))
+
+    def u64(self, field: str, value: int) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_u64=value))
+
+    def f32(self, field: str, value: float) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_f32=value))
+
+    def f64(self, field: str, value: float) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_f64=value))
+
+    def bytes(self, field: str, value: bytes) -> "WriteBatch":
+        return self._add(field, motion_pb2.Value(v_bytes=value))
+
+    # --- commit ---
+
+    def commit(self) -> None:
+        if not self._fields:
+            return
+        req = motion_pb2.WriteFieldsRequest(device=self._device, fields=self._fields)
+        try:
+            resp = self._client._stub.WriteFields(req, timeout=self._client._timeout_s)
+        except grpc.RpcError as e:
+            raise RuntimeClient._translate_rpc_error(e) from e
+        if not resp.ok:
+            raise RuntimeFieldError(self._device, resp.failed_field, resp.error)
+
+    # --- internals ---
+
+    def _add(self, field: str, value: motion_pb2.Value) -> "WriteBatch":
+        self._fields.append(motion_pb2.FieldValue(field=field, value=value))
+        return self

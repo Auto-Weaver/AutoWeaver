@@ -37,18 +37,24 @@ class _FakeRpcError(grpc.RpcError):
 class _FakeStub:
     """Captures calls and returns canned responses.
 
-    ``write_response`` and ``read_response`` can be either a response
-    message or a zero-argument callable that produces one (or raises)
-    — the latter lets a test simulate transport errors.
+    ``write_response``, ``write_fields_response``, and ``read_response``
+    can be either a response message or a zero-argument callable that
+    produces one (or raises) — the latter lets a test simulate
+    transport errors.
     """
 
     def __init__(self):
         self.write_calls: list[motion_pb2.WriteFieldRequest] = []
+        self.write_fields_calls: list[motion_pb2.WriteFieldsRequest] = []
         self.read_calls: list[motion_pb2.ReadFieldRequest] = []
         self.write_response: (
             motion_pb2.WriteFieldResponse
             | Callable[[], motion_pb2.WriteFieldResponse]
         ) = motion_pb2.WriteFieldResponse(ok=True)
+        self.write_fields_response: (
+            motion_pb2.WriteFieldsResponse
+            | Callable[[], motion_pb2.WriteFieldsResponse]
+        ) = motion_pb2.WriteFieldsResponse(ok=True)
         self.read_response: (
             motion_pb2.ReadFieldResponse
             | Callable[[], motion_pb2.ReadFieldResponse]
@@ -60,6 +66,12 @@ class _FakeStub:
         if callable(self.write_response):
             return self.write_response()
         return self.write_response
+
+    def WriteFields(self, req, timeout=None):
+        self.write_fields_calls.append(req)
+        if callable(self.write_fields_response):
+            return self.write_fields_response()
+        return self.write_fields_response
 
     def ReadField(self, req, timeout=None):
         self.read_calls.append(req)
@@ -212,6 +224,90 @@ def test_read_unavailable_translates_to_runtime_connection_error():
     client = _client_with_stub(stub)
     with pytest.raises(RuntimeConnectionError):
         client.read_field_bool("ls6_1", "done")
+
+
+# ---------------------------------------------------------------------------
+# WriteBatch builder — one WriteFields RPC for a chain of typed setters
+# ---------------------------------------------------------------------------
+
+
+def test_batch_sends_single_write_fields_rpc():
+    stub = _FakeStub()
+    client = _client_with_stub(stub)
+    (
+        client.batch("ls6_1")
+        .f32("target_x", 100.0)
+        .f32("target_y", 200.0)
+        .i32("routine", 1)
+        .i32("cmd_id", 42)
+        .commit()
+    )
+    # All fields land in a single WriteFields RPC, no per-field WriteField.
+    assert len(stub.write_fields_calls) == 1
+    assert stub.write_calls == []
+    req = stub.write_fields_calls[0]
+    assert req.device == "ls6_1"
+    assert len(req.fields) == 4
+
+
+def test_batch_encodes_each_value_variant():
+    stub = _FakeStub()
+    client = _client_with_stub(stub)
+    (
+        client.batch("dev")
+        .bool("a", True)
+        .i32("b", -1)
+        .u32("c", 1)
+        .i64("d", -2)
+        .u64("e", 2)
+        .f32("f", 1.5)
+        .f64("g", 2.5)
+        .bytes("h", b"x")
+        .commit()
+    )
+    req = stub.write_fields_calls[0]
+    variants = [fv.value.WhichOneof("kind") for fv in req.fields]
+    assert variants == ["v_bool", "v_i32", "v_u32", "v_i64", "v_u64", "v_f32", "v_f64", "v_bytes"]
+
+
+def test_batch_empty_commit_skips_rpc():
+    stub = _FakeStub()
+    client = _client_with_stub(stub)
+    client.batch("ls6_1").commit()
+    assert stub.write_fields_calls == []
+
+
+def test_batch_field_error_raises_with_failed_field():
+    stub = _FakeStub()
+    stub.write_fields_response = motion_pb2.WriteFieldsResponse(
+        ok=False, error="type mismatch", failed_field="routine"
+    )
+    client = _client_with_stub(stub)
+    with pytest.raises(RuntimeFieldError) as exc_info:
+        client.batch("ls6_1").f32("target_x", 1.0).i32("routine", 1).commit()
+    assert exc_info.value.device == "ls6_1"
+    assert exc_info.value.field == "routine"
+    assert "type mismatch" in exc_info.value.reason
+
+
+def test_batch_unavailable_translates_to_runtime_connection_error():
+    stub = _FakeStub()
+    stub.write_fields_response = lambda: (_ for _ in ()).throw(
+        _FakeRpcError(grpc.StatusCode.UNAVAILABLE, "no route")
+    )
+    client = _client_with_stub(stub)
+    with pytest.raises(RuntimeConnectionError):
+        client.batch("ls6_1").f32("target_x", 1.0).commit()
+
+
+def test_batch_deadline_translates_to_runtime_timeout_error():
+    stub = _FakeStub()
+    stub.write_fields_response = lambda: (_ for _ in ()).throw(
+        _FakeRpcError(grpc.StatusCode.DEADLINE_EXCEEDED, "deadline")
+    )
+    client = _client_with_stub(stub)
+    with pytest.raises(RuntimeTimeoutError):
+        client.batch("ls6_1").f32("target_x", 1.0).commit()
 
 
 # ---------------------------------------------------------------------------

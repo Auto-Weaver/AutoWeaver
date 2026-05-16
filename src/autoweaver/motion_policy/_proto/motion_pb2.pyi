@@ -1,6 +1,7 @@
+from google.protobuf.internal import containers as _containers
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Mapping as _Mapping
+from collections.abc import Iterable as _Iterable, Mapping as _Mapping
 from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
@@ -22,6 +23,32 @@ class WriteFieldResponse(_message.Message):
     ok: bool
     error: str
     def __init__(self, ok: bool = ..., error: _Optional[str] = ...) -> None: ...
+
+class FieldValue(_message.Message):
+    __slots__ = ("field", "value")
+    FIELD_FIELD_NUMBER: _ClassVar[int]
+    VALUE_FIELD_NUMBER: _ClassVar[int]
+    field: str
+    value: Value
+    def __init__(self, field: _Optional[str] = ..., value: _Optional[_Union[Value, _Mapping]] = ...) -> None: ...
+
+class WriteFieldsRequest(_message.Message):
+    __slots__ = ("device", "fields")
+    DEVICE_FIELD_NUMBER: _ClassVar[int]
+    FIELDS_FIELD_NUMBER: _ClassVar[int]
+    device: str
+    fields: _containers.RepeatedCompositeFieldContainer[FieldValue]
+    def __init__(self, device: _Optional[str] = ..., fields: _Optional[_Iterable[_Union[FieldValue, _Mapping]]] = ...) -> None: ...
+
+class WriteFieldsResponse(_message.Message):
+    __slots__ = ("ok", "error", "failed_field")
+    OK_FIELD_NUMBER: _ClassVar[int]
+    ERROR_FIELD_NUMBER: _ClassVar[int]
+    FAILED_FIELD_FIELD_NUMBER: _ClassVar[int]
+    ok: bool
+    error: str
+    failed_field: str
+    def __init__(self, ok: bool = ..., error: _Optional[str] = ..., failed_field: _Optional[str] = ...) -> None: ...
 
 class ReadFieldRequest(_message.Message):
     __slots__ = ("device", "field")

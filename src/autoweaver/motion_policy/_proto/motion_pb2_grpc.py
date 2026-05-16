@@ -49,6 +49,11 @@ class MotionServiceStub(object):
                 request_serializer=motion__pb2.WriteFieldRequest.SerializeToString,
                 response_deserializer=motion__pb2.WriteFieldResponse.FromString,
                 _registered_method=True)
+        self.WriteFields = channel.unary_unary(
+                '/motion.MotionService/WriteFields',
+                request_serializer=motion__pb2.WriteFieldsRequest.SerializeToString,
+                response_deserializer=motion__pb2.WriteFieldsResponse.FromString,
+                _registered_method=True)
         self.ReadField = channel.unary_unary(
                 '/motion.MotionService/ReadField',
                 request_serializer=motion__pb2.ReadFieldRequest.SerializeToString,
@@ -77,6 +82,20 @@ class MotionServiceServicer(object):
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
+    def WriteFields(self, request, context):
+        """Atomic multi-field write. Runtime stages all fields, validates the
+        whole set, then commits them in one shared-memory snapshot — the
+        external controller (SPEL+) never sees a torn write where some
+        fields are new and some still hold previous values.
+
+        Semantics: all-or-nothing. If any field is unknown / type-mismatched
+        / rejected, ok=false and nothing is committed; failed_field names
+        the first offender.
+        """
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
     def ReadField(self, request, context):
         """Decode a field from the slave's most-recent TxPDO input buffer.
         """
@@ -91,6 +110,11 @@ def add_MotionServiceServicer_to_server(servicer, server):
                     servicer.WriteField,
                     request_deserializer=motion__pb2.WriteFieldRequest.FromString,
                     response_serializer=motion__pb2.WriteFieldResponse.SerializeToString,
+            ),
+            'WriteFields': grpc.unary_unary_rpc_method_handler(
+                    servicer.WriteFields,
+                    request_deserializer=motion__pb2.WriteFieldsRequest.FromString,
+                    response_serializer=motion__pb2.WriteFieldsResponse.SerializeToString,
             ),
             'ReadField': grpc.unary_unary_rpc_method_handler(
                     servicer.ReadField,
@@ -135,6 +159,33 @@ class MotionService(object):
             '/motion.MotionService/WriteField',
             motion__pb2.WriteFieldRequest.SerializeToString,
             motion__pb2.WriteFieldResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def WriteFields(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/motion.MotionService/WriteFields',
+            motion__pb2.WriteFieldsRequest.SerializeToString,
+            motion__pb2.WriteFieldsResponse.FromString,
             options,
             channel_credentials,
             insecure,

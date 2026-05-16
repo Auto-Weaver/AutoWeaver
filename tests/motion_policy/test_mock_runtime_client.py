@@ -117,6 +117,56 @@ def test_preload_seeds_without_recording():
 
 
 # ---------------------------------------------------------------------------
+# Batch writes
+# ---------------------------------------------------------------------------
+
+def test_batch_writes_round_trip_atomically():
+    client = MockRuntimeClient()
+    (
+        client.batch("ls6_1")
+        .f32("target_x", 100.0)
+        .f32("target_y", 200.0)
+        .i32("routine", 1)
+        .i32("cmd_id", 42)
+        .commit()
+    )
+    assert client.read_field_f32("ls6_1", "target_x") == 100.0
+    assert client.read_field_f32("ls6_1", "target_y") == 200.0
+    assert client.read_field_i32("ls6_1", "routine") == 1
+    assert client.read_field_i32("ls6_1", "cmd_id") == 42
+
+
+def test_batch_records_single_batch_write_entry():
+    client = MockRuntimeClient()
+    (
+        client.batch("ls6_1")
+        .f32("target_x", 1.0)
+        .i32("routine", 3)
+        .commit()
+    )
+    assert client.calls == [
+        (
+            "batch_write",
+            "ls6_1",
+            [("target_x", "v_f32", 1.0), ("routine", "v_i32", 3)],
+        ),
+    ]
+
+
+def test_empty_batch_commit_is_noop():
+    client = MockRuntimeClient()
+    client.batch("ls6_1").commit()
+    assert client.calls == []
+
+
+def test_batch_read_with_wrong_type_after_batch_raises():
+    client = MockRuntimeClient()
+    client.batch("ls6_1").f32("target_x", 1.0).commit()
+    with pytest.raises(RuntimeFieldError, match="type mismatch"):
+        client.read_field_bool("ls6_1", "target_x")
+
+
+# ---------------------------------------------------------------------------
 # Context manager
 # ---------------------------------------------------------------------------
 
