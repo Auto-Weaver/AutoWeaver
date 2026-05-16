@@ -6,12 +6,17 @@ from typing import Sequence
 
 import numpy as np
 
-from autoweaver.device.arm.base import GoalId
+from autoweaver.device.arm.base import (
+    GoalId,
+    validate_cartesian_target,
+    validate_joint_target,
+)
 from autoweaver.geometry import transforms
 
 
 _HOME_POSE: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-_HOME_JOINT: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+_HOME_JOINT_6DOF: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+_HOME_JOINT_4DOF: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
 
 # MockArm mirrors Dobot's pose convention so leaves see the same matrix
 # shape whether they're talking to a mock or real hardware. See NEXT-008.
@@ -43,8 +48,12 @@ class MockArm:
         self,
         name: str,
         move_duration: float = 0.0,
+        dof: int = 6,
     ):
+        if dof not in (4, 6):
+            raise ValueError(f"dof must be 4 or 6, got {dof}")
         self.name = name
+        self.dof = dof
         self._move_duration = move_duration
 
         self.calls: list[tuple] = []
@@ -53,7 +62,9 @@ class MockArm:
         self._current_goal_id: GoalId | None = None
 
         self._pose: tuple[float, ...] = _HOME_POSE
-        self._joint: tuple[float, ...] = _HOME_JOINT
+        self._joint: tuple[float, ...] = (
+            _HOME_JOINT_6DOF if dof == 6 else _HOME_JOINT_4DOF
+        )
         self._running: bool = False
 
         self._goal_target: tuple[float, ...] | None = None
@@ -66,12 +77,15 @@ class MockArm:
     # --- control ---
 
     def move_j(self, target: Sequence[float]) -> GoalId:
+        target = validate_cartesian_target(target, self.dof, self.name)
         return self._start_goal("j", target)
 
     def move_l(self, target: Sequence[float]) -> GoalId:
+        target = validate_cartesian_target(target, self.dof, self.name)
         return self._start_goal("l", target)
 
     def move_j_joints(self, target: Sequence[float]) -> GoalId:
+        target = validate_joint_target(target, self.dof, self.name)
         return self._start_goal("j_joints", target)
 
     def halt(self, goal_id: GoalId) -> None:
@@ -84,23 +98,19 @@ class MockArm:
             self._current_goal_id = None
             self._running = False
 
-    def _start_goal(self, kind: str, target: Sequence[float]) -> GoalId:
-        target_tuple = tuple(float(x) for x in target)
-        if len(target_tuple) != 6:
-            raise ValueError(
-                f"target must have 6 elements, got {len(target_tuple)}"
-            )
+    def _start_goal(self, kind: str, target: tuple[float, ...]) -> GoalId:
+        # target is already validated at the public entry point.
         if not self._started:
             raise RuntimeError(f"call {self.name}.start() before issuing move commands")
         with self._lock:
             self._goal_counter += 1
             gid = self._goal_counter
             self._current_goal_id = gid
-            self._goal_target = target_tuple
+            self._goal_target = target
             self._goal_kind = kind
             self._goal_started_at = time.monotonic()
             self._running = True
-            self.calls.append((f"move_{kind}", gid, target_tuple))
+            self.calls.append((f"move_{kind}", gid, target))
             return gid
 
     # --- feedback (pull) ---

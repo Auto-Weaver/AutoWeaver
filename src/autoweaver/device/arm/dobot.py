@@ -11,7 +11,11 @@ from autoweaver.device.arm._dobot_sdk import (
     DobotApiDashboard,
     DobotApiFeedBack,
 )
-from autoweaver.device.arm.base import GoalId
+from autoweaver.device.arm.base import (
+    GoalId,
+    validate_cartesian_target,
+    validate_joint_target,
+)
 from autoweaver.device.arm.dobot_states import (
     ROBOT_MODE_DISABLED,
     ROBOT_MODE_ENABLE,
@@ -69,6 +73,9 @@ class Dobot:
         (running / error / safety_state / ...) are paused — see NEXT-009.
     """
 
+    # Dobot Nova 2 / Nova 5 are both 6-DOF arms.
+    dof = 6
+
     def __init__(
         self,
         ip: str,
@@ -90,17 +97,20 @@ class Dobot:
     def move_j(self, target: Sequence[float], speed: int | None = None) -> GoalId:
         # ArmBase contract: move_j target is Cartesian (x,y,z,rx,ry,rz).
         # For joint-angle targets use move_j_joints.
+        target = validate_cartesian_target(target, self.dof, self.name)
         return self._send_move("j", target, COORD_POSE, speed=speed)
 
     def move_l(self, target: Sequence[float], speed: int | None = None) -> GoalId:
         # MovL is Cartesian-only in practice — joint-space MovL doesn't
         # have a clean physical meaning.
+        target = validate_cartesian_target(target, self.dof, self.name)
         return self._send_move("l", target, COORD_POSE, speed=speed)
 
     def move_j_joints(self, target: Sequence[float], speed: int | None = None) -> GoalId:
         # Joint-angle target: skips IK. Same MovJ SDK call as move_j but
         # with COORD_JOINT — Dobot's SDK uses the coord mode flag to
         # distinguish Cartesian vs joint targets.
+        target = validate_joint_target(target, self.dof, self.name)
         return self._send_move("j", target, COORD_JOINT, speed=speed)
 
     def halt(self, goal_id: GoalId) -> None:
@@ -116,15 +126,13 @@ class Dobot:
     def _send_move(
         self,
         kind: str,
-        target: Sequence[float],
+        target: tuple[float, ...],
         coord_mode: int,
         speed: int | None = None,
     ) -> GoalId:
-        target_tuple = tuple(float(x) for x in target)
-        if len(target_tuple) != 6:
-            raise ValueError(
-                f"target must have 6 elements, got {len(target_tuple)}"
-            )
+        # target is already validated by validate_cartesian_target /
+        # validate_joint_target at the public entry point — length and
+        # dof-specific constraints are enforced there.
         if speed is not None and not (1 <= speed <= 100):
             raise ValueError(f"speed must be in [1, 100], got {speed}")
         if self._dashboard is None:
@@ -136,7 +144,7 @@ class Dobot:
             gid = self._goal_counter
             self._current_goal_id = gid
 
-        a, b, c, d, e, f = target_tuple
+        a, b, c, d, e, f = target
         v = speed if speed is not None else -1   # SDK convention: -1 means "omit"
         if kind == "j":
             self._dashboard.MovJ(a, b, c, d, e, f, coord_mode, v=v)

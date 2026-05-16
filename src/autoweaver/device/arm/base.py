@@ -7,6 +7,50 @@ import numpy as np
 
 GoalId = int
 
+# Tolerance for the "rx/ry must be 0" check on 4-DOF arms. Accommodates
+# upstream float noise (e.g. matrix products that come out 1e-15 instead
+# of exactly 0); any intentional non-zero tilt is far above this.
+_TILT_TOLERANCE_DEG = 1e-3
+
+
+def validate_cartesian_target(
+    target: Sequence[float], dof: int, arm_name: str
+) -> tuple[float, float, float, float, float, float]:
+    """Validate a 6-element Cartesian target ``(x, y, z, rx, ry, rz)``.
+
+    Always rejects wrong length. For 4-DOF arms (SCARA-like: only x/y/z
+    translation and yaw via rz), additionally rejects non-zero rx/ry —
+    they're physically unreachable, so honoring such a target silently
+    would mean lying about the pose.
+    """
+    target_tuple = tuple(float(x) for x in target)
+    if len(target_tuple) != 6:
+        raise ValueError(
+            f"{arm_name}: Cartesian target must have 6 elements (x,y,z,rx,ry,rz), "
+            f"got {len(target_tuple)}"
+        )
+    x, y, z, rx, ry, rz = target_tuple
+    if dof == 4 and (abs(rx) > _TILT_TOLERANCE_DEG or abs(ry) > _TILT_TOLERANCE_DEG):
+        raise ValueError(
+            f"{arm_name}: 4-DOF arm cannot tilt — target has rx={rx}°, ry={ry}° "
+            f"(both must be 0). This arm only supports x/y/z translation and rz (yaw); "
+            f"set rx=0 and ry=0 in your move_l/move_j target."
+        )
+    return (x, y, z, rx, ry, rz)
+
+
+def validate_joint_target(
+    target: Sequence[float], dof: int, arm_name: str
+) -> tuple[float, ...]:
+    """Validate a joint-angle target. Length must equal the arm's DOF."""
+    target_tuple = tuple(float(x) for x in target)
+    if len(target_tuple) != dof:
+        raise ValueError(
+            f"{arm_name}: joint target must have {dof} elements "
+            f"(this arm is {dof}-DOF), got {len(target_tuple)}"
+        )
+    return target_tuple
+
 
 @runtime_checkable
 class ArmBase(Protocol):
@@ -29,8 +73,13 @@ class ArmBase(Protocol):
 
     The ``j`` / ``l`` letters describe path shape, not target format.
     Cartesian targets are always 6-tuples ``(x, y, z, rx, ry, rz)`` in
-    mm + degrees (ZYX intrinsic). Joint-target length is arm-dependent
-    (6 for 6-DOF arms, 4 for SCARA).
+    mm + degrees (ZYX intrinsic). Joint-target length equals ``dof``
+    (6 for typical industrial arms, 4 for SCARA).
+
+    ``dof`` declares the arm's reachable axes. 4-DOF SCARA-like arms
+    have x/y/z translation and yaw (rz) only — Cartesian targets with
+    non-zero rx/ry are rejected at the driver entry. 6-DOF arms accept
+    any orientation.
 
     Feedback is pull-style (NEXT-008): leaves call ``get_flange_pose()``
     on demand. The driver is responsible for converting the SDK's native
@@ -39,6 +88,7 @@ class ArmBase(Protocol):
     """
 
     name: str
+    dof: int
 
     # --- control (fire-and-forget) ---
 
@@ -80,4 +130,3 @@ class ArmBase(Protocol):
     def stop(self) -> None:
         """Disconnect and release resources."""
         ...
-

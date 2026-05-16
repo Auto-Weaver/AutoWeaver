@@ -136,3 +136,54 @@ def test_stop_disables_subsequent_calls():
     arm.stop()
     with pytest.raises(RuntimeError, match="start"):
         arm.move_j((0, 0, 0, 0, 0, 0))
+
+
+# ─── 4-DOF (SCARA-like) validation ─────────────────────────────────────────
+
+
+def test_4dof_mock_rejects_cartesian_tilt_in_move_l():
+    arm = _new_arm(name="scara1", dof=4)
+    with pytest.raises(ValueError, match="cannot tilt"):
+        arm.move_l((100.0, 200.0, 50.0, 15.0, 0.0, 90.0))
+
+
+def test_4dof_mock_rejects_cartesian_tilt_in_move_j():
+    arm = _new_arm(name="scara1", dof=4)
+    with pytest.raises(ValueError, match="cannot tilt"):
+        arm.move_j((0.0, 0.0, 0.0, 0.0, 5.0, 0.0))
+
+
+def test_4dof_mock_accepts_yaw_only_cartesian():
+    arm = _new_arm(name="scara1", dof=4)
+    gid = arm.move_l((100.0, 200.0, 50.0, 0.0, 0.0, 90.0))
+    assert gid == 1
+
+
+def test_4dof_mock_tolerates_tiny_float_noise_in_tilt():
+    """rx/ry within 1e-3° tolerance must pass — upstream matrix math
+    can produce 1e-15 instead of exact 0."""
+    arm = _new_arm(name="scara1", dof=4)
+    arm.move_l((100.0, 200.0, 50.0, 1e-15, -1e-15, 90.0))
+
+
+def test_4dof_mock_joint_target_must_have_4_elements():
+    arm = _new_arm(name="scara1", dof=4)
+    with pytest.raises(ValueError, match="4-DOF"):
+        arm.move_j_joints((10, 20, 30, 40, 50, 60))  # 6, wrong
+
+
+def test_4dof_mock_accepts_4_element_joint_target():
+    arm = _new_arm(name="scara1", dof=4)
+    gid = arm.move_j_joints((10, 20, 30, 40))
+    assert gid == 1
+    assert ("move_j_joints", gid, (10.0, 20.0, 30.0, 40.0)) in arm.calls
+
+
+def test_invalid_dof_rejected_at_construction():
+    with pytest.raises(ValueError, match="dof"):
+        MockArm(name="m1", dof=5)
+
+
+def test_dof_visible_on_instance():
+    assert MockArm(name="m1").dof == 6
+    assert MockArm(name="m1", dof=4).dof == 4
