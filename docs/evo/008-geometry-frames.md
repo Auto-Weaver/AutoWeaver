@@ -1,8 +1,20 @@
 # EVO-008: Geometry — 多臂坐标系与静态变换
 
-日期：2026-05-15
+日期：2026-05-15（初版）/ 2026-05-16（删除四元数支持，rpy 钉为唯一旋转格式）
 
 前置文档：[EVO-001: Motion Engine](001-motion-engine.md)、[EVO-002: Motion Stack 分层架构](002-motion-stack.md)、[EVO-007: BT + Worker + Task 三层模型](007-bt-worker-task.md)
+
+## 演进说明
+
+初版（05-15）支持 `quat` / `rpy` / `matrix` 三种旋转表示 + `quat_order` / `rpy_convention` / `xyz_unit` 三个翻译开关，原假设是"操作员手工抄标定工具的输出粘进 YAML"。
+
+05-16 重新评估后发现：
+
+- 所有主流厂商（Dobot / KUKA / Yaskawa / Fanuc / Epson SPEL+ / ABB 示教器界面）报出的姿态都是 Euler 度数，**没有一家**示教器让人读四元数。
+- 未来的 N 点标定工具（NEXT-010）输出 xyz + 单位阵 rotation，天然就是 rpy 表达。
+- "支持四元数 + 多 convention 开关"是为不存在的用户路径买保险。
+
+因此本次把 schema 简化到 **`rpy`（ZYX intrinsic 度数，钉死）+ `matrix`（escape hatch）** 两种格式，删除 `quat` / `quat_order` / `rpy_convention` / `xyz_unit` 字段。将来真出现四元数源时再加回——`transforms.quat_to_matrix` 仍然保留在 `transforms.py` 里作为通用工具，重新接入只是 schema 这边 10 行的事。
 
 ## 一句话
 
@@ -112,23 +124,23 @@ target 一旦表达到 world，求各台臂的 flange 就是各自一次代数�
 frames:
   - name: arm_1_base
     parent: world
-    xyz: [0.0, 0.0, 0.0]              # 单位：mm
-    quat: [0.0, 0.0, 0.0, 1.0]         # [x, y, z, w]，scipy / ROS 顺序
+    xyz: [0.0, 0.0, 0.0]              # 单位：mm（钉死）
+    rpy: [0, 0, 0]                    # ZYX intrinsic 度数（钉死）
 
   - name: arm_2_base
     parent: world
     xyz: [1200.0, 0.0, 0.0]
-    quat: [0.0, 0.0, 1.0, 0.0]
+    rpy: [180, 0, 0]                  # 绕 Z 转 180°（朝向跟 arm_1 相反）
 
   - name: arm_1_tool_camera
     parent: arm_1_flange
     xyz: [50.0, 0.0, 100.0]
-    quat: [0.0, -0.7071, 0.0, 0.7071]
+    rpy: [0, -90, 0]                  # 相机光轴沿 -Y
 
   - name: arm_2_tool_gripper
     parent: arm_2_flange
     xyz: [0.0, 0.0, 150.0]
-    quat: [0.0, 0.0, 0.0, 1.0]
+    rpy: [0, 0, 0]
 ```
 
 ### 字段约束
@@ -143,7 +155,8 @@ frames:
 - **`world`** 本身不出现在 list 里（它是隐含根，没有父）
 - **`arm_<id>_flange`** 本身也不出现在 list 里（它是动态 frame，由 SDK 实时提供）
 - **`xyz`**：长度 3，单位 mm
-- **`quat`**：长度 4，顺序 `[x, y, z, w]`，模长必须近似 1.0（容差 1e-6）
+- **`rpy`**：长度 3，ZYX intrinsic 度数。**没有 convention 字段**——schema 钉死这一种 convention
+- **`matrix`**：4×4 齐次矩阵，可选，与 `rpy` 互斥。给 `matrix` 时不能再写 `xyz`
 
 ### 命名为什么强约束
 
@@ -159,9 +172,9 @@ frames:
 
 ### 单位选 mm + 度
 
-工业现场习惯——Dobot SDK、SPEL+、绝大部分机器人控制器都用 mm。framework 跟外部走，不强行 SI 化。
+工业现场习惯——Dobot SDK、SPEL+、绝大部分机器人控制器都用 mm + 度。framework 跟外部走，不强行 SI 化。
 
-quat 本身没有角度单位。"度"这个决定只对将来如果引入 rpy 字段时有效——目前 schema 只接受 quat。
+mm 钉死、度钉死——schema 没有单位开关。一处 schema、一种 convention，省去所有"这个数到底是 mm 还是 m / 度还是弧度"的疑问。
 
 ### 单文件 / 多工位怎么办
 
@@ -173,90 +186,62 @@ quat 本身没有角度单位。"度"这个决定只对将来如果引入 rpy �
 - 拆文件后 loader 要做文件合并、name 冲突检测——增加复杂度但收益小
 - 一份 YAML 一眼能看到工位的全貌
 
-## 约定与翻译开关
+## 旋转表示：rpy 主、matrix 备选
 
-不同标定工具吐出来的数据格式不一样——有的给 quaternion `[x,y,z,w]`，有的给 `[w,x,y,z]`，有的给 Euler 度数（还有 ZYX intrinsic / XYZ extrinsic 等多种 convention），有的直接给 4×4 矩阵。
+schema 只接受两种旋转字段：
 
-为了让用户能**把工具产物直接粘进 YAML、不手动转换**，schema 允许在每条边上声明输入数据的约定。loader 看到约定声明就走对应的翻译路径，**内部统一转成 autoweaver 标准约定**（`xyz mm + quat [x,y,z,w] + 4×4 右手系矩阵`）。翻译只发生在 loader 里、一次性，进 Geometry 实例的就是统一的 4×4 矩阵——下游代码完全感知不到约定差异。
-
-### 默认约定
-
-不写任何开关字段时，按以下约定解析：
-
-| 字段 | 默认约定 |
-|---|---|
-| `xyz` | 单位 mm |
-| `quat` | 顺序 `[x, y, z, w]`（scipy / ROS） |
-
-绝大多数情况用默认就够——只有从特殊工具拿到非标准格式的数据才需要开关。
-
-### 旋转表示三选一
-
-每条边的旋转部分必须有且只有一种表示，三种字段任选其一：
-
-| 字段 | 含义 | 何时用 |
+| 字段 | 长度 / 形态 | 用途 |
 |---|---|---|
-| `quat` | 四元数，长度 4 | 默认推荐，无奇异 |
-| `rpy` | Euler 角，长度 3 | 工具给的是 Euler，懒得转 |
-| `matrix` | 4×4 矩阵 | 工具直接给齐次矩阵 |
+| `rpy` | 长度 3 | 主格式。ZYX intrinsic 度数，钉死这一种 convention |
+| `matrix` | 4×4 | escape hatch。给"测试夹具""外部工具直接给齐次矩阵"留口子，绕过 xyz+rpy 的拼装 |
 
-同时写两种 → 启动报错。
+每条边必须有且只有一个 —— 同时写 `rpy` 和 `matrix` → 启动报错。给 `matrix` 时不能再写 `xyz`（matrix 自带平移）。
 
-### 开关字段一览
+### 为什么 rpy 是主格式（而不是 quat）
 
-| 开关字段 | 作用范围 | 取值 | 默认 |
-|---|---|---|---|
-| `quat_order` | 当用 `quat` 时 | `xyzw` / `wxyz` | `xyzw` |
-| `rpy_convention` | 当用 `rpy` 时 | 见下表 | 必填，无默认 |
-| `xyz_unit` | xyz 长度单位 | `mm` / `m` | `mm` |
+EVO-008 初版的拍板是四元数主格式，理由是"无奇异 + 通用"。05-16 重新评估后认定这是错的方向：
 
-`rpy_convention` 必填不给默认——Euler 角的 convention 太多歧义大，不允许"按默认理解"。需要写 rpy 就必须显式声明 convention。
+- **没有任何主流机械臂示教器/SDK 输出四元数**。Dobot 的 `ToolVectorActual`、KUKA 的 (A,B,C)、Yaskawa 的 (Rx,Ry,Rz)、Fanuc 的 (W,P,R)、Epson SPEL+ 的 (U,V,W)、ABB 示教器界面——全是 Euler 度数。ABB RAPID 内部用四元数，但操作员看到的还是 Euler。
+- **`flange ← tool` 这条边将来由 NEXT-010 N 点标定工具自动产**，输出是 xyz + 单位阵 rotation，天然 rpy 表达。
+- **`world ← arm_base` / `fixture_*` 这些人写的边**，源头是 CAD 出图 / 卡尺 + 量角器 / 控制器示教器 —— 全是 Euler 度数。
 
-支持的 `rpy_convention`：
+支持四元数纯粹是替不存在的用户路径买保险。删了 schema 立刻干净一层。
 
-```
-zyx_intrinsic_deg    Z-Y-X 内旋（俗称 RPY / yaw-pitch-roll），度
-zyx_intrinsic_rad    同上，弧度
-xyz_extrinsic_deg    X-Y-Z 外旋（固定轴），度
-xyz_extrinsic_rad    同上，弧度
-zyz_intrinsic_deg    Z-Y-Z 内旋（科学界常见），度
-zyz_intrinsic_rad    同上，弧度
-```
+### 为什么 convention 钉死、不留开关
 
-不支持的 convention → 启动报错。要扩 convention 时，在 `transforms.py` 里加对应解析函数 + 在 regex 白名单里加一行。
+ZYX intrinsic 度数是工业事实标准——上面列的所有厂商基本走这一种或等价表达。允许 `rpy_convention` 切换 6 种 convention 是 EVO-008 初版的过度设计，删了之后：
+
+- 一行 `rpy: [...]` 没有任何"这是哪种 convention"的疑问
+- 读 YAML 的人不需要先去 transforms.py 查支持的 convention 列表
+- 减一类"`rpy_convention` 拼错或漏写"的失败模式
+
+未来真有需要扩 convention 的场景出现（比如某个厂的标定工具死活只能吐 XYZ extrinsic），届时再讨论"是加 convention 开关、还是在标定工具的输出端做一次 convention 转换"。**当下没这个需求，不预付架构税**。
+
+### 为什么 mm 也钉死
+
+同理。所有目标厂商都用 mm。`xyz_unit: m` 这个开关在 EVO-008 初版里就是个伪需求——没有任何已知 toolchain 会让用户拿到 m 单位的标定数据。删。
 
 ### 示例
 
 ```yaml
 frames:
-  # 默认约定，零开关
+  # 绝大多数边都长这样：xyz + rpy
   - name: arm_1_base
     parent: world
     xyz: [0.0, 0.0, 0.0]
-    quat: [0.0, 0.0, 0.0, 1.0]
+    rpy: [0, 0, 0]
 
-  # 四元数顺序非默认：声明 wxyz
   - name: arm_2_base
     parent: world
     xyz: [1200.0, 0.0, 0.0]
-    quat: [0.707, 0, 0, 0.707]
-    quat_order: wxyz
+    rpy: [180, 0, 0]                 # 朝向跟 arm_1 相反
 
-  # 用 Euler 而非四元数，必须声明 convention
   - name: arm_1_tool_camera
     parent: arm_1_flange
     xyz: [50, 0, 100]
     rpy: [0, -90, 0]
-    rpy_convention: zyx_intrinsic_deg
 
-  # xyz 单位是 m 而非 mm
-  - name: arm_3_base
-    parent: world
-    xyz: [0.5, 0.3, 0.0]
-    xyz_unit: m
-    quat: [0, 0, 0, 1]
-
-  # 直接给 4×4 矩阵，不用任何 quat / rpy 开关
+  # escape hatch：外部工具直接给齐次矩阵，不用拆 xyz + rpy
   - name: fixture_tray_a
     parent: world
     matrix:
@@ -270,12 +255,12 @@ frames:
 
 **约定问题分两层处理**，各管各的：
 
-1. **YAML / geometry 层**：处理"用户手边的标定工具吐什么格式" —— 是数据**怎么写到 YAML**的事
-2. **driver 层（`device/arm/dobot.py` 等）**：处理"机械臂 SDK 输出什么格式" —— 是 driver 把 SDK 数据**翻译成 autoweaver 标准 4×4 矩阵**的事
+1. **YAML / geometry 层**：处理"标定数据**怎么写到 YAML**"——schema 钉死 rpy ZYX intrinsic 度数
+2. **driver 层（`device/arm/dobot.py` 等）**：处理"SDK 给的姿态**怎么翻译成 autoweaver 标准 4×4 矩阵**"——硬编码在 driver 代码里
 
-后者是 driver 的本职工作，硬编码在 driver 代码里（"Dobot 的 `ToolVectorActual` 是 ZYX intrinsic 度数"是 SDK 固有属性，不是用户配置）。geometry 不知道也不应该知道有没有 Dobot 或 ABB。
+后者是 driver 的本职工作，"Dobot 的 `ToolVectorActual` 是 ZYX intrinsic 度数"是 SDK 固有属性，不是用户配置。geometry 不知道也不应该知道有没有 Dobot 或 ABB。
 
-geometry 内部约定永远是固定的（`xyz mm + quat [x,y,z,w] + 右手系 4×4`），开关只是用户输入侧的便利。
+geometry 内部约定永远是固定的（`xyz mm + 右手系 4×4 矩阵`），rpy 只是 YAML 入口侧的便利写法。
 
 ## Geometry 类
 
@@ -356,18 +341,15 @@ class HandoverLeaf(ActionLeaf):
 `Geometry.__init__` 期间：
 
 1. 读 YAML，按 schema 解析
-2. 校验所有 frame name 匹配 regex
-3. 校验 name 唯一
+2. 校验字段白名单（拦 `quaternion` / `quat` 等 typo 或老字段）
+3. 校验所有 frame name 匹配 regex、name 唯一
 4. 校验每个 parent 合法（`world` 或 `arm_<id>_flange`）
-5. 校验旋转字段三选一（`quat` / `rpy` / `matrix`），不允许同时给两种
-6. 校验开关字段取值合法（`quat_order` ∈ {xyzw, wxyz}，`rpy_convention` ∈ 白名单，`xyz_unit` ∈ {mm, m}）
-7. 用 `rpy` 时 `rpy_convention` 必填
-8. 按开关把 xyz / 旋转翻译为标准约定（mm + quat[x,y,z,w]）
-9. 校验最终 quat 模长 ≈ 1（容差 1e-6）
-10. 每条边转成 4×4 矩阵
-11. 按 parent 分类放进两张 dict（`_world_from_base` 或 `_flange_from_tool`）
-12. 对每个矩阵算逆，存进对应的 inv dict
-13. 打印一棵树到日志，方便人看现在加载了什么：
+5. 校验旋转字段二选一（`rpy` / `matrix`），不允许同时给两种
+6. 给 `matrix` 时校验是 4×4、底行 `[0,0,0,1]`、左上 3×3 正交且 det=+1
+7. 给 `rpy` 时按 ZYX intrinsic 度数翻译为 3×3 旋转矩阵，和 `xyz`（已是 mm）合成 4×4
+8. 按 parent 分类放进两张 dict（`_world_from_base` 或 `_flange_from_tool`）
+9. 对每个矩阵算逆，存进对应的 inv dict
+10. 打印一棵树到日志，方便人看现在加载了什么：
 
 ```
 [geometry] loaded calibration from configs/calibration/cell_2.yaml
@@ -414,7 +396,7 @@ src/autoweaver/
 │   ├── __init__.py
 │   ├── geometry.py          # Geometry 类
 │   ├── schema.py            # YAML 解析 + 校验
-│   └── transforms.py        # xyz+quat → 4×4 矩阵的工具函数
+│   └── transforms.py        # xyz/rpy/quat/matrix ↔ 4×4 矩阵的通用工具
 ├── motion_policy/
 ├── pipeline/
 ├── device/
@@ -466,10 +448,9 @@ leaf **可以是无状态的**（EVO-007 要求）—— Geometry 引用作为�
 | 扁平 list 而非缩进树 | 物理拓扑里有动态节点（flange），缩进树会逼用户在 YAML 里给动态节点占位，反而别扭 |
 | `parent` + `name` 而非 `parent` + `child` | 以"我是谁"为主体读起来更顺、name 唯一性能在 YAML 解析层抓出来 |
 | frame name 强 regex | 工业现场命名容易各家不一样，靠"惯例"约束不住，loader 一刀切 |
-| `quat: [x, y, z, w]` | scipy / ROS 默认顺序，便于和标定工具对接 |
-| mm + 度 | 工业现场习惯，跟 Dobot SDK / SPEL+ 等外部对齐 |
-| 翻译开关在 YAML 而非默认推断 | 默认走标准约定零开关、显式声明才走翻译，保持 YAML 简洁的同时给非标准工具留口子 |
-| 约定问题分 YAML / driver 两层 | YAML 翻译处理用户输入数据的格式，driver 处理 SDK 输出的格式；geometry 内部约定钉死、不知道厂商 |
+| 旋转格式钉死 rpy（ZYX intrinsic 度）+ matrix（escape hatch）| 所有主流厂商示教器/SDK 输出都是 Euler 度，N 点标定工具也输出 rpy；支持四元数是为不存在的用户路径买保险 |
+| 没有 `rpy_convention` / `xyz_unit` 开关 | ZYX intrinsic 度 + mm 是工业事实标准；多 convention 开关是过度设计，删了 schema 立刻干净一层 |
+| 约定问题分 YAML / driver 两层 | YAML 处理"标定数据怎么写"（钉死 rpy），driver 处理"SDK 给的姿态怎么翻译"（硬编码厂商 convention）；geometry 内部约定钉死、不知道厂商 |
 | 启动时全部预乘 + 算逆 | 标定数据少（N=5~20），N² 内存可忽略，运行时只查表 |
 | 不提供 `get(src, dst)` 通用查询 | 这种 API 会诱导业务代码假装动态那段不存在 |
 | 不提供 `compose_through_flange` helper | 越过"只管静态"的边界，geometry 会一路膨胀 |
@@ -489,8 +470,7 @@ leaf **可以是无状态的**（EVO-007 要求）—— Geometry 引用作为�
 
 ## 后续工作
 
-- 实现 `src/autoweaver/geometry/`：schema / Geometry 类 / loader
-- 单元测试：YAML 解析、regex 校验、quat 模长校验、矩阵 / 逆矩阵正确性、启动期树形打印
-- `ArmBase.get_flange_pose()` 接口定稿（见"和 ArmBase / Dobot 的关系"）
+- ~~实现 `src/autoweaver/geometry/`：schema / Geometry 类 / loader~~ —— 已落地，见 commit `f1bd0eb`
+- ~~`ArmBase.get_flange_pose()` 接口定稿~~ —— 已落地，见 NEXT-008
 - 第一份真实标定 YAML：在 pluck-hair 落地时产出，作为示例进 docs
 - 在 NEXT-006 Dobot 主流程之上加一个跨臂示例 leaf（如果有两台真机的话），验证拼接形态

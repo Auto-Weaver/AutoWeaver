@@ -24,7 +24,7 @@ def test_minimal_valid_file(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0.0, 0.0, 0.0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     edges = schema.load(path)
     assert len(edges) == 1
@@ -40,19 +40,19 @@ def test_multiple_frames_with_tools(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_2_base
             parent: world
             xyz: [1200, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_1_tool_camera
             parent: arm_1_flange
             xyz: [50, 0, 100]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: fixture_tray_a
             parent: world
             xyz: [800, 400, 50]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     edges = schema.load(path)
     assert {e.name for e in edges} == {
@@ -93,7 +93,7 @@ def test_world_name_rejected(tmp_path):
           - name: world
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     with pytest.raises(CalibrationSchemaError, match="implicit root"):
         schema.load(path)
@@ -105,7 +105,7 @@ def test_flange_as_name_rejected(tmp_path):
           - name: arm_1_flange
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     with pytest.raises(CalibrationSchemaError, match="dynamic"):
         schema.load(path)
@@ -117,7 +117,7 @@ def test_arbitrary_name_rejected(tmp_path):
           - name: my_robot
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     with pytest.raises(CalibrationSchemaError, match="does not match"):
         schema.load(path)
@@ -129,11 +129,11 @@ def test_duplicate_name_rejected(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_1_base
             parent: world
             xyz: [100, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     with pytest.raises(CalibrationSchemaError, match="duplicate"):
         schema.load(path)
@@ -149,7 +149,7 @@ def test_parent_not_world_or_flange_rejected(tmp_path):
           - name: arm_1_tool_camera
             parent: arm_1_base
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     with pytest.raises(CalibrationSchemaError, match="parent"):
         schema.load(path)
@@ -170,87 +170,48 @@ def test_no_rotation_field_rejected(tmp_path):
         schema.load(path)
 
 
-def test_two_rotation_fields_rejected(tmp_path):
+def test_rpy_and_matrix_together_rejected(tmp_path):
     path = _write(tmp_path, """
         frames:
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
             rpy: [0, 0, 0]
-            rpy_convention: zyx_intrinsic_deg
+            matrix:
+              - [1, 0, 0, 0]
+              - [0, 1, 0, 0]
+              - [0, 0, 1, 0]
+              - [0, 0, 0, 1]
     """)
     with pytest.raises(CalibrationSchemaError, match="mutually exclusive"):
         schema.load(path)
 
 
-def test_rpy_without_convention_rejected(tmp_path):
-    path = _write(tmp_path, """
-        frames:
-          - name: arm_1_base
-            parent: world
-            xyz: [0, 0, 0]
-            rpy: [0, 0, 0]
-    """)
-    with pytest.raises(CalibrationSchemaError, match="rpy_convention"):
-        schema.load(path)
-
-
-def test_rpy_with_unsupported_convention_rejected(tmp_path):
-    path = _write(tmp_path, """
-        frames:
-          - name: arm_1_base
-            parent: world
-            xyz: [0, 0, 0]
-            rpy: [0, 0, 0]
-            rpy_convention: made_up
-    """)
-    with pytest.raises(CalibrationSchemaError, match="rpy_convention"):
-        schema.load(path)
-
-
 # ---------------------------------------------------------------------------
-# Switch fields produce the expected matrix
+# Rotation parsing
 # ---------------------------------------------------------------------------
 
-def test_xyz_unit_meters_converted_to_mm(tmp_path):
+def test_rpy_zero_yields_identity_rotation(tmp_path):
     path = _write(tmp_path, """
         frames:
           - name: arm_1_base
             parent: world
-            xyz: [0.5, 0.0, 0.1]
-            xyz_unit: m
-            quat: [0, 0, 0, 1]
+            xyz: [10, 20, 30]
+            rpy: [0, 0, 0]
     """)
     edges = schema.load(path)
-    assert np.allclose(edges[0].matrix[:3, 3], [500.0, 0.0, 100.0])
+    assert np.allclose(edges[0].matrix[:3, :3], np.eye(3))
+    assert np.allclose(edges[0].matrix[:3, 3], [10, 20, 30])
 
 
-def test_quat_order_wxyz_parsed(tmp_path):
-    # 90° about Z written in wxyz order.
-    s = float(np.sin(np.pi / 4))
-    c = float(np.cos(np.pi / 4))
-    path = _write(tmp_path, f"""
-        frames:
-          - name: arm_1_base
-            parent: world
-            xyz: [0, 0, 0]
-            quat: [{c}, 0, 0, {s}]
-            quat_order: wxyz
-    """)
-    edges = schema.load(path)
-    rotated_x = edges[0].matrix[:3, :3] @ np.array([1.0, 0.0, 0.0])
-    assert np.allclose(rotated_x, [0.0, 1.0, 0.0], atol=1e-9)
-
-
-def test_rpy_zyx_intrinsic_deg_parsed(tmp_path):
+def test_rpy_90deg_first_axis_rotates_x_to_y(tmp_path):
+    """ZYX intrinsic: the first angle is yaw about Z. 90° about Z sends +X to +Y."""
     path = _write(tmp_path, """
         frames:
           - name: arm_1_tool_camera
             parent: arm_1_flange
             xyz: [50, 0, 100]
             rpy: [90, 0, 0]
-            rpy_convention: zyx_intrinsic_deg
     """)
     edges = schema.load(path)
     rotated_x = edges[0].matrix[:3, :3] @ np.array([1.0, 0.0, 0.0])
@@ -300,7 +261,7 @@ def test_unknown_field_rejected(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
             color: red
     """)
     with pytest.raises(CalibrationSchemaError, match="unknown fields"):
@@ -308,12 +269,27 @@ def test_unknown_field_rejected(tmp_path):
 
 
 def test_typo_quaternion_caught(tmp_path):
+    """Quaternions are no longer supported — but the whitelist still catches
+    the typo so the user gets a clear schema error instead of silent fallback."""
     path = _write(tmp_path, """
         frames:
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
             quaternion: [0, 0, 0, 1]
+    """)
+    with pytest.raises(CalibrationSchemaError, match="unknown fields"):
+        schema.load(path)
+
+
+def test_quat_field_no_longer_accepted(tmp_path):
+    """`quat` was the old rotation field; it's now rejected at the whitelist."""
+    path = _write(tmp_path, """
+        frames:
+          - name: arm_1_base
+            parent: world
+            xyz: [0, 0, 0]
+            quat: [0, 0, 0, 1]
     """)
     with pytest.raises(CalibrationSchemaError, match="unknown fields"):
         schema.load(path)
@@ -329,11 +305,11 @@ def test_error_includes_frame_name_context(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_2_base
             parent: floor
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     with pytest.raises(CalibrationSchemaError, match="arm_2_base"):
         schema.load(path)

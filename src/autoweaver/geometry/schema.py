@@ -1,8 +1,20 @@
 """YAML schema parser and validator for calibration files.
 
-Produces a list of `FrameEdge` dataclasses with translation already in mm
-and rotation expressed as a standard 4×4 matrix. Downstream code (Geometry)
+Produces a list of `FrameEdge` dataclasses with translation in mm and
+rotation expressed as a standard 4×4 matrix. Downstream code (Geometry)
 sees only the standardized form.
+
+The schema accepts two rotation representations:
+  - `rpy: [rx, ry, rz]` — Euler angles, ZYX intrinsic, degrees. The
+    canonical format: matches every common vendor's teach-pendant
+    convention (Dobot, KUKA, Yaskawa, Epson SPEL+) and is what the
+    forthcoming N-point calibration tool will emit.
+  - `matrix: [[...]]` — 4×4 homogeneous transform. Escape hatch for
+    test fixtures and externally-generated calibrations.
+
+xyz is always in mm — no unit switch. Quaternions are not accepted; the
+N-point calibration tool and human-authored entries both produce Euler
+angles natively.
 """
 
 from __future__ import annotations
@@ -25,10 +37,10 @@ _NAME_PATTERNS = (
 
 _FLANGE_PATTERN = re.compile(r"^arm_[a-z0-9_]+_flange$")
 
-_ROTATION_FIELDS = ("quat", "rpy", "matrix")
-_KNOWN_FIELDS = frozenset(
-    {"name", "parent", "xyz", "xyz_unit", "quat", "quat_order", "rpy", "rpy_convention", "matrix"}
-)
+_ROTATION_FIELDS = ("rpy", "matrix")
+_KNOWN_FIELDS = frozenset({"name", "parent", "xyz", "rpy", "matrix"})
+
+_RPY_CONVENTION = "zyx_intrinsic_deg"
 
 
 @dataclass(frozen=True)
@@ -142,30 +154,12 @@ def _build_matrix(entry: dict[str, Any], xyz_raw: Any) -> np.ndarray:
     rotation_field = present[0]
 
     if rotation_field == "matrix":
-        if xyz_raw is not None or "xyz_unit" in entry:
+        if xyz_raw is not None:
             raise CalibrationSchemaError(
-                "'matrix' is self-contained; do not combine with 'xyz' or 'xyz_unit'"
+                "'matrix' is self-contained; do not combine with 'xyz'"
             )
         return transforms.matrix_passthrough(entry["matrix"])
 
-    unit = entry.get("xyz_unit", "mm")
-    if not isinstance(unit, str):
-        raise CalibrationSchemaError("'xyz_unit' must be a string")
-    xyz_mm = transforms.to_mm(xyz_raw, unit)
-
-    if rotation_field == "quat":
-        order = entry.get("quat_order", "xyzw")
-        if not isinstance(order, str):
-            raise CalibrationSchemaError("'quat_order' must be a string")
-        return transforms.quat_to_matrix(xyz_mm, entry["quat"], order)
-
     # rotation_field == "rpy"
-    convention = entry.get("rpy_convention")
-    if convention is None:
-        raise CalibrationSchemaError(
-            "'rpy_convention' is required when using 'rpy'; "
-            f"supported: {list(transforms.supported_rpy_conventions())}"
-        )
-    if not isinstance(convention, str):
-        raise CalibrationSchemaError("'rpy_convention' must be a string")
-    return transforms.euler_to_matrix(xyz_mm, entry["rpy"], convention)
+    xyz_mm = transforms.to_mm(xyz_raw, "mm")
+    return transforms.euler_to_matrix(xyz_mm, entry["rpy"], _RPY_CONVENTION)

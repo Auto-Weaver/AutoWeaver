@@ -23,15 +23,15 @@ def test_world_relative_frames_indexed(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_2_base
             parent: world
             xyz: [1200, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: fixture_tray
             parent: world
             xyz: [500, 500, 50]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
     assert np.allclose(g.world_from("arm_1_base"), np.eye(4))
@@ -45,11 +45,11 @@ def test_flange_relative_tools_indexed(tmp_path):
           - name: arm_1_tool_camera
             parent: arm_1_flange
             xyz: [50, 0, 100]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_2_tool_gripper
             parent: arm_2_flange
             xyz: [0, 0, 150]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
     assert np.allclose(g.flange_from("arm_1_tool_camera")[:3, 3], [50, 0, 100])
@@ -61,12 +61,13 @@ def test_flange_relative_tools_indexed(tmp_path):
 # ---------------------------------------------------------------------------
 
 def test_base_from_world_inverts_world_from_base(tmp_path):
+    """Use a non-trivial rotation (90° about Z) so the inverse test is real."""
     path = _write(tmp_path, """
         frames:
           - name: arm_2_base
             parent: world
             xyz: [1200, 300, 0]
-            quat: [0, 0, 0.7071068, 0.7071068]
+            rpy: [90, 0, 0]
     """)
     g = Geometry(path)
     product = g.world_from("arm_2_base") @ g.base_from_world("arm_2_base")
@@ -80,7 +81,6 @@ def test_tool_from_flange_inverts_flange_from(tmp_path):
             parent: arm_1_flange
             xyz: [50, 0, 100]
             rpy: [0, -90, 0]
-            rpy_convention: zyx_intrinsic_deg
     """)
     g = Geometry(path)
     product = g.flange_from("arm_1_tool_camera") @ g.tool_from_flange("arm_1_tool_camera")
@@ -97,11 +97,11 @@ def test_flange_of_returns_owning_flange(tmp_path):
           - name: arm_1_tool_camera
             parent: arm_1_flange
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_2_tool_gripper
             parent: arm_2_flange
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
     assert g.flange_of("arm_1_tool_camera") == "arm_1_flange"
@@ -118,7 +118,7 @@ def test_world_from_on_tool_explains_use_flange_from(tmp_path):
           - name: arm_1_tool_camera
             parent: arm_1_flange
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
     with pytest.raises(KeyError, match="flange_from"):
@@ -131,7 +131,7 @@ def test_flange_from_on_base_explains_use_world_from(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
     with pytest.raises(KeyError, match="world_from"):
@@ -144,7 +144,7 @@ def test_world_from_on_flange_explains_dynamic(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
     with pytest.raises(KeyError, match="dynamic"):
@@ -157,7 +157,7 @@ def test_missing_frame_lists_what_is_loaded(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
     with pytest.raises(KeyError, match="arm_1_base"):
@@ -179,15 +179,15 @@ def test_point_in_cam_to_arm2_base_via_world(tmp_path):
           - name: arm_1_base
             parent: world
             xyz: [0, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_2_base
             parent: world
             xyz: [1000, 0, 0]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
           - name: arm_1_tool_camera
             parent: arm_1_flange
             xyz: [0, 0, 50]
-            quat: [0, 0, 0, 1]
+            rpy: [0, 0, 0]
     """)
     g = Geometry(path)
 
