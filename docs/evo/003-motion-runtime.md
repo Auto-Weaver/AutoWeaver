@@ -1,6 +1,6 @@
 # EVO-003: Rust Motion Runtime
 
-日期：2026-04-12（初版）/ 2026-05-12（0.7.0 重构：薄翻译层）
+日期：2026-04-12（初版）/ 2026-05-12（0.7.0 薄翻译层）/ 2026-05-16（0.8.0 goal 服务层）
 
 前置文档：[EVO-001: Motion Engine](001-motion-engine.md)、[EVO-002: Motion Stack 分层架构](002-motion-stack.md)
 
@@ -12,42 +12,43 @@ EVO-002 定义了分层——Python 编排层负责"做什么"，Rust 实时层�
 
 本文档展开 Rust 实时层（motion-runtime）的内部设计。
 
-## 演进说明
-
-0.6.0 及之前的 motion-runtime 是一份**为验证 EtherCAT 链路打通而写的临时实现**：
-针对汇川 SV660N 写死了 PDO 布局、CiA402 状态机、PP-mode 握手，对外暴露 `SendGoal / GetFeedback / GetResult / Halt` 这套面向电机的 gRPC 接口。
-
-实际接入 Epson LS6（SCARA 机器人，控制器自带 SPEL+ 运行时）时发现：
-机器人这类"控制器自包含"的设备不适合用 CiA402 抽象——它的"目标位置"是写进选件板用户数据区的几个字节、配上一个 Trigger 位，而不是 `0x607A` 目标位置 + controlword bit 4。
-强行把 LS6 套进 `MotionAxis + CiA402StateMachine` 是削足适履。
-
-0.7.0 起 motion-runtime 重构为**薄翻译层**——本文档描述这个目标态。
-老实现的代码（`MotionAxis` / `Cia402StateMachine` / `tick_axis_sv660n` 等）会被替换为基于字段名↔字节翻译的通用机制；要看老代码请 checkout `0.6.0` tag。
-
-CiA402 相关的协议知识降级为参考资料，见 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md)。
-LS6 单总线方案的研究记录见 [research/ethercat-unified-bus-ls6-rc90b.md](../research/ethercat-unified-bus-ls6-rc90b.md)。
-
 ## 职责边界
 
-**motion-runtime 是一个薄翻译层。**
+**motion-runtime 是一个 goal 服务层 + EtherCAT 桥。**
 
-它只做两件事：
+它做四件事：
 
 1. **管 EtherCAT 总线**——起 IgH master、扫从站、跑 PDO 周期循环、维护 DC 同步、维护 PDO domain 缓冲区。这块是和 IgH 打交道的硬皮，没办法薄。
-2. **做"字段名 ↔ 字节"的双向翻译**——leaf 用字段名读写，runtime 按外置 YAML 契约查表，找到对应从站的 PDO 偏移、字节宽度、字节序，做实际的字节级 PDO 操作。
+2. **接受业务级 goal 请求**——Python 端发 `SubmitScaraGoal / SubmitArm6Goal / ReadStatus` 等业务级 RPC，描述"要做的运动"，不描述"要写哪些字段、按什么顺序、怎么握手"。
+3. **执行握手脚本**——把 goal 翻译成"写字段集 + 翻 trigger + 等 done + 翻 trigger 回 0"这套字段层操作。**当前阶段（0.8.0）只支持 LS6 一种握手方式，握手脚本在 runtime 内部硬编码**；将来真接第二种机器人再抽象。
+4. **做"字段名 ↔ 字节"的双向翻译**——按外置 YAML 契约查表，找到对应从站的 PDO 偏移、字节宽度、字节序，做实际的字节级 PDO 操作。
 
 它**不做**的事情：
 
-- 不懂业务语义。不知道"target_x"代表 X 坐标，不知道"trigger=1"代表执行运动，不知道"done=1"代表运动完成。
-- 不做设备分类。不再有"运动轴 / IO 模块 / 机器人"的硬编码二分；所有从站都是"挂着一份 YAML 契约的字段端点"。
-- 不做语义校验。leaf 让写哪就写哪，写错了是 leaf 的责任。
-- 不做协议握手（暂时）。CiA402 状态机这种协议级 helper 0.7.0 不实现，等真有电机要接再回来加。
+- 不做语义校验。Python 端给的 goal 字段值（坐标、速度、加减速）合不合理是 Python 端的责任；runtime 直接编码进字段。
+- 不暴露字段层 API。proto 不再有 `WriteField / ReadField` 这类 RPC——Python 端拿到的就是 goal 级接口。
+- 不做协议形状的多样化抽象。一种机器人 = runtime 内硬编码的一份握手实现 + 一份 contract.yaml；新增第二种再来谈"是不是要做 handshake DSL"。
 
-这是个**强约束**：将来任何"要不要在 runtime 里加点 X"的争论，都先回到这一条来对。runtime 越薄、它能支持的设备越广、能跑的业务场景越多。
+这是个**强约束**：将来任何"要不要在 runtime 里加点 X"的争论，都先回到这一条来对。runtime 的复杂度应当与"支持的握手种类"成正比，不与"支持的具体设备数量"成正比——同一类握手的第 N 台机器人只贡献一份 contract.yaml。
 
-## 0.7.0 的支持边界
+## 演进说明
 
-0.7.0 只支持一类 EtherCAT 从站：**"连续字节型 PDO"的设备**。具体是指——
+0.6.0 及之前的 motion-runtime 是**为验证 EtherCAT 链路而写的临时实现**——针对汇川 SV660N 写死了 PDO 布局、CiA402 状态机、PP-mode 握手，对外暴露 `SendGoal / GetFeedback / GetResult / Halt` 面向电机的接口。接 Epson LS6（控制器自包含 SPEL+ 运行时）时发现 CiA402 抽象不适用，整体废弃。
+
+0.7.0 重构为**薄翻译层**——proto 只暴露 `WriteField / ReadField` 字段级 RPC，所有业务语义放在 Python 端。Python 端 driver 自己组装"写字段 → 翻 trigger → 等 done"的握手序列。
+
+0.8.0 起改为 **goal 服务层**——Python 端复杂度太高，每个 driver 都要把同样的握手逻辑写一遍，且字段名/边沿语义渗透到业务层。把握手逻辑下沉到 runtime 后：
+
+- Python 端只发"一次 LINEAR move 到 (x,y,z,u)"这种业务请求，不关心字段名、不关心边沿
+- runtime 内部负责字段层操作的原子性（共享内存 double buffer）和握手时序
+- 业务层（BT/leaf）和协议层（SPEL+）通过 runtime **完全解耦**——换个机器人品牌只换 runtime 内部的握手实现 + contract.yaml，业务层不动
+
+CiA402 相关协议知识降级为参考资料，见 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md)。
+LS6 单总线方案的研究记录见 [research/ethercat-unified-bus-ls6-rc90b.md](../research/ethercat-unified-bus-ls6-rc90b.md)。
+
+## 0.8.0 的支持边界
+
+0.8.0 只支持一类 EtherCAT 从站：**"连续字节型 PDO"的设备**。具体是指——
 
 > 从站的 RxPDO / TxPDO 各自是**一片固定长度的连续字节区**，PDO 映射在配置阶段就是"映射这块连续区域"，不需要按 CoE 对象逐项 `ecrt_slave_config_reg_pdo_entry`。
 
@@ -57,167 +58,186 @@ LS6 单总线方案的研究记录见 [research/ethercat-unified-bus-ls6-rc90b.m
 - **数字量 IO 模块**（Beckhoff EK/EL 系列、汇川 EC3A-IO1632 等）——一片 DI 字节 + 一片 DO 字节
 - 任何"主站只是发字节、字节内字段含义由从站内部解释"的设备
 
-**0.7.0 显式不支持** "按 CoE 对象索引映射 PDO" 的设备，典型代表是 **CiA402 伺服 / 步进驱动器**（汇川 SV660、鸣志 STF05 等）。这类设备的每个 PDO 字段对应一个 CoE 对象（如 `0x607A` target position、`0x6040` controlword），映射时要逐项 `ecrt_slave_config_reg_pdo_entry`，且通常涉及 SDO 启动参数、DC SYNC 配置等额外步骤。把这套支持进来会让契约 schema 复杂一个量级，runtime 也得多一层"映射策略"的分支。
+**0.8.0 显式不支持** "按 CoE 对象索引映射 PDO" 的设备，典型代表是 **CiA402 伺服 / 步进驱动器**（汇川 SV660、鸣志 STF05 等）。这类设备的每个 PDO 字段对应一个 CoE 对象（如 `0x607A` target position、`0x6040` controlword），映射时要逐项 `ecrt_slave_config_reg_pdo_entry`，且通常涉及 SDO 启动参数、DC SYNC 配置等额外步骤。
 
 将来要接电机时，工作流是：
 
-1. checkout 0.6.0 tag 看老 motion-runtime 的 SV660N 实现（`MotionAxis` / `Cia402StateMachine` / `tick_axis_sv660n`）作为参考
-2. 在 0.7.0 的薄翻译层基础上扩展契约 schema 增加"按对象映射"分支
+1. checkout 0.6.0 tag 看老 motion-runtime 的 SV660N 实现作为参考
+2. 扩展 contract schema 增加"按对象映射"分支
 3. 评估是否需要内置 CiA402 helper（见 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md) 的"路 A / 路 B"讨论）
 
-不预先付这部分架构税。这是个 YAGNI 决策：**对不熟悉的领域提前设计兼容性，做出来的多半是错的，还得改。**
-
-## 0.7.0 重构期的取舍
-
-0.7.0 的初始落地分两个阶段：**先把薄翻译层的代码骨架和上层接口完整搭好，最后接 LS6 真机才完成 EtherCAT 驱动那一段**。这个顺序有意识地分开了"在没硬件时可以推进的事"和"需要看真实从站 ESI 才能做的事"，避免靠猜代码。
-
-具体取舍：
-
-- **去除而不是改造老电机代码**。0.6.0 的 `device/MotionAxis`、`cia402/`、`ethercat/master.rs` 里针对 SV660N 的 PDO 配置和 PP-mode 握手逻辑——这些**直接删掉**，不试图重构成"既能跑机械臂又兼容老电机"的中间形态。将来要接电机时，从 [0.6.0 tag](https://github.com/Auto-Weaver/AutoWeaver/releases/tag/0.6.0) 看老实现作参考，按 0.7.0 薄翻译层重新加。
-- **Cargo 依赖保守保留**。即便某些 crate（如 tonic、prost、tokio）在当前阶段没用满，依赖表保持完整。这样将来加回 EtherCAT 真实驱动 / CiA402 helper 时不用反复调依赖。
-- **`ethercat` 模块的真实驱动延后到接真机时再写**。当前阶段只搭骨架——`PdoBuffers` 共享缓冲区先就位（grpc 写 / 读它），但"扫总线 → 按契约 slave_match 绑定 → 用 IgH API 配 PDO → 跑 1ms 周期循环"那一段在没有 LS6 选件板真机 + 真实 ESI 的情况下写出来必然是猜的，**留作 stub**。等接真机时跑 `ethercat slaves -v` / `ethercat pdos -p 0` / `ethercat sdos -p 0` 看 LS6 选件板的 PDO 真实结构，再一次性把这段做对。
-- **`igh` Cargo feature**。默认 build 不链接 libethercat，开发机 / CI 跑 `cargo test` 无碍；接真机部署时 `cargo build --release --features igh` 启用 IgH 链接。
-
-这套取舍下，0.7.0 第一阶段交付物是：**代码骨架 + 完整单元测试 + 一份 LS6 stub 契约 + 启动 YAML 示例**。可以在 dev 机器上 build / test / 启动（但跑不通真实总线，因为 ethercat 主循环是 stub）。第二阶段接真机时只动 `ethercat/master.rs` 这一个文件，其他模块都不动。
+不预先付这部分架构税。
 
 ## 三方耦合面
 
 motion-runtime 处在三方之间的中间位置：
 
 ```
-                              ┌── 业务语义 ──┐
-   BT leaf / Python ───────────────────────► motion-runtime ─────────► 外部控制器
-   （知道字段名 + 业务时序）                  （只懂字段名↔字节）       （SPEL+ / 驱动器固件 / IO 控制器）
-                                                  ▲                          │
-                                                  │                          │
-                                              contract.yaml ◄────────────────┘
-                                              （字段名 ↔ 字节布局；同时也
-                                                是外部控制器代码的对照源）
+                          ┌── goal 语义 ──┐                ┌── 字段语义 ──┐
+   BT leaf / Python ─────────────────────► motion-runtime ───────────────────► 外部控制器
+   （知道运动业务意图）                     （懂运动握手、                       （SPEL+ / 驱动器固件 /
+                                            懂字段名↔字节）                       IO 控制器）
+                                                  ▲                                   │
+                                                  │                                   │
+                                              contract.yaml ◄─────────────────────────┘
+                                              （字段表 + goal→routine 映射；
+                                                也是外部控制器代码的对照源）
 ```
 
-三方之间**只通过"字段名集合"耦合**：
+三方之间**通过两份合同耦合**——proto 是 Python ↔ runtime 的合同，contract.yaml 是 runtime ↔ 外部控制器的合同：
 
-- **BT leaf / Python** 知道字段叫什么、什么时候写、什么时候读、字段的业务含义
-- **motion-runtime** 知道字段名 ↔ 字节的精确映射
-- **外部控制器代码**（如 Epson 的 SPEL+ 项目）知道字段名 ↔ 控制器内部变量的映射
-- **contract.yaml** 是这三者之间的**单一真源**
+- **BT leaf / Python** 知道"我要做一次 LINEAR 移动到 (x,y,z,u)"——通过 proto 表达
+- **motion-runtime** 知道两件事：proto 的 goal 语义、contract.yaml 的字段表
+- **外部控制器代码**（如 SPEL+ 项目）知道字段名 ↔ 控制器内部变量的映射、收到 trigger 边沿后按 routine 编号分发执行
+- **contract.yaml** 是 runtime ↔ 外部控制器之间的**单一真源**——字段名、字节偏移、motion_type ↔ routine 编号映射都在里面
 
-改字段布局：动 YAML + 外部控制器代码（两边对照同一份字段表），**不动 leaf、不动 runtime 代码**。
-加新字段：动 YAML + 外部控制器代码 + leaf（leaf 要用新字段），**不动 runtime 代码**。
-换一台新机器人：写新的 YAML + 新的控制器项目，leaf 按字段名调，**runtime 代码完全不动**。
-
-这个耦合面的形状决定了：**runtime 的代码体积应当几乎不随支持的设备数量增长**。
+改字段布局：动 YAML + 外部控制器代码（两边对照同一份字段表），**不动 leaf、不动 runtime 代码、不动 proto**。
+加新 motion_type：动 proto + runtime（处理新 motion_type 的逻辑）+ YAML（加 routine 编号）+ 外部控制器代码（加一个 Case 分支）。
+换一台新机器人（同一类握手）：写新的 YAML + 新的控制器项目，**runtime 代码完全不动**。
+新增另一种握手类型：先讨论是否需要在 runtime 里抽象出 handshake 配置——单一握手不抽象，YAGNI。
 
 ## 模块划分
 
-实时层切成四块，每块只做一件事：
+实时层切成五块，每块只做一件事：
 
 | 模块 | 职责 |
 |------|------|
 | ethercat | EtherCAT 总线：从站扫描、PDO 映射、周期 process-data、DC 时钟同步。封装 IgH master，对上层屏蔽 FFI。 |
-| contract | 加载、解析、索引 YAML 契约；提供"字段名 → (slave, offset, type, dir)"查询。 |
+| contract | 加载、解析、索引 YAML 契约；提供"字段名 → (slave, offset, type, dir)"和"motion_type → routine 编号"查询。 |
 | translate | 字段 ↔ 字节翻译：按 contract 描述把字段值编码成字节写进 PDO domain buffer，或反向解码读出来。 |
-| grpc | 通信适配：proto `write_field` / `read_field` 等 ↔ translate 内部调用互转。 |
+| goal | 握手脚本：接到 goal 请求，按硬编码的 LS6 握手序列（写字段集 → 翻 trigger → 等 done → 翻 trigger 回 0）调度 translate 和 ethercat。 |
+| grpc | 通信适配：proto `SubmitScaraGoal` / `SubmitArm6Goal` / `ReadScaraStatus` / `ReadArm6Status` ↔ goal 模块互转。 |
 
 具体文件名、类型签名、ecrt 调用顺序以代码为准，本文档不复述。
 
 说明：
 
-- 没有"device"这层模块。0.6.0 时期的 `MotionAxis` / `IoModule` 二分法消失，因为它本质是在 runtime 里塞设备语义——现在每个从站都退化为"一份契约 + 一个 slave position"，runtime 围绕**契约**而不是设备类型组织代码。
-- `cia402` 模块在 0.7.0 重构后**不再存在**。CiA402 协议知识搬到 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md)，将来真的要接电机时按"路 B 协议 helper"重新落地，到时候会作为新的可选模块加进来。
+- `goal` 是 0.8.0 新增的模块——0.7.0 没有这层，是 Python 端 driver 在做。
+- 没有"device"这层模块。每个从站都退化为"一份契约 + 一个 slave position"，runtime 围绕**契约 + goal 模板**而不是设备类型组织代码。
+- `cia402` 模块**不存在**。CiA402 协议知识搬到 [research/cia402-protocol-notes.md](../research/cia402-protocol-notes.md)，将来真要接电机时按"路 B 协议 helper"重新落地。
 
 ## 依赖方向
 
 ```
-grpc ─────► translate ─────► contract
-              ▲                  ▲
-              │                  │
-ethercat ─────┘             （启动时一次性加载）
+grpc ─────► goal ─────► translate ─────► contract
+              │            ▲                  ▲
+              │            │                  │
+              └─► ethercat ┘             （启动时一次性加载）
 ```
 
-- **请求侧**：`grpc` 收到 `write_field(device, field, value)`，调 `translate` 查 `contract` 找到目标字节位置，把编码后的字节写进 ethercat 维护的 PDO output buffer 对应位置。
-- **执行侧**：`ethercat` 周期循环每 tick 读回输入 PDO，然后任由 buffer 在那；`read_field` 请求来了再走 `translate` 解出字段值。
-- **启动期**：`ethercat` 扫到从站后，`contract` 加载所有 YAML 并按 `slave_match` 把契约绑到具体的 slave position 上。这是一次性的初始化路径。
+- **请求侧**：`grpc` 收到 `SubmitScaraGoal(motion, x, y, z, u, speed, accel)`，调 `goal` 模块。`goal` 按 contract 查 motion_type→routine 编号，组装一组字段写入（target_x/y/z/u + speed + accel + routine + trigger），通过 `translate` 编码后写进 `ethercat` 维护的 PDO output buffer。然后挂起等 `ReadScaraStatus` 看 done。
+- **执行侧**：`ethercat` 周期循环每 tick 把 input PDO 读回 buffer；`ReadStatus` / `goal` 模块等 done 时走 `translate` 解出当前字段值。
+- **启动期**：`ethercat` 扫到从站后，`contract` 加载所有 YAML 并按 `slave_match` 把契约绑到具体的 slave position 上。
 
 **核心不变量：**
 
-- contract 不依赖任何其他模块——它是纯数据 + 查询。
+- contract 不依赖任何其他模块——纯数据 + 查询。
 - translate 不知道 EtherCAT 协议细节，只知道"按这个偏移和类型把字段写进 byte buffer"。
 - ethercat 不知道字段名、不知道契约、不知道 grpc。
+- goal 模块知道"LS6 握手序列长什么样"——这是 0.8.0 唯一一处硬编码业务知识；只要还只有一种握手就保留硬编码，不引入 DSL。
 - grpc 是协议适配，不存放任何运行时状态。
 
-**真正的字节写入永远只发生在 ethercat 的周期循环里**——`grpc` 路径只往 output buffer 写预备值，发出到总线由周期循环负责。这条规则保证 1ms 节拍内没有跨线程竞争，是整个运行时正确性的基石。
+**真正的字节写入永远只发生在 ethercat 的周期循环里**——`goal` 路径只往 output buffer 写预备值，发出到总线由周期循环负责。这条规则保证 1ms 节拍内没有跨线程竞争。
+
+## proto 形态
+
+0.8.0 proto 是**业务级 RPC**——每个 RPC 表达一次完整的运动意图，runtime 内部负责字段层操作和握手。
+
+```proto
+service MotionService {
+  // SCARA（4-DOF：x, y, z, u）
+  rpc SubmitScaraGoal(ScaraGoal) returns (GoalResponse);
+  rpc ReadScaraStatus(StatusRequest) returns (ScaraStatusResponse);
+
+  // 通用 6-DOF（x, y, z, rx, ry, rz）—— 当前接的设备里没有走 EtherCAT 的 6-DOF
+  // 机械臂，预留接口；具体 message 待第一台 6-DOF EtherCAT 机械臂接入时定稿
+  rpc SubmitArm6Goal(Arm6Goal) returns (GoalResponse);
+  rpc ReadArm6Status(StatusRequest) returns (Arm6StatusResponse);
+}
+```
+
+`ScaraGoal` 用扁平字段（`x`, `y`, `z`, `u`, `speed`, `accel`），不嵌套 pose 子 message——简单。`motion` 字段是 enum（`MOTION4_GO / MOTION4_JUMP / MOTION4_LINEAR / MOTION4_HOME`），runtime 通过 contract 查到对应的 routine 编号。
+
+`GoalResponse` 极简——`ok` + `error`。当前阶段不返回 goal_id 等追踪字段；halt 协议（NEXT-011）落地时再加。
+
+submit 是**异步**——`SubmitScaraGoal` 立刻返回（runtime 内部启动握手），Python 端通过 `ReadScaraStatus` 轮询 `done`。BT leaf 的 `on_running` 每 tick 看一次 status 就行，submit 不阻塞 BT。
+
+字段层 RPC（0.7.0 的 `WriteField / ReadField / WriteFields`）**不暴露给 Python**。它们要么被 goal 服务吃掉（不存在了），要么作为 runtime 内部 API 保留——proto 文件里没有它们。
 
 ## YAML 契约
 
-每台设备一份 YAML 契约。形态示例（具体 schema 等第一个真实场景验证后定稿，以下仅示意）：
+每台设备一份 YAML 契约。形态示例：
 
 ```yaml
-device_kind: raw_bytes        # 可选，给 runtime 内置 helper 用的提示；不填就是纯字节字段读写
-slave_match:                  # 启动时按这个匹配到具体 slave position
+device_kind: raw_bytes
+slave_match:
   vendor_id: 0x...
   product_code: 0x...
-  # 或者 name_contains: "EPSON RC90"
 fields:
   target_x:    { offset: 0,  type: f32,  dir: out }
   target_y:    { offset: 4,  type: f32,  dir: out }
-  trigger:     { offset: 19, bit: 0,     type: bool, dir: out }
-  done:        { offset: 19, bit: 1,     type: bool, dir: in  }
-  error_code:  { offset: 20, type: u16,  dir: in  }
-protocol_version: 1           # 和外部控制器代码协商的版本号，启动时可校验
+  target_z:    { offset: 8,  type: f32,  dir: out }
+  target_u:    { offset: 12, type: f32,  dir: out }
+  speed:       { offset: 16, type: u16,  dir: out }
+  accel:       { offset: 18, type: u16,  dir: out }
+  routine:     { offset: 20, type: u8,   dir: out }
+  trigger:     { offset: 22, bit: 0, type: bool, dir: out }
+  done:        { offset: 0,  bit: 0, type: bool, dir: in  }
+  busy:        { offset: 0,  bit: 1, type: bool, dir: in  }
+  error_code:  { offset: 2,  type: u16,  dir: in  }
+  current_x:   { offset: 4,  type: f32,  dir: in  }
+  # ... 见 contracts/arm/epson-rc90b/contract.yaml 完整形态
+
+motion_routines:               # 0.8.0 新增：motion_type ↔ routine 编号
+  GO: 1
+  JUMP: 2
+  LINEAR: 3
+  HOME: 4
+
+protocol_version: 3            # 0.8.0 提到 3
 ```
 
-契约文件本身的关键约束：
+新增的 `motion_routines` 段是 0.8.0 引入的——goal 模块按这张表把 `ScaraGoal.motion=LINEAR` 翻译成 `routine=3`，再写进字段。**这张表的存在让 runtime 代码不感知具体 routine 编号**——同一种握手下，不同机器人 routine 编号不同（LS6 是 1/2/3/4，假设的 Yaskawa 可能是别的），各自在自己的 contract.yaml 里声明。
+
+contract 文件的关键约束：
 
 - **启动时一次性加载**。运行时改契约要重启 runtime——往往伴随外部控制器代码变更，重启可以接受。
 - **YAML 是单一真源**。外部控制器代码（如 SPEL+ 项目）要么手抄一份对齐表、要么从 YAML 生成。两边都引用同一份字段定义。
-- **`device_kind` 是选择性提示**。`raw_bytes` 是兜底默认值，runtime 只做字段读写；未来如果引入 CiA402 helper，会通过 `cia402_pp` 这类 hint 启用。
-
-## 契约文件的组织
-
-所有契约文件集中在 motion-runtime 仓库内一个专用目录下。**runtime 启动时按一份显式清单加载契约**——清单里没列的契约不会被加载，仓库里存在但未声明的契约文件不会被识别。具体的目录结构（按功能分类还是按厂商分类、嵌套几层）以及启动清单的形态（YAML 配置 / CLI 参数 / 别的）属于实现层面的约定，以仓库实际状态为准，本文档不复述。
-
-组织上的几条原则：
-
-- **加载哪些契约由启动配置显式声明**，不靠扫描目录决定。这让"这次跑用了哪些设备"成为一个可读、可版本化的事实，且允许同一套代码服务于不同产线配置（同样的 runtime 二进制 + 同样的契约仓库，不同产线只是启动清单不同）。
-- **每台设备一个目录**，里面同时放契约 YAML、外部控制器代码（如 SPEL+ 项目源码）、README 等配套资料。**runtime 二进制只读契约 YAML**，其他文件不读，放在那里只是为了：人类可见、版本一致、将来拷贝方便。
-- **以控制器型号命名，不是被控物型号**。同一个控制器接不同被控物本体时，控制器代码本身通常可以共用。
-- **类型分组只是组织手段，不是 runtime 抽象**。可以按"机械臂 / IO / 伺服 / 步进 / ……"分目录方便人浏览，但 runtime 代码不依赖目录结构来理解设备类型——它只看契约里写了什么。
+- **`device_kind` 是选择性提示**。`raw_bytes` 是兜底默认值。
 
 ## 外部控制器代码的设计原则
 
-以 Epson RC90-B 上的 SPEL+ 项目为例。原则同样适用于将来接的其他厂商控制器。
+以 Epson RC90-B 上的 SPEL+ 项目为例。
 
 **目标：写成"参数解释器"，让常规扩展不改控制器代码。**
 
 具体做法：
 
-- 控制器代码做成一个 dispatch 循环：看到 `Trigger=1` 就按 `Routine` 字段切换不同动作（Case 1: Go / Case 2: Jump / Case 3: Move / Case 4: Home / ……）
+- 控制器代码做成一个 dispatch 循环：看到 `trigger=1` 边沿就按 `routine` 字段切换不同动作
 - 所有位姿、速度、加减速参数都从数据区读，不写死在代码里
-- 错误回传用统一字段（出错就写 `ErrorCode` + 置 `Done=1`），不用厂商特定的事件机制
+- 主循环用 **`Wait` 条件等待**——`Wait Sw(IN_TRIGGER) = 1`、`Wait Sw(IN_TRIGGER) = 0`——而不是手写 `Do...Loop + If...Then + Wait 0.01` 轮询骨架。底层采样精度都是控制器内核的 10ms 量级（见 SPEL+ Ref 8.0 p.890 注），但条件等待形态代码更干净，CPU 友好
+- 错误回传用统一字段（`error_code` u16 + `done=1`）
 - 在数据区里留几个 Spare 字段为未来扩展预备
 
-**目标不是"永远不改"，是"常规扩展不改"。** 引入根本性新能力（多设备同步、复杂轨迹、视觉引导、动态工具坐标系切换……）该改还得改。承认这是封闭机器人控制器的本性。
+**目标不是"永远不改"，是"常规扩展不改"。** 引入根本性新能力（多设备同步、复杂轨迹、视觉引导、动态工具坐标系切换……）该改还得改。
 
 ## 启动流程
 
 启动概念上分四阶段：
 
 1. **进程起来**：解析配置、起日志、起共享 buffer、spawn gRPC server。
-2. **契约加载**：按启动清单加载指定的契约文件，全部解析进内存。
-3. **总线起来**：拿 master handle → 扫从站 → 按各契约的 `slave_match` 把契约绑到具体 slave position → 配置 PDO 映射 / DC 同步 → 激活 master → 等从站走到 SAFEOP。
-4. **周期循环起来**：从此进入永不返回的 1ms 循环，每拍做 `receive → process → DC sync → queue → send`。
+2. **契约加载**：按启动清单加载指定的契约文件，全部解析进内存（字段表 + motion_routines）。
+3. **总线起来**：拿 master handle → 扫从站 → 按 `slave_match` 绑契约 → 配 PDO 映射 / DC 同步 → 激活 master → 等从站走到 SAFEOP。
+4. **周期循环起来**：进入永不返回的 1ms 循环，每拍 `receive → process → DC sync → queue → send`。
 
-阶段 1-3 顺序执行；阶段 4 占据主线程，gRPC server 在独立 task 里跑，两者通过共享的 PDO buffer 交互。**异步路径（gRPC）只写"预备字节"，从不直接动总线**；这条规则保证 1ms 节拍内没有跨线程竞争。
-
-具体的 `ecrt_*` 调用顺序、PDO 索引、SDO 启动值等都是实现细节，参见代码。
+阶段 1-3 顺序执行；阶段 4 占据主线程，gRPC server 在独立 task 里跑。**异步路径（gRPC / goal 模块）只写 output buffer，从不直接动总线**。
 
 ### 设计要点（不会随代码变的部分）
 
-- **从站绑定靠契约的 `slave_match`，不靠 runtime 硬编码的启发式**。runtime 启动时把扫描到的每个 slave 和加载到的每份契约做匹配——契约里写 `vendor_id=X` 或 `name_contains="Y"` 这类条件，runtime 按条件挑契约。runtime 代码本身对"什么牌子的设备"一无所知。
-- **DC 必须在 activate 之前配好**。这条不是优化，是 SV660N 等带 DC 同步的设备的硬性要求——也是当初从 ethercrab 切到 IgH 的根本原因（见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)）。换 master 实现时必须验证这一点。
-- **PDO 是覆盖式通道，每个映射进 PDO 的字段都必须每周期写**。漏写一个字段，从站会按 0 处理，可能直接锁死设备（典型坑见 pitfalls Pitfall 7）。SDO 启动值在进入 OP 后会被 PDO 立刻覆盖，因此真正起作用的是周期循环里的字节值。这条对契约设计的影响：**契约中 `dir: out` 的字段必须有合理默认值**，确保 PDO 在没有显式写入时也不至于发出零字节。
-- **暖机循环和正式循环必须用同样的报文节奏**。从 PREOP 走到 OP 期间，从站要看到稳定的 DC 时钟和 process-data 心跳；只跑配置不跑节拍，从站永远进不了 OP。
+- **从站绑定靠契约的 `slave_match`**，runtime 代码对"什么牌子的设备"一无所知。
+- **DC 必须在 activate 之前配好**——SV660N 等带 DC 同步设备的硬性要求。
+- **PDO 是覆盖式通道**，每个 `dir: out` 字段必须每周期写——契约 `dir: out` 字段必须有合理默认值。
+- **暖机循环和正式循环必须用同样的报文节奏**——从 PREOP 走到 OP 期间，从站要看到稳定的 DC 时钟和 process-data 心跳。
 
 ## 资源与部署
 
@@ -230,106 +250,84 @@ autoweaver-python  ←─ gRPC ─→  motion-runtime
   (Python BT)                   (Rust EtherCAT)
 ```
 
-两个进程独立启动、独立停止。Python 崩溃不影响 Rust 侧（设备保持当前状态），Rust 崩溃对 Python 表现为 gRPC 断连。
+两个进程独立启动、独立停止。Python 崩溃不影响 Rust 侧，Rust 崩溃对 Python 表现为 gRPC 断连。
 
 ### CPU 绑核
 
-EtherCAT 周期循环需要稳定的毫秒级执行。推荐将 Rust 进程绑定到独占的 CPU 核心：
+EtherCAT 周期循环需要稳定的毫秒级执行。推荐绑独占 CPU 核心：
 
 ```bash
-# 方式 1：taskset 绑核
 taskset -c 6 ./motion-runtime
-
-# 方式 2：内核启动参数隔离核心（更彻底）
-# /etc/default/grub: GRUB_CMDLINE_LINUX="isolcpus=6,7"
+# 或内核启动参数：GRUB_CMDLINE_LINUX="isolcpus=6,7"
 ```
 
-典型分配：
-
-```
-P 核（性能核心）：Python 进程 — 推理、图像处理、BT tick
-E 核（效率核心）：Rust motion-runtime — EtherCAT 周期循环
-```
+典型分配：P 核给 Python（推理、BT），E 核给 motion-runtime（EtherCAT 周期循环）。
 
 ### IgH 部署形态
 
-IgH 是"内核模块 + 用户态库"双层架构：motion-runtime 通过 FFI 调用用户态 `libethercat.so`，库通过字符设备 `/dev/EtherCAT0` 和内核模块对话，内核模块直接操作 NIC 发收 EtherCAT 帧。
+IgH 是"内核模块 + 用户态库"双层架构，通过字符设备 `/dev/EtherCAT0` 对话。部署成本见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md) 和仓库脚本 `scripts/install-igh-ethercat.sh`。
 
-这条路径带来三类一次性部署成本：内核模块要编译安装、配置文件要写、网卡要预先 up。每一项都有过踩坑历史（包括重编译时必须加的特定开关），详见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)。仓库脚本 `scripts/install-igh-ethercat.sh` 把这些固化为一次性安装。
-
-**架构上需要记住的一点**：因为走的是字符设备而非 raw socket，旧的 "setcap cap_net_raw + 非 root 运行" 方案不再适用——当前以 root 启动 motion-runtime，或对 `/dev/EtherCAT0` 单独授权。
+走的是字符设备而非 raw socket，旧的 `setcap cap_net_raw + 非 root` 方案不再适用——当前以 root 启动 motion-runtime。
 
 ### 不需要 PREEMPT_RT
-
-master 侧的时序要求：
 
 | 指标 | 要求 | 说明 |
 |------|------|------|
 | PDO 周期 | 1ms | IgH 在标准内核 + isolcpus 上可稳定达成 |
-| 允许抖动 | 数毫秒 | 控制闭环都在外部控制器侧（机械臂 / 驱动器 / SPEL+），master 抖动不影响控制质量 |
-| BT tick | 20-50Hz (20-50ms) | Python 级别，宽裕 |
+| 允许抖动 | 数毫秒 | 控制闭环在外部控制器侧，master 抖动不影响 |
+| BT tick | 20-50Hz | Python 级别，宽裕 |
 
-标准 Linux 内核 + isolcpus 即可满足。当前实际部署在 Ubuntu 24.04 RT kernel 上（pitfalls 文档环境记录），但 RT kernel 不是硬性前提。Xenomai 不需要。
+标准 Linux 内核 + isolcpus 即可满足。RT kernel 不是硬性前提。Xenomai 不需要。
 
-**注**：上面的"控制闭环都在外部控制器侧"对当前接的设备（LS6 走 SPEL+、Beckhoff IO 没闭环、未来 SV660 走 PP 模式由驱动器闭环）成立。如果将来引入 CSP 模式（master 侧做插补），时序要求会显著变严，届时再评估是否上 PREEMPT_RT。
+引入 CSP 模式（master 侧插补）时再评估 PREEMPT_RT。
 
 ## 技术选型
 
 ### EtherCAT master：IgH
 
-最初选型是 ethercrab（纯 Rust、用户态、部署最简）。实际接入汇川 SV660N 后跑不通，切到 IgH 才工作。
+最初选型 ethercrab 跑不通 SV660N（PREOP 阶段不能配 DC），切到 IgH。完整现象见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)。
 
-**为什么 ethercrab 不行**：汇川 SV660N 这类伺服驱动器要求 **DC SYNC 必须在 PREOP→SAFEOP 转换之前配好**。ethercrab 的类型状态机 API 在架构上不允许 SAFEOP 之前配置 DC——这不是参数问题，是接口设计层面的约束。SV660N 因此永远走不到 OP。完整现象与排查记录见 [pitfalls/igh-ethercat-sv660n.md](../pitfalls/igh-ethercat-sv660n.md)。
-
-**为什么选 IgH**：
-
-- DC 配置时机不受类型状态机约束，能匹配带 DC 的驱动器。
-- 工业 EtherCAT 主站事实标准，已知问题都有公开解决方案。
-- 代价是依赖内核模块和一次性的部署配置——可写脚本固化，可接受。
-
-未来如果出现一个既能用户态部署、又允许任意时机配 DC 的纯 Rust 方案，可以再评估。SOEM 不在视野内：相对 IgH 没有显著优势，Linux 兼容性记录更少。
-
-**实现层面**走手写 thin FFI 而非 `bindgen`：IgH 的某些结构体（如 `ec_slave_info_t`）含变长嵌套字段，正确的内存布局必须在目标平台 `offsetof()` 实测才能确定，bindgen 的自动生成不可靠（见 pitfalls Pitfall 3）。
+**实现层面**走手写 thin FFI 而非 `bindgen`：IgH 的某些结构体（如 `ec_slave_info_t`）含变长嵌套字段，正确的内存布局必须在目标平台 `offsetof()` 实测才能确定（见 pitfalls Pitfall 3）。
 
 ### tonic + prost
 
-Rust gRPC 的标准选择。和 EtherCAT 周期循环共享同一个 tokio runtime——gRPC 一个 task，周期循环占主线程，靠共享的 PDO buffer 同步。Python 侧用 grpcio，两端从同一份 `.proto` 生成代码，接口一致性由编译器保证。
+Rust gRPC 标准选择。和 EtherCAT 周期循环共享同一个 tokio runtime，gRPC 一个 task、周期循环占主线程，靠共享 buffer 同步。Python 侧用 grpcio，两端从同一份 `.proto` 生成代码。
 
 ### YAML 作为契约格式
 
-候选格式有 YAML / TOML / JSON / Protobuf descriptor / 自创 DSL 等。选 YAML 的理由：
-
-- 人写人读门槛低，业务侧改字段表不需要额外工具
-- 表达层次结构（fields 嵌套 offset/type/dir）自然
-- Rust 侧 `serde_yaml` 成熟稳定
-
-不选 TOML：表达嵌套字段表稍显笨拙。不选 JSON：手写不便、不支持注释（契约文件需要大量注释解释每个字段的业务含义）。不选 Protobuf descriptor：把"字段名 → 字节布局"和 proto 类型耦合，不够灵活。
+人写人读门槛低；表达层次结构自然；`serde_yaml` 成熟。不选 TOML（嵌套笨拙）、不选 JSON（不支持注释）、不选 Protobuf descriptor（字段名 ↔ 字节布局和 proto 类型耦合不够灵活）。
 
 ## 设计决策
 
 | 决策 | 理由 |
 |------|------|
-| runtime 是薄翻译层 | 业务语义在 leaf，字节布局在 YAML，runtime 只懂字段名↔字节翻译。这让 runtime 的代码体积几乎不随支持的设备数量增长 |
-| 字段名是三方耦合面 | leaf / runtime / 外部控制器代码之间只通过字段名集合耦合，YAML 是单一真源 |
-| YAML 启动时一次性加载 | 改契约几乎一定伴随外部控制器代码变更，需要重启外部设备，runtime 重启可以接受 |
-| 没有"device_kind 硬分类" | 不再有"运动轴 / IO 模块"的硬编码二分；所有从站都是"挂着一份契约的字段端点"。`device_kind` 只是给可选 helper 的提示 |
-| `write_field` 异步落 buffer，下一周期发出 | 半个周期延迟可接受，且统一所有字段行为，不为某些"握手位"开特例 |
-| CiA402 helper 暂不实现 | 当前业务验证场景是 LS6-B602C，没有电机要接。等真有电机且发现 leaf 端写 controlword 重复严重，再回来加。是个 YAGNI 决策 |
-| 外部控制器代码放进 runtime 仓库 | 代码同居、运行时解耦：和契约 YAML 放在同一个设备目录里方便看、方便改、方便拷贝；runtime 二进制不读它 |
-| 外部控制器代码朝"参数解释器"方向写 | 让常规扩展（加一种动作）不改控制器代码，只改 YAML + leaf。重大能力扩展才改控制器代码 |
+| runtime 是 goal 服务层 | 业务意图由 proto 表达、字段层操作和握手由 runtime 内部完成。让 Python 端 driver 完全不感知协议细节，业务/协议永久解耦 |
+| 单一握手硬编码、不引入 handshake DSL | 0.8.0 只有 LS6 一种握手。YAGNI——引入第二种握手时再讨论是否抽象 |
+| contract.yaml 含 motion_routines 表 | motion_type ↔ routine 编号是机器人特定的，必须在契约里声明，runtime 代码不感知具体编号 |
+| proto 不暴露字段层 RPC | 字段名/边沿是协议细节，不该出现在 Python 端业务接口——出现一次就泄漏一次 |
+| 4-DOF / 6-DOF 用独立 proto message | 静态类型锁死维度，不用 `repeated float` 加运行时长度校验。pyright / proto 编译器都能在调用点抓错 |
+| GoalResponse 极简（ok / error） | 暂不返回 goal_id 等追踪字段；halt 协议（NEXT-011）落地时再加，YAGNI |
+| Submit 异步、状态轮询 | RPC 不阻塞 BT tick；和 Dobot driver 的"提交 → 轮询 done"模型一致 |
+| 主循环用 Wait 条件等待 | SPEL+ `Wait Sw(...)=1` 取代 `Do/Loop + If + Wait 0.01`。代码更短，CPU 占用低，底层延迟相同 |
+| 字段名是 runtime ↔ 控制器耦合面 | runtime 和外部控制器代码通过字段名集合耦合，YAML 是单一真源 |
+| YAML 启动时一次性加载 | 改契约几乎一定伴随外部控制器代码变更，需要重启外部设备 |
+| 没有"device_kind 硬分类" | 不再有"运动轴 / IO 模块"二分；所有从站都是"挂着一份契约的字段端点 + 可能挂着一份 motion_routines" |
+| CiA402 helper 暂不实现 | 当前业务场景没有电机要接。YAGNI |
+| 外部控制器代码放进 runtime 仓库 | 代码同居、运行时解耦：和契约 YAML 放在同一个设备目录里方便看、改、拷贝；runtime 二进制不读它 |
+| 外部控制器代码朝"参数解释器"方向写 | 让常规扩展不改控制器代码 |
 | 独立二进制独立进程 | 进程隔离：Python 崩溃不影响设备状态，Rust 可独立重启 |
-| IgH 而非 ethercrab | ethercrab 在 PREOP 阶段配不了 DC SYNC，SV660N 永远进不了 OP。IgH 的 DC 配置时序可控，且成熟稳定 |
-| IgH 内核模块 + root 运行 | IgH 走字符设备 `/dev/EtherCAT0`，不走 raw socket，`setcap cap_net_raw` 已不适用 |
-| isolcpus 绑核 | 保证 PDO 周期稳定，不被推理负载抢占。标准 Linux 功能，零额外部署成本 |
+| IgH 而非 ethercrab | ethercrab 在 PREOP 阶段配不了 DC SYNC |
+| isolcpus 绑核 | 保证 PDO 周期稳定 |
 
 ## 本文档不覆盖
 
-以下主题在动手做时再展开（场景驱动，不预先空想）：
+以下主题在动手做时再展开：
 
-- contract.yaml 的精确 schema（支持哪些字段类型、数组怎么表达、位字段怎么写、`dir: out` 字段的默认值怎么定）
-- gRPC proto 的精确形态（`write_field` / `read_field` 的消息结构、value 的 oneof 表达）
+- contract.yaml 的精确 schema（支持哪些字段类型、数组、位字段、`dir: out` 字段默认值；motion_routines 表的扩展形态）
+- proto 的精确 message 形态（ScaraGoal / Arm6Goal / Status 完整字段，等真实业务驱动具体加哪些扩展字段）
 - 错误处理细节（契约加载失败、字段名不存在、类型不匹配、slave 离线等的行为）
 - 协议级 helper（CiA402 状态机等）什么时候、以什么形态加进来
 - Safety Monitor 设计（急停、限位、碰撞检测）
 - 坐标变换、回零流程等业务层逻辑（属于 leaf / 外部控制器，不属于 runtime）
 - IgH 版本选择、`ecrt.h` API 完整用法、FFI 结构体布局的实测方法（见 pitfalls Pitfall 3）
+- halt 协议（NEXT-011）—— goal_id 字段是否要加、cancel RPC 形态、SPEL+ 端 abort 路径

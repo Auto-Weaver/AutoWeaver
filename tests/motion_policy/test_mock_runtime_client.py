@@ -3,174 +3,165 @@ from __future__ import annotations
 import pytest
 
 from autoweaver.motion_policy.mock_runtime_client import MockRuntimeClient
-from autoweaver.motion_policy.runtime_client import RuntimeFieldError
+from autoweaver.motion_policy.runtime_client import GoalError
 
 
 # ---------------------------------------------------------------------------
-# Round-trip writes and reads
+# SCARA goals
 # ---------------------------------------------------------------------------
 
-def test_f32_round_trip():
-    client = MockRuntimeClient()
-    client.write_field_f32("ls6_1", "target_x", 100.5)
-    assert client.read_field_f32("ls6_1", "target_x") == 100.5
 
-
-def test_bool_round_trip():
-    client = MockRuntimeClient()
-    client.write_field_bool("ls6_1", "trigger", True)
-    assert client.read_field_bool("ls6_1", "trigger") is True
-
-
-def test_i32_round_trip():
-    client = MockRuntimeClient()
-    client.write_field_i32("ls6_1", "routine", 3)
-    assert client.read_field_i32("ls6_1", "routine") == 3
-
-
-def test_bytes_round_trip():
-    client = MockRuntimeClient()
-    client.write_field_bytes("ls6_1", "comment", b"hello")
-    assert client.read_field_bytes("ls6_1", "comment") == b"hello"
-
-
-def test_all_numeric_variants_round_trip():
-    client = MockRuntimeClient()
-    cases = [
-        ("write_field_u32", "read_field_u32", 42),
-        ("write_field_i64", "read_field_i64", -10**12),
-        ("write_field_u64", "read_field_u64", 10**18),
-        ("write_field_f64", "read_field_f64", 3.141592653589793),
-    ]
-    for write_name, read_name, value in cases:
-        getattr(client, write_name)("dev", "f", value)
-        assert getattr(client, read_name)("dev", "f") == value
-
-
-# ---------------------------------------------------------------------------
-# Multiple devices share one client
-# ---------------------------------------------------------------------------
-
-def test_devices_have_independent_fields():
-    client = MockRuntimeClient()
-    client.write_field_f32("ls6_1", "target_x", 100.0)
-    client.write_field_f32("ls6_2", "target_x", 200.0)
-    assert client.read_field_f32("ls6_1", "target_x") == 100.0
-    assert client.read_field_f32("ls6_2", "target_x") == 200.0
-
-
-# ---------------------------------------------------------------------------
-# Error model
-# ---------------------------------------------------------------------------
-
-def test_reading_unset_field_raises():
-    client = MockRuntimeClient()
-    with pytest.raises(RuntimeFieldError, match="unknown field"):
-        client.read_field_f32("ls6_1", "nope")
-
-
-def test_reading_with_wrong_type_raises():
-    client = MockRuntimeClient()
-    client.write_field_f32("ls6_1", "target_x", 100.0)
-    with pytest.raises(RuntimeFieldError, match="type mismatch"):
-        client.read_field_bool("ls6_1", "target_x")
-
-
-def test_runtime_field_error_carries_device_and_field():
-    client = MockRuntimeClient()
-    try:
-        client.read_field_f32("ls6_1", "missing")
-    except RuntimeFieldError as e:
-        assert e.device == "ls6_1"
-        assert e.field == "missing"
-        assert "unknown" in e.reason
-    else:
-        pytest.fail("expected RuntimeFieldError")
-
-
-# ---------------------------------------------------------------------------
-# Call recording
-# ---------------------------------------------------------------------------
-
-def test_calls_record_writes_and_reads_in_order():
-    client = MockRuntimeClient()
-    client.write_field_f32("ls6_1", "target_x", 1.0)
-    client.write_field_i32("ls6_1", "routine", 3)
-    client.read_field_f32("ls6_1", "target_x")
-    assert client.calls == [
-        ("write", "ls6_1", "target_x", 1.0),
-        ("write", "ls6_1", "routine", 3),
-        ("read", "ls6_1", "target_x", 1.0),
-    ]
-
-
-# ---------------------------------------------------------------------------
-# preload helper bypasses call recording
-# ---------------------------------------------------------------------------
-
-def test_preload_seeds_without_recording():
-    client = MockRuntimeClient()
-    client.preload("ls6_1", "done", True, "v_bool")
-    assert client.read_field_bool("ls6_1", "done") is True
-    # The read is recorded, but the preload itself isn't.
-    assert client.calls == [("read", "ls6_1", "done", True)]
-
-
-# ---------------------------------------------------------------------------
-# Batch writes
-# ---------------------------------------------------------------------------
-
-def test_batch_writes_round_trip_atomically():
+def test_scara_linear_records_motion_and_target():
     client = MockRuntimeClient()
     (
-        client.batch("ls6_1")
-        .f32("target_x", 100.0)
-        .f32("target_y", 200.0)
-        .i32("routine", 1)
-        .i32("cmd_id", 42)
-        .commit()
+        client.scara_goal("ls6_1")
+        .linear(x=100.0, y=200.0, z=50.0, u=0.0)
+        .speed(50)
+        .accel(200)
+        .submit()
     )
-    assert client.read_field_f32("ls6_1", "target_x") == 100.0
-    assert client.read_field_f32("ls6_1", "target_y") == 200.0
-    assert client.read_field_i32("ls6_1", "routine") == 1
-    assert client.read_field_i32("ls6_1", "cmd_id") == 42
-
-
-def test_batch_records_single_batch_write_entry():
-    client = MockRuntimeClient()
-    (
-        client.batch("ls6_1")
-        .f32("target_x", 1.0)
-        .i32("routine", 3)
-        .commit()
-    )
-    assert client.calls == [
+    assert client.goals == [
         (
-            "batch_write",
+            "scara",
             "ls6_1",
-            [("target_x", "v_f32", 1.0), ("routine", "v_i32", 3)],
+            "LINEAR",
+            {"x": 100.0, "y": 200.0, "z": 50.0, "u": 0.0, "speed": 50, "accel": 200},
         ),
     ]
 
 
-def test_empty_batch_commit_is_noop():
+def test_scara_home_records_motion_without_target():
     client = MockRuntimeClient()
-    client.batch("ls6_1").commit()
-    assert client.calls == []
+    client.scara_goal("ls6_1").home().speed(10).submit()
+    assert client.goals == [("scara", "ls6_1", "HOME", {"speed": 10})]
 
 
-def test_batch_read_with_wrong_type_after_batch_raises():
+def test_scara_submit_without_motion_raises():
     client = MockRuntimeClient()
-    client.batch("ls6_1").f32("target_x", 1.0).commit()
-    with pytest.raises(RuntimeFieldError, match="type mismatch"):
-        client.read_field_bool("ls6_1", "target_x")
+    with pytest.raises(GoalError, match="no motion type set"):
+        client.scara_goal("ls6_1").speed(50).submit()
+    assert client.goals == []
+
+
+def test_submit_sets_busy_and_clears_done():
+    client = MockRuntimeClient()
+    client.preload_scara_status("ls6_1", done=True, busy=False)
+    client.scara_goal("ls6_1").linear(x=1.0, y=2.0, z=3.0, u=0.0).submit()
+    status = client.read_scara_status("ls6_1")
+    assert status.done is False
+    assert status.busy is True
+    assert status.error_code == 0
+
+
+def test_complete_last_goal_flips_status_to_done():
+    client = MockRuntimeClient()
+    client.scara_goal("ls6_1").linear(x=1.0, y=2.0, z=3.0, u=0.0).submit()
+    client.complete_last_goal("ls6_1")
+    status = client.read_scara_status("ls6_1")
+    assert status.done is True
+    assert status.busy is False
+
+
+# ---------------------------------------------------------------------------
+# Status reads
+# ---------------------------------------------------------------------------
+
+
+def test_read_status_for_unknown_device_raises():
+    client = MockRuntimeClient()
+    with pytest.raises(GoalError, match="unknown device"):
+        client.read_scara_status("ls6_1")
+
+
+def test_preload_status_seeds_without_recording_goal():
+    client = MockRuntimeClient()
+    client.preload_scara_status("ls6_1", current_x=42.0, done=True)
+    status = client.read_scara_status("ls6_1")
+    assert status.current_x == 42.0
+    assert status.done is True
+    assert client.goals == []  # preload doesn't record
+
+
+# ---------------------------------------------------------------------------
+# Multiple devices
+# ---------------------------------------------------------------------------
+
+
+def test_devices_have_independent_status():
+    client = MockRuntimeClient()
+    client.scara_goal("ls6_1").linear(x=100.0, y=0.0, z=0.0, u=0.0).submit()
+    client.preload_scara_status("ls6_2", done=True, current_x=999.0)
+    assert client.read_scara_status("ls6_1").busy is True
+    assert client.read_scara_status("ls6_1").done is False
+    assert client.read_scara_status("ls6_2").done is True
+    assert client.read_scara_status("ls6_2").current_x == 999.0
+
+
+# ---------------------------------------------------------------------------
+# 6-DOF
+# ---------------------------------------------------------------------------
+
+
+def test_arm6_linear_records_motion_and_all_six_components():
+    client = MockRuntimeClient()
+    (
+        client.arm6_goal("nova_1")
+        .linear(x=1.0, y=2.0, z=3.0, rx=10.0, ry=20.0, rz=30.0)
+        .speed(60)
+        .submit()
+    )
+    assert client.goals == [
+        (
+            "arm6",
+            "nova_1",
+            "LINEAR",
+            {
+                "x": 1.0,
+                "y": 2.0,
+                "z": 3.0,
+                "rx": 10.0,
+                "ry": 20.0,
+                "rz": 30.0,
+                "speed": 60,
+            },
+        ),
+    ]
+
+
+def test_arm6_status_independent_from_scara():
+    client = MockRuntimeClient()
+    client.preload_arm6_status("nova_1", current_rz=90.0, done=True)
+    status = client.read_arm6_status("nova_1")
+    assert status.current_rz == 90.0
+    assert status.done is True
+
+
+def test_arm6_submit_without_motion_raises():
+    client = MockRuntimeClient()
+    with pytest.raises(GoalError, match="no motion type set"):
+        client.arm6_goal("nova_1").speed(50).submit()
+
+
+# ---------------------------------------------------------------------------
+# Goal recording order is preserved
+# ---------------------------------------------------------------------------
+
+
+def test_goal_recording_preserves_submission_order():
+    client = MockRuntimeClient()
+    client.scara_goal("ls6_1").linear(x=1.0, y=0.0, z=0.0, u=0.0).submit()
+    client.scara_goal("ls6_1").go(x=2.0, y=0.0, z=0.0, u=0.0).submit()
+    client.scara_goal("ls6_1").home().submit()
+    motion_names = [entry[2] for entry in client.goals]
+    assert motion_names == ["LINEAR", "GO", "HOME"]
 
 
 # ---------------------------------------------------------------------------
 # Context manager
 # ---------------------------------------------------------------------------
 
+
 def test_context_manager_returns_self():
     with MockRuntimeClient() as client:
         assert isinstance(client, MockRuntimeClient)
-        client.write_field_bool("dev", "f", True)
+        client.scara_goal("dev").home().submit()

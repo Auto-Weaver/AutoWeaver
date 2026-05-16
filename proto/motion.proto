@@ -2,88 +2,153 @@ syntax = "proto3";
 
 package motion;
 
-// motion-runtime 0.7.0 — thin translation layer.
+// motion-runtime 0.8.0 — goal service layer.
 //
-// Leaves read/write by field name; runtime looks up (slave_position, offset,
-// type) in the YAML contract and does the actual PDO byte I/O.
+// Leaves submit business-level goals ("do a LINEAR move to (x, y, z, u) at
+// speed N"); runtime owns the field-level write/trigger/done handshake plus
+// EtherCAT byte translation. Field-level RPCs are intentionally not exposed:
+// the protocol contract between Python and Rust is the goal vocabulary, not
+// the wire layout.
 //
-// Core stance: runtime understands no business semantics; leaves know nothing
-// about byte layouts. The three parties (leaf / runtime / external controller
-// code) couple only through "the set of field names"; the YAML contract is
-// the single source of truth.
+// Atomicity: runtime stages target fields in a shadow PDO buffer and commits
+// them as one snapshot before raising the trigger edge — the external
+// controller never sees a torn write.
+//
+// Status: submit is non-blocking. The runtime starts the handshake, returns
+// immediately, and the caller polls Read*Status for done/busy/error. A BT
+// leaf's on_running ticks once per BT tick and reads status — submit must
+// not block the tick.
 
 service MotionService {
-  // Encode the value and write it into the slave's RxPDO output buffer.
-  // It goes out on the next EtherCAT cycle.
-  rpc WriteField(WriteFieldRequest) returns (WriteFieldResponse);
+  // SCARA (4-DOF): x, y, z, u — used for Epson LS6 today.
+  rpc SubmitScaraGoal(ScaraGoal) returns (GoalResponse);
+  rpc ReadScaraStatus(StatusRequest) returns (ScaraStatusResponse);
 
-  // Atomic multi-field write. Runtime stages all fields, validates the
-  // whole set, then commits them in one shared-memory snapshot — the
-  // external controller (SPEL+) never sees a torn write where some
-  // fields are new and some still hold previous values.
-  //
-  // Semantics: all-or-nothing. If any field is unknown / type-mismatched
-  // / rejected, ok=false and nothing is committed; failed_field names
-  // the first offender.
-  rpc WriteFields(WriteFieldsRequest) returns (WriteFieldsResponse);
-
-  // Decode a field from the slave's most-recent TxPDO input buffer.
-  rpc ReadField(ReadFieldRequest) returns (ReadFieldResponse);
+  // Generic 6-DOF arm (x, y, z, rx, ry, rz). Reserved for the first
+  // EtherCAT-fronted 6-DOF arm we integrate; message shape may evolve when
+  // a concrete device drives the requirements.
+  rpc SubmitArm6Goal(Arm6Goal) returns (GoalResponse);
+  rpc ReadArm6Status(StatusRequest) returns (Arm6StatusResponse);
 }
 
-// ---------- Requests / Responses ----------
+// ---------- Motion types ----------
 
-message WriteFieldRequest {
-  string device = 1;   // Logical device name from the contract (e.g. "arm", "valve_bank")
-  string field  = 2;   // Field name as declared in the contract
-  Value  value  = 3;   // Value to write; its variant must match the field's type
+// Motion4 enumerates the moves a 4-DOF arm can do. Each value maps to a
+// routine number declared in the device's contract.yaml (motion_routines
+// table) — runtime translates motion → routine before writing the field.
+enum Motion4 {
+  MOTION4_UNSPECIFIED = 0;
+  MOTION4_GO     = 1;   // PTP (joint-interpolated) to Cartesian target
+  MOTION4_JUMP   = 2;   // Gate motion (up → over → down)
+  MOTION4_LINEAR = 3;   // Cartesian-straight (CP) motion
+  MOTION4_HOME   = 4;   // Return to home
 }
 
-message WriteFieldResponse {
+// Motion6 enumerates the moves a generic 6-DOF arm can do. Mirrors Motion4
+// minus JUMP (Cartesian gate motion is SCARA-specific).
+enum Motion6 {
+  MOTION6_UNSPECIFIED = 0;
+  MOTION6_GO     = 1;   // PTP to Cartesian target
+  MOTION6_LINEAR = 2;   // Cartesian-straight motion
+  MOTION6_HOME   = 3;
+}
+
+// ---------- Goals ----------
+
+// SCARA goal. Flat fields — no nested pose/params sub-messages.
+message ScaraGoal {
+  string  device = 1;
+  Motion4 motion = 2;
+
+  // Cartesian target (mm + degrees). For HOME the target fields are ignored.
+  float x = 3;
+  float y = 4;
+  float z = 5;
+  float u = 6;     // rotation about Z, degrees
+
+  // Motion parameters. Units / ranges follow the device contract; runtime
+  // does not validate, just encodes.
+  uint32 speed = 7;
+  uint32 accel = 8;
+}
+
+// 6-DOF goal. Same flat-fields convention as ScaraGoal.
+message Arm6Goal {
+  string  device = 1;
+  Motion6 motion = 2;
+
+  float x  = 3;
+  float y  = 4;
+  float z  = 5;
+  float rx = 6;
+  float ry = 7;
+  float rz = 8;
+
+  uint32 speed = 9;
+  uint32 accel = 10;
+}
+
+// ---------- Responses ----------
+
+// GoalResponse is the immediate acknowledgement of a Submit*Goal call. It
+// only reports whether the runtime accepted the request and started the
+// handshake — completion is observed via Read*Status. Intentionally minimal;
+// goal_id / tracking fields will be added when halt (NEXT-011) lands.
+message GoalResponse {
   bool   ok    = 1;
-  string error = 2;    // Populated when ok=false (unknown field, type mismatch, etc.)
+  string error = 2;   // populated when ok=false
 }
 
-message FieldValue {
-  string field = 1;
-  Value  value = 2;
-}
-
-message WriteFieldsRequest {
+message StatusRequest {
   string device = 1;
-  repeated FieldValue fields = 2;
 }
 
-message WriteFieldsResponse {
-  bool   ok           = 1;
-  string error        = 2;   // Error description when ok=false
-  string failed_field = 3;   // First field that failed validation (empty when ok=true)
+// ScaraStatusResponse mirrors the device's TxPDO output area: handshake
+// flags, the most recent error code, and the live commanded pose / joint
+// angles.
+message ScaraStatusResponse {
+  bool   ok    = 1;
+  string error = 2;   // populated when ok=false (e.g. device not found)
+
+  // Handshake state.
+  bool   done       = 3;
+  bool   busy       = 4;
+  uint32 error_code = 5;
+
+  // Live Cartesian pose (mm + degrees).
+  float current_x = 6;
+  float current_y = 7;
+  float current_z = 8;
+  float current_u = 9;
+
+  // Live joint angles (degrees / mm depending on the joint).
+  float joint_1 = 10;
+  float joint_2 = 11;
+  float joint_3 = 12;
+  float joint_4 = 13;
 }
 
-message ReadFieldRequest {
-  string device = 1;
-  string field  = 2;
-}
-
-message ReadFieldResponse {
+// Arm6StatusResponse — same shape as Scara, with a 6-DOF pose and up to
+// 6 joints. Joints beyond what the device exposes stay zero.
+message Arm6StatusResponse {
   bool   ok    = 1;
   string error = 2;
-  Value  value = 3;    // Populated when ok=true; variant is determined by the contract
-}
 
-// ---------- Value (oneof) ----------
+  bool   done       = 3;
+  bool   busy       = 4;
+  uint32 error_code = 5;
 
-// Exactly one variant is set per Value. This set is what we support today;
-// extend the oneof if a new type is needed.
-message Value {
-  oneof kind {
-    bool   v_bool  = 1;
-    int32  v_i32   = 2;
-    uint32 v_u32   = 3;
-    int64  v_i64   = 4;
-    uint64 v_u64   = 5;
-    float  v_f32   = 6;
-    double v_f64   = 7;
-    bytes  v_bytes = 8;   // Fallback slot for strings / raw bytes
-  }
+  float current_x  = 6;
+  float current_y  = 7;
+  float current_z  = 8;
+  float current_rx = 9;
+  float current_ry = 10;
+  float current_rz = 11;
+
+  float joint_1 = 12;
+  float joint_2 = 13;
+  float joint_3 = 14;
+  float joint_4 = 15;
+  float joint_5 = 16;
+  float joint_6 = 17;
 }

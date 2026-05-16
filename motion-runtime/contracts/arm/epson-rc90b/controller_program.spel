@@ -109,7 +109,6 @@ Function Main
     Integer move_accel
     Integer routine
     Integer routine_arg
-    Integer trigger
 
     ' Default to motors-on / high-power so the very first trigger lands on a
     ' ready arm. routine=12 can flip motors later (e.g. for safe teach).
@@ -123,120 +122,121 @@ Function Main
 
     Print "controller_program: ready, waiting for trigger"
 
+    ' --------------------------------------------------------------
+    ' Main loop is event-driven via `Wait <condition>`, not a `Do/Loop +
+    ' If trigger=1 + Wait 0.01` poller. The controller's input-bit
+    ' sampling is internally on the order of 10ms (SPEL+ Ref 8.0 p.890),
+    ' so response latency is identical either way; condition-wait just
+    ' lets the controller manage the wait instead of us spinning at the
+    ' script layer.
+    ' --------------------------------------------------------------
     Do
-        trigger = Sw(IN_TRIGGER)
+        ' Rising-edge half of the handshake — block until master raises trigger.
+        Wait Sw(IN_TRIGGER) = 1
 
-        If trigger = 1 Then
-            ' --------------------------------------------------------------
-            ' Enter "busy" state: clear done, raise busy, clear error.
-            ' This is the snapshot that the master sees while we work.
-            ' --------------------------------------------------------------
-            Off OUT_DONE
-            On OUT_BUSY
-            OutW OUT_ERROR_CODE, ERR_NONE
+        ' Enter "busy" state: clear done, raise busy, clear error.
+        Off OUT_DONE
+        On OUT_BUSY
+        OutW OUT_ERROR_CODE, ERR_NONE
 
-            ' Read all parameters from the input area.
-            target_x = InReal(IN_TARGET_X)
-            target_y = InReal(IN_TARGET_Y)
-            target_z = InReal(IN_TARGET_Z)
-            target_u = InReal(IN_TARGET_U)
-            move_speed = InW(IN_SPEED)
-            move_accel = InW(IN_ACCEL)
-            routine = In(IN_ROUTINE)
-            routine_arg = In(IN_ROUTINE_ARG)
+        ' Read all parameters from the input area.
+        target_x = InReal(IN_TARGET_X)
+        target_y = InReal(IN_TARGET_Y)
+        target_z = InReal(IN_TARGET_Z)
+        target_u = InReal(IN_TARGET_U)
+        move_speed = InW(IN_SPEED)
+        move_accel = InW(IN_ACCEL)
+        routine = In(IN_ROUTINE)
+        routine_arg = In(IN_ROUTINE_ARG)
 
-            Print "trigger received: routine=", routine, " arg=", routine_arg
-            Print "  speed=", move_speed, " accel=", move_accel
-            Print "  target x=", target_x, " y=", target_y, " z=", target_z, " u=", target_u
+        Print "trigger received: routine=", routine, " arg=", routine_arg
+        Print "  speed=", move_speed, " accel=", move_accel
+        Print "  target x=", target_x, " y=", target_y, " z=", target_z, " u=", target_u
 
-            ' --------------------------------------------------------------
-            ' Dispatch on routine. Any motion error caught by OnErr drops
-            ' to the MoveFailed label below which sets error_code and
-            ' finishes the handshake.
-            '
-            ' Speed / Accel are applied only inside motion arms (Case 1/2/3)
-            ' — the report / state arms (10/11/12/13) have no motion and
-            ' don't need them set. This also prevents bogus speed=0/accel=0
-            ' values (e.g. when leaves call routine=10 without filling the
-            ' rate fields) from crashing the task with "Invalid speed".
-            '
-            ' SPEL+ Select syntax is `Select <expr>` (no `Case` after Select),
-            ' then `Case <value>` arms and `Default` for the fall-through.
-            ' Block terminator is `Send`, not `End Select`.
-            ' Variable names are `move_speed` / `move_accel` (not `speed` /
-            ' `accel`) because `Speed` and `Accel` are SPEL+ keywords —
-            ' using them as variables makes the `Speed <var>` line ambiguous
-            ' to the parser.
-            ' --------------------------------------------------------------
-            OnErr GoTo MoveFailed
+        ' --------------------------------------------------------------
+        ' Dispatch on routine. Any motion error caught by OnErr drops
+        ' to the MoveFailed label below which sets error_code and
+        ' finishes the handshake.
+        '
+        ' Speed / Accel are applied only inside motion arms (Case 1/2/3)
+        ' — the report / state arms (10/11/12/13) have no motion and
+        ' don't need them set. This also prevents bogus speed=0/accel=0
+        ' values (e.g. when leaves call routine=10 without filling the
+        ' rate fields) from crashing the task with "Invalid speed".
+        '
+        ' SPEL+ Select syntax is `Select <expr>` (no `Case` after Select),
+        ' then `Case <value>` arms and `Default` for the fall-through.
+        ' Block terminator is `Send`, not `End Select`.
+        ' Variable names are `move_speed` / `move_accel` (not `speed` /
+        ' `accel`) because `Speed` and `Accel` are SPEL+ keywords —
+        ' using them as variables makes the `Speed <var>` line ambiguous
+        ' to the parser.
+        ' --------------------------------------------------------------
+        OnErr GoTo MoveFailed
 
-            Select routine
-                Case 1
-                    Speed move_speed
-                    Accel move_accel, move_accel
-                    Go XY(target_x, target_y, target_z, target_u) /R
-                Case 2
-                    Speed move_speed
-                    Accel move_accel, move_accel
-                    Jump XY(target_x, target_y, target_z, target_u) /R
-                Case 3
-                    Speed move_speed
-                    Accel move_accel, move_accel
-                    Move XY(target_x, target_y, target_z, target_u) /R
-                Case 4
-                    Speed move_speed
-                    Accel move_accel, move_accel
-                    Home
-                Case 10
-                    ' Report current pose, no motion. CX/CY/CZ/CU of Here read
-                    ' the system's current commanded position; OutReal pushes
-                    ' each f32 into the TxPDO image. Leaves use this for
-                    ' relative-move planning (current + delta -> target).
-                    OutReal OUT_CURRENT_X, CX(Here)
-                    OutReal OUT_CURRENT_Y, CY(Here)
-                    OutReal OUT_CURRENT_Z, CZ(Here)
-                    OutReal OUT_CURRENT_U, CU(Here)
-                Case 11
-                    ' Report joint angles in engineering units (deg / mm).
-                    ' PAgl(RealPos, jointN) converts the live encoder
-                    ' position into joint-space units directly — no need
-                    ' to do pulses-per-rev math on the leaf side.
-                    OutReal OUT_JOINT_1, PAgl(RealPos, 1)
-                    OutReal OUT_JOINT_2, PAgl(RealPos, 2)
-                    OutReal OUT_JOINT_3, PAgl(RealPos, 3)
-                    OutReal OUT_JOINT_4, PAgl(RealPos, 4)
-                Case 12
-                    ' Set motor / power state from routine_arg bit 0.
-                    '   bit 0 = 1  →  Motor On + Power High  (ready for motion)
-                    '   bit 0 = 0  →  Motor Off              (safe for teach)
-                    ' This is the only routine that ignores the target_*
-                    ' fields; the leaf doesn't need to send valid coords.
-                    If (routine_arg And 1) = 1 Then
-                        Motor On
-                        Power High
-                    Else
-                        Motor Off
-                    EndIf
-                Default
-                    OutW OUT_ERROR_CODE, ERR_UNKNOWN_ROUTINE
-            Send
+        Select routine
+            Case 1
+                Speed move_speed
+                Accel move_accel, move_accel
+                Go XY(target_x, target_y, target_z, target_u) /R
+            Case 2
+                Speed move_speed
+                Accel move_accel, move_accel
+                Jump XY(target_x, target_y, target_z, target_u) /R
+            Case 3
+                Speed move_speed
+                Accel move_accel, move_accel
+                Move XY(target_x, target_y, target_z, target_u) /R
+            Case 4
+                Speed move_speed
+                Accel move_accel, move_accel
+                Home
+            Case 10
+                ' Report current pose, no motion. CX/CY/CZ/CU of Here read
+                ' the system's current commanded position; OutReal pushes
+                ' each f32 into the TxPDO image. Leaves use this for
+                ' relative-move planning (current + delta -> target).
+                OutReal OUT_CURRENT_X, CX(Here)
+                OutReal OUT_CURRENT_Y, CY(Here)
+                OutReal OUT_CURRENT_Z, CZ(Here)
+                OutReal OUT_CURRENT_U, CU(Here)
+            Case 11
+                ' Report joint angles in engineering units (deg / mm).
+                ' PAgl(RealPos, jointN) converts the live encoder
+                ' position into joint-space units directly — no need
+                ' to do pulses-per-rev math on the leaf side.
+                OutReal OUT_JOINT_1, PAgl(RealPos, 1)
+                OutReal OUT_JOINT_2, PAgl(RealPos, 2)
+                OutReal OUT_JOINT_3, PAgl(RealPos, 3)
+                OutReal OUT_JOINT_4, PAgl(RealPos, 4)
+            Case 12
+                ' Set motor / power state from routine_arg bit 0.
+                '   bit 0 = 1  →  Motor On + Power High  (ready for motion)
+                '   bit 0 = 0  →  Motor Off              (safe for teach)
+                ' This is the only routine that ignores the target_*
+                ' fields; the leaf doesn't need to send valid coords.
+                If (routine_arg And 1) = 1 Then
+                    Motor On
+                    Power High
+                Else
+                    Motor Off
+                EndIf
+            Default
+                OutW OUT_ERROR_CODE, ERR_UNKNOWN_ROUTINE
+        Send
 
-            ' --------------------------------------------------------------
-            ' Motion (or error-code write) completed: raise done, drop busy.
-            ' --------------------------------------------------------------
-            Off OUT_BUSY
-            On OUT_DONE
+        ' --------------------------------------------------------------
+        ' Motion (or error-code write) completed: raise done, drop busy.
+        ' --------------------------------------------------------------
+        Off OUT_BUSY
+        On OUT_DONE
 
-            ' Wait for the master to clear the trigger bit before accepting a
-            ' new request. This is the falling-edge half of the handshake and
-            ' prevents one trigger from being executed twice on consecutive
-            ' polls. We do NOT clear done here — done stays high until the
-            ' next trigger rising edge, so a master that polls done after
-            ' clearing trigger still sees the true completion state.
-            Wait Sw(IN_TRIGGER) = 0
-        EndIf
-
-        Wait 0.01
+        ' Falling-edge half of the handshake — block until master clears
+        ' trigger. Prevents one trigger from being accepted twice. We do
+        ' NOT clear done here — done stays high until the next trigger
+        ' rising edge, so a master that polls done after clearing trigger
+        ' still sees the true completion state.
+        Wait Sw(IN_TRIGGER) = 0
     Loop
 
 MoveFailed:

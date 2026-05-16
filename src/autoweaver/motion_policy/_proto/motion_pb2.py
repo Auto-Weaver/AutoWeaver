@@ -24,29 +24,29 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cmotion.proto\x12\x06motion\"P\n\x11WriteFieldRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\r\n\x05\x66ield\x18\x02 \x01(\t\x12\x1c\n\x05value\x18\x03 \x01(\x0b\x32\r.motion.Value\"/\n\x12WriteFieldResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"9\n\nFieldValue\x12\r\n\x05\x66ield\x18\x01 \x01(\t\x12\x1c\n\x05value\x18\x02 \x01(\x0b\x32\r.motion.Value\"H\n\x12WriteFieldsRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\"\n\x06\x66ields\x18\x02 \x03(\x0b\x32\x12.motion.FieldValue\"F\n\x13WriteFieldsResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x14\n\x0c\x66\x61iled_field\x18\x03 \x01(\t\"1\n\x10ReadFieldRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\r\n\x05\x66ield\x18\x02 \x01(\t\"L\n\x11ReadFieldResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x1c\n\x05value\x18\x03 \x01(\x0b\x32\r.motion.Value\"\x9a\x01\n\x05Value\x12\x10\n\x06v_bool\x18\x01 \x01(\x08H\x00\x12\x0f\n\x05v_i32\x18\x02 \x01(\x05H\x00\x12\x0f\n\x05v_u32\x18\x03 \x01(\rH\x00\x12\x0f\n\x05v_i64\x18\x04 \x01(\x03H\x00\x12\x0f\n\x05v_u64\x18\x05 \x01(\x04H\x00\x12\x0f\n\x05v_f32\x18\x06 \x01(\x02H\x00\x12\x0f\n\x05v_f64\x18\x07 \x01(\x01H\x00\x12\x11\n\x07v_bytes\x18\x08 \x01(\x0cH\x00\x42\x06\n\x04kind2\xde\x01\n\rMotionService\x12\x43\n\nWriteField\x12\x19.motion.WriteFieldRequest\x1a\x1a.motion.WriteFieldResponse\x12\x46\n\x0bWriteFields\x12\x1a.motion.WriteFieldsRequest\x1a\x1b.motion.WriteFieldsResponse\x12@\n\tReadField\x12\x18.motion.ReadFieldRequest\x1a\x19.motion.ReadFieldResponseb\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0cmotion.proto\x12\x06motion\"\x86\x01\n\tScaraGoal\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\x1f\n\x06motion\x18\x02 \x01(\x0e\x32\x0f.motion.Motion4\x12\t\n\x01x\x18\x03 \x01(\x02\x12\t\n\x01y\x18\x04 \x01(\x02\x12\t\n\x01z\x18\x05 \x01(\x02\x12\t\n\x01u\x18\x06 \x01(\x02\x12\r\n\x05speed\x18\x07 \x01(\r\x12\r\n\x05\x61\x63\x63\x65l\x18\x08 \x01(\r\"\x9e\x01\n\x08\x41rm6Goal\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\x12\x1f\n\x06motion\x18\x02 \x01(\x0e\x32\x0f.motion.Motion6\x12\t\n\x01x\x18\x03 \x01(\x02\x12\t\n\x01y\x18\x04 \x01(\x02\x12\t\n\x01z\x18\x05 \x01(\x02\x12\n\n\x02rx\x18\x06 \x01(\x02\x12\n\n\x02ry\x18\x07 \x01(\x02\x12\n\n\x02rz\x18\x08 \x01(\x02\x12\r\n\x05speed\x18\t \x01(\r\x12\r\n\x05\x61\x63\x63\x65l\x18\n \x01(\r\")\n\x0cGoalResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\"\x1f\n\rStatusRequest\x12\x0e\n\x06\x64\x65vice\x18\x01 \x01(\t\"\xf0\x01\n\x13ScaraStatusResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x0c\n\x04\x64one\x18\x03 \x01(\x08\x12\x0c\n\x04\x62usy\x18\x04 \x01(\x08\x12\x12\n\nerror_code\x18\x05 \x01(\r\x12\x11\n\tcurrent_x\x18\x06 \x01(\x02\x12\x11\n\tcurrent_y\x18\x07 \x01(\x02\x12\x11\n\tcurrent_z\x18\x08 \x01(\x02\x12\x11\n\tcurrent_u\x18\t \x01(\x02\x12\x0f\n\x07joint_1\x18\n \x01(\x02\x12\x0f\n\x07joint_2\x18\x0b \x01(\x02\x12\x0f\n\x07joint_3\x18\x0c \x01(\x02\x12\x0f\n\x07joint_4\x18\r \x01(\x02\"\xba\x02\n\x12\x41rm6StatusResponse\x12\n\n\x02ok\x18\x01 \x01(\x08\x12\r\n\x05\x65rror\x18\x02 \x01(\t\x12\x0c\n\x04\x64one\x18\x03 \x01(\x08\x12\x0c\n\x04\x62usy\x18\x04 \x01(\x08\x12\x12\n\nerror_code\x18\x05 \x01(\r\x12\x11\n\tcurrent_x\x18\x06 \x01(\x02\x12\x11\n\tcurrent_y\x18\x07 \x01(\x02\x12\x11\n\tcurrent_z\x18\x08 \x01(\x02\x12\x12\n\ncurrent_rx\x18\t \x01(\x02\x12\x12\n\ncurrent_ry\x18\n \x01(\x02\x12\x12\n\ncurrent_rz\x18\x0b \x01(\x02\x12\x0f\n\x07joint_1\x18\x0c \x01(\x02\x12\x0f\n\x07joint_2\x18\r \x01(\x02\x12\x0f\n\x07joint_3\x18\x0e \x01(\x02\x12\x0f\n\x07joint_4\x18\x0f \x01(\x02\x12\x0f\n\x07joint_5\x18\x10 \x01(\x02\x12\x0f\n\x07joint_6\x18\x11 \x01(\x02*j\n\x07Motion4\x12\x17\n\x13MOTION4_UNSPECIFIED\x10\x00\x12\x0e\n\nMOTION4_GO\x10\x01\x12\x10\n\x0cMOTION4_JUMP\x10\x02\x12\x12\n\x0eMOTION4_LINEAR\x10\x03\x12\x10\n\x0cMOTION4_HOME\x10\x04*X\n\x07Motion6\x12\x17\n\x13MOTION6_UNSPECIFIED\x10\x00\x12\x0e\n\nMOTION6_GO\x10\x01\x12\x12\n\x0eMOTION6_LINEAR\x10\x02\x12\x10\n\x0cMOTION6_HOME\x10\x03\x32\x91\x02\n\rMotionService\x12:\n\x0fSubmitScaraGoal\x12\x11.motion.ScaraGoal\x1a\x14.motion.GoalResponse\x12\x45\n\x0fReadScaraStatus\x12\x15.motion.StatusRequest\x1a\x1b.motion.ScaraStatusResponse\x12\x38\n\x0eSubmitArm6Goal\x12\x10.motion.Arm6Goal\x1a\x14.motion.GoalResponse\x12\x43\n\x0eReadArm6Status\x12\x15.motion.StatusRequest\x1a\x1a.motion.Arm6StatusResponseb\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
 _builder.BuildTopDescriptorsAndMessages(DESCRIPTOR, 'motion_pb2', _globals)
 if not _descriptor._USE_C_DESCRIPTORS:
   DESCRIPTOR._loaded_options = None
-  _globals['_WRITEFIELDREQUEST']._serialized_start=24
-  _globals['_WRITEFIELDREQUEST']._serialized_end=104
-  _globals['_WRITEFIELDRESPONSE']._serialized_start=106
-  _globals['_WRITEFIELDRESPONSE']._serialized_end=153
-  _globals['_FIELDVALUE']._serialized_start=155
-  _globals['_FIELDVALUE']._serialized_end=212
-  _globals['_WRITEFIELDSREQUEST']._serialized_start=214
-  _globals['_WRITEFIELDSREQUEST']._serialized_end=286
-  _globals['_WRITEFIELDSRESPONSE']._serialized_start=288
-  _globals['_WRITEFIELDSRESPONSE']._serialized_end=358
-  _globals['_READFIELDREQUEST']._serialized_start=360
-  _globals['_READFIELDREQUEST']._serialized_end=409
-  _globals['_READFIELDRESPONSE']._serialized_start=411
-  _globals['_READFIELDRESPONSE']._serialized_end=487
-  _globals['_VALUE']._serialized_start=490
-  _globals['_VALUE']._serialized_end=644
-  _globals['_MOTIONSERVICE']._serialized_start=647
-  _globals['_MOTIONSERVICE']._serialized_end=869
+  _globals['_MOTION4']._serialized_start=958
+  _globals['_MOTION4']._serialized_end=1064
+  _globals['_MOTION6']._serialized_start=1066
+  _globals['_MOTION6']._serialized_end=1154
+  _globals['_SCARAGOAL']._serialized_start=25
+  _globals['_SCARAGOAL']._serialized_end=159
+  _globals['_ARM6GOAL']._serialized_start=162
+  _globals['_ARM6GOAL']._serialized_end=320
+  _globals['_GOALRESPONSE']._serialized_start=322
+  _globals['_GOALRESPONSE']._serialized_end=363
+  _globals['_STATUSREQUEST']._serialized_start=365
+  _globals['_STATUSREQUEST']._serialized_end=396
+  _globals['_SCARASTATUSRESPONSE']._serialized_start=399
+  _globals['_SCARASTATUSRESPONSE']._serialized_end=639
+  _globals['_ARM6STATUSRESPONSE']._serialized_start=642
+  _globals['_ARM6STATUSRESPONSE']._serialized_end=956
+  _globals['_MOTIONSERVICE']._serialized_start=1157
+  _globals['_MOTIONSERVICE']._serialized_end=1430
 # @@protoc_insertion_point(module_scope)

@@ -1,22 +1,79 @@
-from google.protobuf.internal import containers as _containers
+from google.protobuf.internal import enum_type_wrapper as _enum_type_wrapper
 from google.protobuf import descriptor as _descriptor
 from google.protobuf import message as _message
-from collections.abc import Iterable as _Iterable, Mapping as _Mapping
 from typing import ClassVar as _ClassVar, Optional as _Optional, Union as _Union
 
 DESCRIPTOR: _descriptor.FileDescriptor
 
-class WriteFieldRequest(_message.Message):
-    __slots__ = ("device", "field", "value")
-    DEVICE_FIELD_NUMBER: _ClassVar[int]
-    FIELD_FIELD_NUMBER: _ClassVar[int]
-    VALUE_FIELD_NUMBER: _ClassVar[int]
-    device: str
-    field: str
-    value: Value
-    def __init__(self, device: _Optional[str] = ..., field: _Optional[str] = ..., value: _Optional[_Union[Value, _Mapping]] = ...) -> None: ...
+class Motion4(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    MOTION4_UNSPECIFIED: _ClassVar[Motion4]
+    MOTION4_GO: _ClassVar[Motion4]
+    MOTION4_JUMP: _ClassVar[Motion4]
+    MOTION4_LINEAR: _ClassVar[Motion4]
+    MOTION4_HOME: _ClassVar[Motion4]
 
-class WriteFieldResponse(_message.Message):
+class Motion6(int, metaclass=_enum_type_wrapper.EnumTypeWrapper):
+    __slots__ = ()
+    MOTION6_UNSPECIFIED: _ClassVar[Motion6]
+    MOTION6_GO: _ClassVar[Motion6]
+    MOTION6_LINEAR: _ClassVar[Motion6]
+    MOTION6_HOME: _ClassVar[Motion6]
+MOTION4_UNSPECIFIED: Motion4
+MOTION4_GO: Motion4
+MOTION4_JUMP: Motion4
+MOTION4_LINEAR: Motion4
+MOTION4_HOME: Motion4
+MOTION6_UNSPECIFIED: Motion6
+MOTION6_GO: Motion6
+MOTION6_LINEAR: Motion6
+MOTION6_HOME: Motion6
+
+class ScaraGoal(_message.Message):
+    __slots__ = ("device", "motion", "x", "y", "z", "u", "speed", "accel")
+    DEVICE_FIELD_NUMBER: _ClassVar[int]
+    MOTION_FIELD_NUMBER: _ClassVar[int]
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    Z_FIELD_NUMBER: _ClassVar[int]
+    U_FIELD_NUMBER: _ClassVar[int]
+    SPEED_FIELD_NUMBER: _ClassVar[int]
+    ACCEL_FIELD_NUMBER: _ClassVar[int]
+    device: str
+    motion: Motion4
+    x: float
+    y: float
+    z: float
+    u: float
+    speed: int
+    accel: int
+    def __init__(self, device: _Optional[str] = ..., motion: _Optional[_Union[Motion4, str]] = ..., x: _Optional[float] = ..., y: _Optional[float] = ..., z: _Optional[float] = ..., u: _Optional[float] = ..., speed: _Optional[int] = ..., accel: _Optional[int] = ...) -> None: ...
+
+class Arm6Goal(_message.Message):
+    __slots__ = ("device", "motion", "x", "y", "z", "rx", "ry", "rz", "speed", "accel")
+    DEVICE_FIELD_NUMBER: _ClassVar[int]
+    MOTION_FIELD_NUMBER: _ClassVar[int]
+    X_FIELD_NUMBER: _ClassVar[int]
+    Y_FIELD_NUMBER: _ClassVar[int]
+    Z_FIELD_NUMBER: _ClassVar[int]
+    RX_FIELD_NUMBER: _ClassVar[int]
+    RY_FIELD_NUMBER: _ClassVar[int]
+    RZ_FIELD_NUMBER: _ClassVar[int]
+    SPEED_FIELD_NUMBER: _ClassVar[int]
+    ACCEL_FIELD_NUMBER: _ClassVar[int]
+    device: str
+    motion: Motion6
+    x: float
+    y: float
+    z: float
+    rx: float
+    ry: float
+    rz: float
+    speed: int
+    accel: int
+    def __init__(self, device: _Optional[str] = ..., motion: _Optional[_Union[Motion6, str]] = ..., x: _Optional[float] = ..., y: _Optional[float] = ..., z: _Optional[float] = ..., rx: _Optional[float] = ..., ry: _Optional[float] = ..., rz: _Optional[float] = ..., speed: _Optional[int] = ..., accel: _Optional[int] = ...) -> None: ...
+
+class GoalResponse(_message.Message):
     __slots__ = ("ok", "error")
     OK_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
@@ -24,66 +81,76 @@ class WriteFieldResponse(_message.Message):
     error: str
     def __init__(self, ok: bool = ..., error: _Optional[str] = ...) -> None: ...
 
-class FieldValue(_message.Message):
-    __slots__ = ("field", "value")
-    FIELD_FIELD_NUMBER: _ClassVar[int]
-    VALUE_FIELD_NUMBER: _ClassVar[int]
-    field: str
-    value: Value
-    def __init__(self, field: _Optional[str] = ..., value: _Optional[_Union[Value, _Mapping]] = ...) -> None: ...
-
-class WriteFieldsRequest(_message.Message):
-    __slots__ = ("device", "fields")
+class StatusRequest(_message.Message):
+    __slots__ = ("device",)
     DEVICE_FIELD_NUMBER: _ClassVar[int]
-    FIELDS_FIELD_NUMBER: _ClassVar[int]
     device: str
-    fields: _containers.RepeatedCompositeFieldContainer[FieldValue]
-    def __init__(self, device: _Optional[str] = ..., fields: _Optional[_Iterable[_Union[FieldValue, _Mapping]]] = ...) -> None: ...
+    def __init__(self, device: _Optional[str] = ...) -> None: ...
 
-class WriteFieldsResponse(_message.Message):
-    __slots__ = ("ok", "error", "failed_field")
+class ScaraStatusResponse(_message.Message):
+    __slots__ = ("ok", "error", "done", "busy", "error_code", "current_x", "current_y", "current_z", "current_u", "joint_1", "joint_2", "joint_3", "joint_4")
     OK_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
-    FAILED_FIELD_FIELD_NUMBER: _ClassVar[int]
+    DONE_FIELD_NUMBER: _ClassVar[int]
+    BUSY_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_X_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_Y_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_Z_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_U_FIELD_NUMBER: _ClassVar[int]
+    JOINT_1_FIELD_NUMBER: _ClassVar[int]
+    JOINT_2_FIELD_NUMBER: _ClassVar[int]
+    JOINT_3_FIELD_NUMBER: _ClassVar[int]
+    JOINT_4_FIELD_NUMBER: _ClassVar[int]
     ok: bool
     error: str
-    failed_field: str
-    def __init__(self, ok: bool = ..., error: _Optional[str] = ..., failed_field: _Optional[str] = ...) -> None: ...
+    done: bool
+    busy: bool
+    error_code: int
+    current_x: float
+    current_y: float
+    current_z: float
+    current_u: float
+    joint_1: float
+    joint_2: float
+    joint_3: float
+    joint_4: float
+    def __init__(self, ok: bool = ..., error: _Optional[str] = ..., done: bool = ..., busy: bool = ..., error_code: _Optional[int] = ..., current_x: _Optional[float] = ..., current_y: _Optional[float] = ..., current_z: _Optional[float] = ..., current_u: _Optional[float] = ..., joint_1: _Optional[float] = ..., joint_2: _Optional[float] = ..., joint_3: _Optional[float] = ..., joint_4: _Optional[float] = ...) -> None: ...
 
-class ReadFieldRequest(_message.Message):
-    __slots__ = ("device", "field")
-    DEVICE_FIELD_NUMBER: _ClassVar[int]
-    FIELD_FIELD_NUMBER: _ClassVar[int]
-    device: str
-    field: str
-    def __init__(self, device: _Optional[str] = ..., field: _Optional[str] = ...) -> None: ...
-
-class ReadFieldResponse(_message.Message):
-    __slots__ = ("ok", "error", "value")
+class Arm6StatusResponse(_message.Message):
+    __slots__ = ("ok", "error", "done", "busy", "error_code", "current_x", "current_y", "current_z", "current_rx", "current_ry", "current_rz", "joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6")
     OK_FIELD_NUMBER: _ClassVar[int]
     ERROR_FIELD_NUMBER: _ClassVar[int]
-    VALUE_FIELD_NUMBER: _ClassVar[int]
+    DONE_FIELD_NUMBER: _ClassVar[int]
+    BUSY_FIELD_NUMBER: _ClassVar[int]
+    ERROR_CODE_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_X_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_Y_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_Z_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_RX_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_RY_FIELD_NUMBER: _ClassVar[int]
+    CURRENT_RZ_FIELD_NUMBER: _ClassVar[int]
+    JOINT_1_FIELD_NUMBER: _ClassVar[int]
+    JOINT_2_FIELD_NUMBER: _ClassVar[int]
+    JOINT_3_FIELD_NUMBER: _ClassVar[int]
+    JOINT_4_FIELD_NUMBER: _ClassVar[int]
+    JOINT_5_FIELD_NUMBER: _ClassVar[int]
+    JOINT_6_FIELD_NUMBER: _ClassVar[int]
     ok: bool
     error: str
-    value: Value
-    def __init__(self, ok: bool = ..., error: _Optional[str] = ..., value: _Optional[_Union[Value, _Mapping]] = ...) -> None: ...
-
-class Value(_message.Message):
-    __slots__ = ("v_bool", "v_i32", "v_u32", "v_i64", "v_u64", "v_f32", "v_f64", "v_bytes")
-    V_BOOL_FIELD_NUMBER: _ClassVar[int]
-    V_I32_FIELD_NUMBER: _ClassVar[int]
-    V_U32_FIELD_NUMBER: _ClassVar[int]
-    V_I64_FIELD_NUMBER: _ClassVar[int]
-    V_U64_FIELD_NUMBER: _ClassVar[int]
-    V_F32_FIELD_NUMBER: _ClassVar[int]
-    V_F64_FIELD_NUMBER: _ClassVar[int]
-    V_BYTES_FIELD_NUMBER: _ClassVar[int]
-    v_bool: bool
-    v_i32: int
-    v_u32: int
-    v_i64: int
-    v_u64: int
-    v_f32: float
-    v_f64: float
-    v_bytes: bytes
-    def __init__(self, v_bool: bool = ..., v_i32: _Optional[int] = ..., v_u32: _Optional[int] = ..., v_i64: _Optional[int] = ..., v_u64: _Optional[int] = ..., v_f32: _Optional[float] = ..., v_f64: _Optional[float] = ..., v_bytes: _Optional[bytes] = ...) -> None: ...
+    done: bool
+    busy: bool
+    error_code: int
+    current_x: float
+    current_y: float
+    current_z: float
+    current_rx: float
+    current_ry: float
+    current_rz: float
+    joint_1: float
+    joint_2: float
+    joint_3: float
+    joint_4: float
+    joint_5: float
+    joint_6: float
+    def __init__(self, ok: bool = ..., error: _Optional[str] = ..., done: bool = ..., busy: bool = ..., error_code: _Optional[int] = ..., current_x: _Optional[float] = ..., current_y: _Optional[float] = ..., current_z: _Optional[float] = ..., current_rx: _Optional[float] = ..., current_ry: _Optional[float] = ..., current_rz: _Optional[float] = ..., joint_1: _Optional[float] = ..., joint_2: _Optional[float] = ..., joint_3: _Optional[float] = ..., joint_4: _Optional[float] = ..., joint_5: _Optional[float] = ..., joint_6: _Optional[float] = ...) -> None: ...

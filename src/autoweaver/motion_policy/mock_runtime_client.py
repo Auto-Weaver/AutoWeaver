@@ -1,9 +1,19 @@
 """In-memory mock of ``RuntimeClient`` for driver tests.
 
-Mirrors the public surface of ``RuntimeClient`` exactly so a driver (e.g.
-``EpsonLS6``) under test can swap one for the other. Stores fields in a
-per-device dict and tracks every write/read in ``self.calls`` for
-assertions.
+Mirrors the public surface of ``RuntimeClient`` exactly so a driver
+(e.g. ``EpsonLS6``) under test can swap one for the other.
+
+Behavior:
+
+  - Each goal submission appends to ``self.goals`` as a tuple of
+    ``(kind, device, motion_name, fields_dict)``. Drivers' tests can
+    assert "the third call to submit was a LINEAR to (100, 200, 50, 0)".
+  - The mock keeps a per-device status dict that ``read_*_status``
+    returns. After a goal submission the mock sets ``done=False`` /
+    ``busy=True``; tests use ``preload_status`` to flip those, or call
+    ``complete_last_goal`` to simulate the runtime finishing the move.
+  - ``preload_status(device, **kwargs)`` and ``preload_pose(device, ...)``
+    seed state without recording a call.
 
 This is a test double, not a runtime artifact — drivers depend on the
 ``RuntimeClient`` shape, not on this specific class.
@@ -11,61 +21,88 @@ This is a test double, not a runtime artifact — drivers depend on the
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from types import TracebackType
 from typing import Any, Type
 
-from autoweaver.motion_policy.runtime_client import RuntimeFieldError
+from autoweaver.motion_policy.runtime_client import (
+    Arm6GoalBuilder,
+    GoalError,
+    RuntimeClient,
+    ScaraGoalBuilder,
+)
 
 
-__all__ = ["MockRuntimeClient", "MockWriteBatch"]
+__all__ = [
+    "MockRuntimeClient",
+    "MockScaraGoalBuilder",
+    "MockArm6GoalBuilder",
+    "MockScaraStatus",
+    "MockArm6Status",
+]
+
+
+@dataclass
+class MockScaraStatus:
+    ok: bool = True
+    error: str = ""
+    done: bool = False
+    busy: bool = False
+    error_code: int = 0
+    current_x: float = 0.0
+    current_y: float = 0.0
+    current_z: float = 0.0
+    current_u: float = 0.0
+    joint_1: float = 0.0
+    joint_2: float = 0.0
+    joint_3: float = 0.0
+    joint_4: float = 0.0
+
+
+@dataclass
+class MockArm6Status:
+    ok: bool = True
+    error: str = ""
+    done: bool = False
+    busy: bool = False
+    error_code: int = 0
+    current_x: float = 0.0
+    current_y: float = 0.0
+    current_z: float = 0.0
+    current_rx: float = 0.0
+    current_ry: float = 0.0
+    current_rz: float = 0.0
+    joint_1: float = 0.0
+    joint_2: float = 0.0
+    joint_3: float = 0.0
+    joint_4: float = 0.0
+    joint_5: float = 0.0
+    joint_6: float = 0.0
+
+
+@dataclass
+class _DeviceState:
+    scara_status: MockScaraStatus = field(default_factory=MockScaraStatus)
+    arm6_status: MockArm6Status = field(default_factory=MockArm6Status)
 
 
 class MockRuntimeClient:
     """In-memory stand-in for ``RuntimeClient``.
 
-    Behavior:
-      - Each ``write_field_*`` stores the value into a per-device dict
-        keyed by (device, field). The Python type recorded matches the
-        method called — calling ``write_field_f32`` stores a ``float``,
-        ``write_field_i32`` stores an ``int``, etc.
-      - Each ``read_field_*`` returns the last-written value. Reading an
-        unset field raises ``RuntimeFieldError`` (mirrors the runtime's
-        "unknown field" response).
-      - Type-mismatched reads (e.g. ``read_field_bool`` after writing via
-        ``write_field_i32``) also raise ``RuntimeFieldError``.
-      - All calls are appended to ``self.calls`` as
-        ``(op, device, field, value)`` tuples for assertions; reads use
-        the value field for the value returned.
-
-    Batch writes (``client.batch(device).f32(...).commit()``) apply all
-    fields atomically and record as a single
-    ``("batch_write", device, [(field, variant, value), ...])`` entry in
-    ``self.calls`` — mirrors the all-or-nothing semantics of the real
-    ``WriteFields`` RPC.
-
-    Test helpers:
-      - ``preload(device, field, value, variant)`` seeds a value without
-        touching ``self.calls``.
+    Drivers under test call ``client.scara_goal("ls6_1").linear(...).submit()``
+    exactly as they would against the real client; the mock records the
+    submission and updates the device's status to ``busy=True, done=False``.
+    Tests then call ``complete_last_goal("ls6_1")`` to simulate the
+    runtime finishing the handshake, after which ``read_scara_status``
+    returns ``done=True``.
     """
 
-    # Python type → expected variant string (kept in sync with proto).
-    _WRITE_VARIANTS = {
-        "write_field_bool":  "v_bool",
-        "write_field_i32":   "v_i32",
-        "write_field_u32":   "v_u32",
-        "write_field_i64":   "v_i64",
-        "write_field_u64":   "v_u64",
-        "write_field_f32":   "v_f32",
-        "write_field_f64":   "v_f64",
-        "write_field_bytes": "v_bytes",
-    }
-
     def __init__(self) -> None:
-        # Per-device field store: (device, field) -> (variant, value)
-        self._store: dict[tuple[str, str], tuple[str, Any]] = {}
-        self.calls: list[tuple] = []
+        self._states: dict[str, _DeviceState] = {}
+        # Each entry: ("scara"|"arm6", device, motion_name, fields_dict)
+        self.goals: list[tuple[str, str, str, dict[str, Any]]] = []
 
-    # --- lifecycle (parity with RuntimeClient) ---
+    # --- lifecycle ---
 
     def close(self) -> None:
         pass
@@ -81,146 +118,159 @@ class MockRuntimeClient:
     ) -> None:
         self.close()
 
-    # --- write ---
+    # --- goal builders ---
 
-    def write_field_bool(self, device: str, field: str, value: bool) -> None:
-        self._write(device, field, "v_bool", value)
+    def scara_goal(self, device: str) -> "MockScaraGoalBuilder":
+        return MockScaraGoalBuilder(self, device)
 
-    def write_field_i32(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, "v_i32", value)
+    def arm6_goal(self, device: str) -> "MockArm6GoalBuilder":
+        return MockArm6GoalBuilder(self, device)
 
-    def write_field_u32(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, "v_u32", value)
+    # --- status reads ---
 
-    def write_field_i64(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, "v_i64", value)
+    def read_scara_status(self, device: str) -> MockScaraStatus:
+        state = self._states.get(device)
+        if state is None:
+            raise GoalError(device, "unknown device")
+        return state.scara_status
 
-    def write_field_u64(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, "v_u64", value)
-
-    def write_field_f32(self, device: str, field: str, value: float) -> None:
-        self._write(device, field, "v_f32", value)
-
-    def write_field_f64(self, device: str, field: str, value: float) -> None:
-        self._write(device, field, "v_f64", value)
-
-    def write_field_bytes(self, device: str, field: str, value: bytes) -> None:
-        self._write(device, field, "v_bytes", value)
-
-    # --- batch write ---
-
-    def batch(self, device: str) -> "MockWriteBatch":
-        return MockWriteBatch(self, device)
-
-    # --- read ---
-
-    def read_field_bool(self, device: str, field: str) -> bool:
-        return self._read(device, field, "v_bool")
-
-    def read_field_i32(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_i32")
-
-    def read_field_u32(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_u32")
-
-    def read_field_i64(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_i64")
-
-    def read_field_u64(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_u64")
-
-    def read_field_f32(self, device: str, field: str) -> float:
-        return self._read(device, field, "v_f32")
-
-    def read_field_f64(self, device: str, field: str) -> float:
-        return self._read(device, field, "v_f64")
-
-    def read_field_bytes(self, device: str, field: str) -> bytes:
-        return self._read(device, field, "v_bytes")
+    def read_arm6_status(self, device: str) -> MockArm6Status:
+        state = self._states.get(device)
+        if state is None:
+            raise GoalError(device, "unknown device")
+        return state.arm6_status
 
     # --- test helpers ---
 
-    def preload(self, device: str, field: str, value: Any, variant: str) -> None:
-        """Seed a field without recording the call. For test setup only."""
-        self._store[(device, field)] = (variant, value)
+    def preload_scara_status(self, device: str, **kwargs: Any) -> None:
+        """Seed a SCARA device's status fields without recording a goal."""
+        state = self._states.setdefault(device, _DeviceState())
+        for k, v in kwargs.items():
+            setattr(state.scara_status, k, v)
 
-    # --- internals ---
+    def preload_arm6_status(self, device: str, **kwargs: Any) -> None:
+        """Seed a 6-DOF device's status fields without recording a goal."""
+        state = self._states.setdefault(device, _DeviceState())
+        for k, v in kwargs.items():
+            setattr(state.arm6_status, k, v)
 
-    def _write(self, device: str, field: str, variant: str, value: Any) -> None:
-        self._store[(device, field)] = (variant, value)
-        self.calls.append(("write", device, field, value))
+    def complete_last_goal(self, device: str) -> None:
+        """Simulate the runtime finishing whatever was last submitted: flip
+        the device's status to ``done=True, busy=False``."""
+        state = self._states.setdefault(device, _DeviceState())
+        state.scara_status.done = True
+        state.scara_status.busy = False
+        state.arm6_status.done = True
+        state.arm6_status.busy = False
 
-    def _read(self, device: str, field: str, expected_variant: str) -> Any:
-        stored = self._store.get((device, field))
-        if stored is None:
-            raise RuntimeFieldError(device, field, "unknown field")
-        stored_variant, value = stored
-        if stored_variant != expected_variant:
-            raise RuntimeFieldError(
-                device,
-                field,
-                f"type mismatch: caller expected {expected_variant}, "
-                f"stored as {stored_variant}",
-            )
-        self.calls.append(("read", device, field, value))
-        return value
+    # --- internals used by builders ---
 
-    # --- internals used by MockWriteBatch ---
+    def _record_scara(self, device: str, motion_name: str, fields: dict[str, Any]) -> None:
+        self.goals.append(("scara", device, motion_name, fields))
+        state = self._states.setdefault(device, _DeviceState())
+        state.scara_status.done = False
+        state.scara_status.busy = True
+        state.scara_status.error_code = 0
 
-    def _commit_batch(
-        self, device: str, fields: list[tuple[str, str, Any]]
-    ) -> None:
-        for field, variant, value in fields:
-            self._store[(device, field)] = (variant, value)
-        self.calls.append(("batch_write", device, list(fields)))
+    def _record_arm6(self, device: str, motion_name: str, fields: dict[str, Any]) -> None:
+        self.goals.append(("arm6", device, motion_name, fields))
+        state = self._states.setdefault(device, _DeviceState())
+        state.arm6_status.done = False
+        state.arm6_status.busy = True
+        state.arm6_status.error_code = 0
 
 
-class MockWriteBatch:
-    """In-memory equivalent of ``WriteBatch`` for driver tests.
-
-    Mirrors the chainable builder shape but commits straight into the
-    mock client's store. All fields apply atomically (i.e. the test
-    can't observe a partial commit), matching the real runtime contract.
-    """
+class MockScaraGoalBuilder:
+    """Mirror of ``ScaraGoalBuilder`` writing into an in-memory store."""
 
     def __init__(self, client: MockRuntimeClient, device: str):
         self._client = client
         self._device = device
-        self._fields: list[tuple[str, str, Any]] = []
+        self._motion: str | None = None
+        self._fields: dict[str, Any] = {}
 
-    def bool(self, field: str, value: bool) -> "MockWriteBatch":
-        self._fields.append((field, "v_bool", value))
+    def go(self, *, x: float, y: float, z: float, u: float) -> "MockScaraGoalBuilder":
+        self._motion = "GO"
+        self._fields.update({"x": x, "y": y, "z": z, "u": u})
         return self
 
-    def i32(self, field: str, value: int) -> "MockWriteBatch":
-        self._fields.append((field, "v_i32", value))
+    def jump(self, *, x: float, y: float, z: float, u: float) -> "MockScaraGoalBuilder":
+        self._motion = "JUMP"
+        self._fields.update({"x": x, "y": y, "z": z, "u": u})
         return self
 
-    def u32(self, field: str, value: int) -> "MockWriteBatch":
-        self._fields.append((field, "v_u32", value))
+    def linear(self, *, x: float, y: float, z: float, u: float) -> "MockScaraGoalBuilder":
+        self._motion = "LINEAR"
+        self._fields.update({"x": x, "y": y, "z": z, "u": u})
         return self
 
-    def i64(self, field: str, value: int) -> "MockWriteBatch":
-        self._fields.append((field, "v_i64", value))
+    def home(self) -> "MockScaraGoalBuilder":
+        self._motion = "HOME"
         return self
 
-    def u64(self, field: str, value: int) -> "MockWriteBatch":
-        self._fields.append((field, "v_u64", value))
+    def speed(self, value: int) -> "MockScaraGoalBuilder":
+        self._fields["speed"] = value
         return self
 
-    def f32(self, field: str, value: float) -> "MockWriteBatch":
-        self._fields.append((field, "v_f32", value))
+    def accel(self, value: int) -> "MockScaraGoalBuilder":
+        self._fields["accel"] = value
         return self
 
-    def f64(self, field: str, value: float) -> "MockWriteBatch":
-        self._fields.append((field, "v_f64", value))
+    def submit(self) -> None:
+        if self._motion is None:
+            raise GoalError(
+                self._device,
+                "no motion type set — call .go() / .jump() / .linear() / .home() before submit()",
+            )
+        self._client._record_scara(self._device, self._motion, dict(self._fields))
+
+
+class MockArm6GoalBuilder:
+    """Mirror of ``Arm6GoalBuilder`` writing into an in-memory store."""
+
+    def __init__(self, client: MockRuntimeClient, device: str):
+        self._client = client
+        self._device = device
+        self._motion: str | None = None
+        self._fields: dict[str, Any] = {}
+
+    def go(
+        self, *, x: float, y: float, z: float, rx: float, ry: float, rz: float
+    ) -> "MockArm6GoalBuilder":
+        self._motion = "GO"
+        self._fields.update({"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
         return self
 
-    def bytes(self, field: str, value: bytes) -> "MockWriteBatch":
-        self._fields.append((field, "v_bytes", value))
+    def linear(
+        self, *, x: float, y: float, z: float, rx: float, ry: float, rz: float
+    ) -> "MockArm6GoalBuilder":
+        self._motion = "LINEAR"
+        self._fields.update({"x": x, "y": y, "z": z, "rx": rx, "ry": ry, "rz": rz})
         return self
 
-    def commit(self) -> None:
-        if not self._fields:
-            return
-        self._client._commit_batch(self._device, self._fields)
+    def home(self) -> "MockArm6GoalBuilder":
+        self._motion = "HOME"
+        return self
+
+    def speed(self, value: int) -> "MockArm6GoalBuilder":
+        self._fields["speed"] = value
+        return self
+
+    def accel(self, value: int) -> "MockArm6GoalBuilder":
+        self._fields["accel"] = value
+        return self
+
+    def submit(self) -> None:
+        if self._motion is None:
+            raise GoalError(
+                self._device,
+                "no motion type set — call .go() / .linear() / .home() before submit()",
+            )
+        self._client._record_arm6(self._device, self._motion, dict(self._fields))
+
+
+# Mypy/pyright structural compatibility: ensure mock builders are usable
+# anywhere the real ones are expected. (Drivers that type their dep as
+# RuntimeClient still work — duck typing — but this comment is here so
+# future maintainers know the shapes are deliberately mirrored.)
+_ = (RuntimeClient, ScaraGoalBuilder, Arm6GoalBuilder)

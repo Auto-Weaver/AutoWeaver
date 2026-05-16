@@ -1,29 +1,40 @@
-"""gRPC client for the Rust motion-runtime (0.7.0 thin translation layer).
+"""gRPC client for the Rust motion-runtime (0.8.0 goal service layer).
 
-The runtime exposes two RPCs — ``WriteField`` and ``ReadField`` — that
-read and write named fields on EtherCAT slaves. Field-name ↔ byte
-offset translation happens on the runtime side, driven by an external
-YAML contract; this Python client knows nothing about contracts (see
-``docs/discuss/epson-ls6-runtime-client-open-items.md`` §F).
+Python-side surface: submit a goal, poll status. The runtime owns the
+field-level write/trigger/done handshake plus EtherCAT byte translation;
+callers never deal with field names, byte offsets, or trigger edges.
 
-Design points (locked 2026-05-16):
+Two device shapes:
 
-  - Synchronous API. BT ticks are synchronous; each WriteField/ReadField
-    round-trip is a few hundred microseconds, well within a tick budget.
-  - One method per Value oneof variant — ``write_field_f32`` /
-    ``read_field_bool`` / etc. Method name pins the type; pyright catches
-    mismatches at the call site.
-  - Multi-field writes go through ``client.batch(device).f32(...).i32(...).commit()``
-    so the runtime can stage them in a shadow buffer and atomically swap
-    in one snapshot — the external controller never sees a torn write.
-    This makes the trigger/cmd_id signalling (B-section in the discuss
-    doc) a pure semantics question rather than a write-ordering one.
-  - Three explicit exception classes: ``RuntimeConnectionError``,
-    ``RuntimeTimeoutError``, ``RuntimeFieldError``. Callers never see
-    raw ``grpc.RpcError``.
-  - Context-manager lifecycle: ``with RuntimeClient(addr) as client: ...``.
-  - One client instance per motion-runtime process; multiple devices
-    share it by passing different ``device`` names.
+  - SCARA (4-DOF, e.g. Epson LS6) — ``submit_scara_goal`` / ``read_scara_status``
+  - Generic 6-DOF (reserved)     — ``submit_arm6_goal`` / ``read_arm6_status``
+
+The 4-DOF / 6-DOF split is encoded in the proto messages themselves so
+pyright catches dimension mismatches at the call site — there is no
+``repeated float target`` with runtime-checked length.
+
+Builder usage:
+
+    with RuntimeClient("localhost:50051") as client:
+        (client.scara_goal("ls6_1")
+            .linear(x=100.0, y=200.0, z=50.0, u=0.0)
+            .speed(50).accel(200)
+            .submit())
+        # ... later ...
+        status = client.read_scara_status("ls6_1")
+        if status.done:
+            ...
+
+Submit is non-blocking — the runtime starts the handshake and returns;
+callers poll status. This matches the "submit + poll" pattern that BT
+leaves' ``on_running`` already uses.
+
+Three exception classes:
+
+  - ``RuntimeConnectionError`` — gRPC channel unreachable
+  - ``RuntimeTimeoutError``     — RPC exceeded its deadline
+  - ``GoalError``               — runtime rejected the goal (unknown device,
+                                  unsupported motion type, etc.)
 """
 
 from __future__ import annotations
@@ -40,8 +51,9 @@ __all__ = [
     "RuntimeClient",
     "RuntimeConnectionError",
     "RuntimeTimeoutError",
-    "RuntimeFieldError",
-    "WriteBatch",
+    "GoalError",
+    "ScaraGoalBuilder",
+    "Arm6GoalBuilder",
 ]
 
 
@@ -53,38 +65,25 @@ class RuntimeTimeoutError(RuntimeError):
     """An RPC exceeded its deadline."""
 
 
-class RuntimeFieldError(RuntimeError):
-    """motion-runtime rejected the field operation.
+class GoalError(RuntimeError):
+    """motion-runtime rejected the goal.
 
-    Carries the device name, field name, and the runtime's error string —
-    typically "unknown field", "type mismatch", or "slave offline".
+    Carries the device name and the runtime's error string — typical
+    causes are "unknown device", "unsupported motion type for this
+    device", or "slave offline".
     """
 
-    def __init__(self, device: str, field: str, reason: str):
+    def __init__(self, device: str, reason: str):
         self.device = device
-        self.field = field
         self.reason = reason
-        super().__init__(f"{device}.{field}: {reason}")
+        super().__init__(f"{device}: {reason}")
 
 
 _DEFAULT_TIMEOUT_S = 1.0
 
 
 class RuntimeClient:
-    """Synchronous gRPC client for motion-runtime.
-
-    Lifecycle:
-        with RuntimeClient("localhost:50051") as client:
-            client.write_field_f32("ls6_1", "target_x", 100.0)
-            done = client.read_field_bool("ls6_1", "done")
-
-    Or manage the channel explicitly:
-        client = RuntimeClient("localhost:50051")
-        try:
-            ...
-        finally:
-            client.close()
-    """
+    """Synchronous gRPC client for motion-runtime."""
 
     def __init__(self, address: str = "localhost:50051", timeout_s: float = _DEFAULT_TIMEOUT_S):
         self._address = address
@@ -108,103 +107,53 @@ class RuntimeClient:
     ) -> None:
         self.close()
 
-    # --- write ---
+    # --- goal builders ---
 
-    def write_field_bool(self, device: str, field: str, value: bool) -> None:
-        self._write(device, field, motion_pb2.Value(v_bool=value))
+    def scara_goal(self, device: str) -> "ScaraGoalBuilder":
+        return ScaraGoalBuilder(self, device)
 
-    def write_field_i32(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, motion_pb2.Value(v_i32=value))
+    def arm6_goal(self, device: str) -> "Arm6GoalBuilder":
+        return Arm6GoalBuilder(self, device)
 
-    def write_field_u32(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, motion_pb2.Value(v_u32=value))
+    # --- status reads ---
 
-    def write_field_i64(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, motion_pb2.Value(v_i64=value))
+    def read_scara_status(self, device: str) -> motion_pb2.ScaraStatusResponse:
+        req = motion_pb2.StatusRequest(device=device)
+        try:
+            resp = self._stub.ReadScaraStatus(req, timeout=self._timeout_s)
+        except grpc.RpcError as e:
+            raise self._translate_rpc_error(e) from e
+        if not resp.ok:
+            raise GoalError(device, resp.error)
+        return resp
 
-    def write_field_u64(self, device: str, field: str, value: int) -> None:
-        self._write(device, field, motion_pb2.Value(v_u64=value))
-
-    def write_field_f32(self, device: str, field: str, value: float) -> None:
-        self._write(device, field, motion_pb2.Value(v_f32=value))
-
-    def write_field_f64(self, device: str, field: str, value: float) -> None:
-        self._write(device, field, motion_pb2.Value(v_f64=value))
-
-    def write_field_bytes(self, device: str, field: str, value: bytes) -> None:
-        self._write(device, field, motion_pb2.Value(v_bytes=value))
-
-    # --- batch write ---
-
-    def batch(self, device: str) -> "WriteBatch":
-        """Start a chainable atomic write batch for a single device.
-
-        Example:
-            (client.batch("ls6_1")
-                .f32("target_x", 100.0)
-                .f32("target_y", 200.0)
-                .i32("routine", ROUTINE_MOVE)
-                .i32("cmd_id", next_id)
-                .commit())
-
-        See ``WriteBatch`` for semantics.
-        """
-        return WriteBatch(self, device)
-
-    # --- read ---
-
-    def read_field_bool(self, device: str, field: str) -> bool:
-        return self._read(device, field, "v_bool")
-
-    def read_field_i32(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_i32")
-
-    def read_field_u32(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_u32")
-
-    def read_field_i64(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_i64")
-
-    def read_field_u64(self, device: str, field: str) -> int:
-        return self._read(device, field, "v_u64")
-
-    def read_field_f32(self, device: str, field: str) -> float:
-        return self._read(device, field, "v_f32")
-
-    def read_field_f64(self, device: str, field: str) -> float:
-        return self._read(device, field, "v_f64")
-
-    def read_field_bytes(self, device: str, field: str) -> bytes:
-        return self._read(device, field, "v_bytes")
+    def read_arm6_status(self, device: str) -> motion_pb2.Arm6StatusResponse:
+        req = motion_pb2.StatusRequest(device=device)
+        try:
+            resp = self._stub.ReadArm6Status(req, timeout=self._timeout_s)
+        except grpc.RpcError as e:
+            raise self._translate_rpc_error(e) from e
+        if not resp.ok:
+            raise GoalError(device, resp.error)
+        return resp
 
     # --- internals ---
 
-    def _write(self, device: str, field: str, value: motion_pb2.Value) -> None:
-        req = motion_pb2.WriteFieldRequest(device=device, field=field, value=value)
+    def _submit_scara(self, goal: motion_pb2.ScaraGoal) -> None:
         try:
-            resp = self._stub.WriteField(req, timeout=self._timeout_s)
+            resp = self._stub.SubmitScaraGoal(goal, timeout=self._timeout_s)
         except grpc.RpcError as e:
             raise self._translate_rpc_error(e) from e
         if not resp.ok:
-            raise RuntimeFieldError(device, field, resp.error)
+            raise GoalError(goal.device, resp.error)
 
-    def _read(self, device: str, field: str, expected_variant: str):
-        req = motion_pb2.ReadFieldRequest(device=device, field=field)
+    def _submit_arm6(self, goal: motion_pb2.Arm6Goal) -> None:
         try:
-            resp = self._stub.ReadField(req, timeout=self._timeout_s)
+            resp = self._stub.SubmitArm6Goal(goal, timeout=self._timeout_s)
         except grpc.RpcError as e:
             raise self._translate_rpc_error(e) from e
         if not resp.ok:
-            raise RuntimeFieldError(device, field, resp.error)
-        actual_variant = resp.value.WhichOneof("kind")
-        if actual_variant != expected_variant:
-            raise RuntimeFieldError(
-                device,
-                field,
-                f"type mismatch: caller expected {expected_variant}, "
-                f"runtime returned {actual_variant}",
-            )
-        return getattr(resp.value, expected_variant)
+            raise GoalError(goal.device, resp.error)
 
     @staticmethod
     def _translate_rpc_error(e: grpc.RpcError) -> RuntimeError:
@@ -224,71 +173,127 @@ class RuntimeClient:
         )
 
 
-class WriteBatch:
-    """Chainable accumulator for atomic multi-field writes.
+class ScaraGoalBuilder:
+    """Chainable builder for a SCARA (4-DOF) goal.
 
-    Constructed via ``RuntimeClient.batch(device)``. Each chainable
-    setter (``.bool`` / ``.i32`` / ``.f32`` / ...) queues one field write
-    against the same device; ``.commit()`` sends them in a single
-    ``WriteFields`` RPC.
+    Motion type is set by one of the motion-shaped setters (``linear`` /
+    ``go`` / ``jump`` / ``home``); the call also takes the target
+    coordinates. ``speed`` / ``accel`` are independent setters that can
+    be chained in any order. ``submit`` sends the RPC.
 
-    Atomicity is enforced by motion-runtime: it stages all fields in a
-    shadow buffer, validates the whole set, and only on success swaps
-    them into the shared-memory snapshot the external controller reads.
-    On any validation failure (unknown field, type mismatch) nothing is
-    committed and ``RuntimeFieldError`` carries the first failing field.
-
-    Batches are intended to be single-use — build, commit, drop. Calling
-    ``.commit()`` twice resends the same writes; an empty batch is a
-    no-op (no RPC issued).
+    HOME has no target — the runtime ignores x/y/z/u for HOME, but the
+    builder still accepts ``.home()`` with no args.
     """
 
-    def __init__(self, client: "RuntimeClient", device: str):
+    def __init__(self, client: RuntimeClient, device: str):
         self._client = client
-        self._device = device
-        self._fields: list[motion_pb2.FieldValue] = []
+        self._goal = motion_pb2.ScaraGoal(device=device)
 
-    # --- chainable setters ---
+    # --- motion setters ---
 
-    def bool(self, field: str, value: bool) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_bool=value))
+    def go(self, *, x: float, y: float, z: float, u: float) -> "ScaraGoalBuilder":
+        self._goal.motion = motion_pb2.MOTION4_GO
+        self._set_target(x, y, z, u)
+        return self
 
-    def i32(self, field: str, value: int) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_i32=value))
+    def jump(self, *, x: float, y: float, z: float, u: float) -> "ScaraGoalBuilder":
+        self._goal.motion = motion_pb2.MOTION4_JUMP
+        self._set_target(x, y, z, u)
+        return self
 
-    def u32(self, field: str, value: int) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_u32=value))
+    def linear(self, *, x: float, y: float, z: float, u: float) -> "ScaraGoalBuilder":
+        self._goal.motion = motion_pb2.MOTION4_LINEAR
+        self._set_target(x, y, z, u)
+        return self
 
-    def i64(self, field: str, value: int) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_i64=value))
+    def home(self) -> "ScaraGoalBuilder":
+        self._goal.motion = motion_pb2.MOTION4_HOME
+        return self
 
-    def u64(self, field: str, value: int) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_u64=value))
+    # --- parameter setters ---
 
-    def f32(self, field: str, value: float) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_f32=value))
+    def speed(self, value: int) -> "ScaraGoalBuilder":
+        self._goal.speed = value
+        return self
 
-    def f64(self, field: str, value: float) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_f64=value))
+    def accel(self, value: int) -> "ScaraGoalBuilder":
+        self._goal.accel = value
+        return self
 
-    def bytes(self, field: str, value: bytes) -> "WriteBatch":
-        return self._add(field, motion_pb2.Value(v_bytes=value))
+    # --- submit ---
 
-    # --- commit ---
-
-    def commit(self) -> None:
-        if not self._fields:
-            return
-        req = motion_pb2.WriteFieldsRequest(device=self._device, fields=self._fields)
-        try:
-            resp = self._client._stub.WriteFields(req, timeout=self._client._timeout_s)
-        except grpc.RpcError as e:
-            raise RuntimeClient._translate_rpc_error(e) from e
-        if not resp.ok:
-            raise RuntimeFieldError(self._device, resp.failed_field, resp.error)
+    def submit(self) -> None:
+        if self._goal.motion == motion_pb2.MOTION4_UNSPECIFIED:
+            raise GoalError(
+                self._goal.device,
+                "no motion type set — call .go() / .jump() / .linear() / .home() before submit()",
+            )
+        self._client._submit_scara(self._goal)
 
     # --- internals ---
 
-    def _add(self, field: str, value: motion_pb2.Value) -> "WriteBatch":
-        self._fields.append(motion_pb2.FieldValue(field=field, value=value))
+    def _set_target(self, x: float, y: float, z: float, u: float) -> None:
+        self._goal.x = x
+        self._goal.y = y
+        self._goal.z = z
+        self._goal.u = u
+
+
+class Arm6GoalBuilder:
+    """Chainable builder for a 6-DOF goal. Mirrors ScaraGoalBuilder."""
+
+    def __init__(self, client: RuntimeClient, device: str):
+        self._client = client
+        self._goal = motion_pb2.Arm6Goal(device=device)
+
+    # --- motion setters ---
+
+    def go(
+        self, *, x: float, y: float, z: float, rx: float, ry: float, rz: float
+    ) -> "Arm6GoalBuilder":
+        self._goal.motion = motion_pb2.MOTION6_GO
+        self._set_target(x, y, z, rx, ry, rz)
         return self
+
+    def linear(
+        self, *, x: float, y: float, z: float, rx: float, ry: float, rz: float
+    ) -> "Arm6GoalBuilder":
+        self._goal.motion = motion_pb2.MOTION6_LINEAR
+        self._set_target(x, y, z, rx, ry, rz)
+        return self
+
+    def home(self) -> "Arm6GoalBuilder":
+        self._goal.motion = motion_pb2.MOTION6_HOME
+        return self
+
+    # --- parameter setters ---
+
+    def speed(self, value: int) -> "Arm6GoalBuilder":
+        self._goal.speed = value
+        return self
+
+    def accel(self, value: int) -> "Arm6GoalBuilder":
+        self._goal.accel = value
+        return self
+
+    # --- submit ---
+
+    def submit(self) -> None:
+        if self._goal.motion == motion_pb2.MOTION6_UNSPECIFIED:
+            raise GoalError(
+                self._goal.device,
+                "no motion type set — call .go() / .linear() / .home() before submit()",
+            )
+        self._client._submit_arm6(self._goal)
+
+    # --- internals ---
+
+    def _set_target(
+        self, x: float, y: float, z: float, rx: float, ry: float, rz: float
+    ) -> None:
+        self._goal.x = x
+        self._goal.y = y
+        self._goal.z = z
+        self._goal.rx = rx
+        self._goal.ry = ry
+        self._goal.rz = rz

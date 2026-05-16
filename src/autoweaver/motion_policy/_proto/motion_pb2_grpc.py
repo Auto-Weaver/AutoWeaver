@@ -26,15 +26,22 @@ if _version_not_supported:
 
 
 class MotionServiceStub(object):
-    """motion-runtime 0.7.0 — thin translation layer.
+    """motion-runtime 0.8.0 — goal service layer.
 
-    Leaves read/write by field name; runtime looks up (slave_position, offset,
-    type) in the YAML contract and does the actual PDO byte I/O.
+    Leaves submit business-level goals ("do a LINEAR move to (x, y, z, u) at
+    speed N"); runtime owns the field-level write/trigger/done handshake plus
+    EtherCAT byte translation. Field-level RPCs are intentionally not exposed:
+    the protocol contract between Python and Rust is the goal vocabulary, not
+    the wire layout.
 
-    Core stance: runtime understands no business semantics; leaves know nothing
-    about byte layouts. The three parties (leaf / runtime / external controller
-    code) couple only through "the set of field names"; the YAML contract is
-    the single source of truth.
+    Atomicity: runtime stages target fields in a shadow PDO buffer and commits
+    them as one snapshot before raising the trigger edge — the external
+    controller never sees a torn write.
+
+    Status: submit is non-blocking. The runtime starts the handshake, returns
+    immediately, and the caller polls Read*Status for done/busy/error. A BT
+    leaf's on_running ticks once per BT tick and reads status — submit must
+    not block the tick.
 
     """
 
@@ -44,61 +51,72 @@ class MotionServiceStub(object):
         Args:
             channel: A grpc.Channel.
         """
-        self.WriteField = channel.unary_unary(
-                '/motion.MotionService/WriteField',
-                request_serializer=motion__pb2.WriteFieldRequest.SerializeToString,
-                response_deserializer=motion__pb2.WriteFieldResponse.FromString,
+        self.SubmitScaraGoal = channel.unary_unary(
+                '/motion.MotionService/SubmitScaraGoal',
+                request_serializer=motion__pb2.ScaraGoal.SerializeToString,
+                response_deserializer=motion__pb2.GoalResponse.FromString,
                 _registered_method=True)
-        self.WriteFields = channel.unary_unary(
-                '/motion.MotionService/WriteFields',
-                request_serializer=motion__pb2.WriteFieldsRequest.SerializeToString,
-                response_deserializer=motion__pb2.WriteFieldsResponse.FromString,
+        self.ReadScaraStatus = channel.unary_unary(
+                '/motion.MotionService/ReadScaraStatus',
+                request_serializer=motion__pb2.StatusRequest.SerializeToString,
+                response_deserializer=motion__pb2.ScaraStatusResponse.FromString,
                 _registered_method=True)
-        self.ReadField = channel.unary_unary(
-                '/motion.MotionService/ReadField',
-                request_serializer=motion__pb2.ReadFieldRequest.SerializeToString,
-                response_deserializer=motion__pb2.ReadFieldResponse.FromString,
+        self.SubmitArm6Goal = channel.unary_unary(
+                '/motion.MotionService/SubmitArm6Goal',
+                request_serializer=motion__pb2.Arm6Goal.SerializeToString,
+                response_deserializer=motion__pb2.GoalResponse.FromString,
+                _registered_method=True)
+        self.ReadArm6Status = channel.unary_unary(
+                '/motion.MotionService/ReadArm6Status',
+                request_serializer=motion__pb2.StatusRequest.SerializeToString,
+                response_deserializer=motion__pb2.Arm6StatusResponse.FromString,
                 _registered_method=True)
 
 
 class MotionServiceServicer(object):
-    """motion-runtime 0.7.0 — thin translation layer.
+    """motion-runtime 0.8.0 — goal service layer.
 
-    Leaves read/write by field name; runtime looks up (slave_position, offset,
-    type) in the YAML contract and does the actual PDO byte I/O.
+    Leaves submit business-level goals ("do a LINEAR move to (x, y, z, u) at
+    speed N"); runtime owns the field-level write/trigger/done handshake plus
+    EtherCAT byte translation. Field-level RPCs are intentionally not exposed:
+    the protocol contract between Python and Rust is the goal vocabulary, not
+    the wire layout.
 
-    Core stance: runtime understands no business semantics; leaves know nothing
-    about byte layouts. The three parties (leaf / runtime / external controller
-    code) couple only through "the set of field names"; the YAML contract is
-    the single source of truth.
+    Atomicity: runtime stages target fields in a shadow PDO buffer and commits
+    them as one snapshot before raising the trigger edge — the external
+    controller never sees a torn write.
+
+    Status: submit is non-blocking. The runtime starts the handshake, returns
+    immediately, and the caller polls Read*Status for done/busy/error. A BT
+    leaf's on_running ticks once per BT tick and reads status — submit must
+    not block the tick.
 
     """
 
-    def WriteField(self, request, context):
-        """Encode the value and write it into the slave's RxPDO output buffer.
-        It goes out on the next EtherCAT cycle.
+    def SubmitScaraGoal(self, request, context):
+        """SCARA (4-DOF): x, y, z, u — used for Epson LS6 today.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def WriteFields(self, request, context):
-        """Atomic multi-field write. Runtime stages all fields, validates the
-        whole set, then commits them in one shared-memory snapshot — the
-        external controller (SPEL+) never sees a torn write where some
-        fields are new and some still hold previous values.
+    def ReadScaraStatus(self, request, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
 
-        Semantics: all-or-nothing. If any field is unknown / type-mismatched
-        / rejected, ok=false and nothing is committed; failed_field names
-        the first offender.
+    def SubmitArm6Goal(self, request, context):
+        """Generic 6-DOF arm (x, y, z, rx, ry, rz). Reserved for the first
+        EtherCAT-fronted 6-DOF arm we integrate; message shape may evolve when
+        a concrete device drives the requirements.
         """
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
 
-    def ReadField(self, request, context):
-        """Decode a field from the slave's most-recent TxPDO input buffer.
-        """
+    def ReadArm6Status(self, request, context):
+        """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
         raise NotImplementedError('Method not implemented!')
@@ -106,20 +124,25 @@ class MotionServiceServicer(object):
 
 def add_MotionServiceServicer_to_server(servicer, server):
     rpc_method_handlers = {
-            'WriteField': grpc.unary_unary_rpc_method_handler(
-                    servicer.WriteField,
-                    request_deserializer=motion__pb2.WriteFieldRequest.FromString,
-                    response_serializer=motion__pb2.WriteFieldResponse.SerializeToString,
+            'SubmitScaraGoal': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitScaraGoal,
+                    request_deserializer=motion__pb2.ScaraGoal.FromString,
+                    response_serializer=motion__pb2.GoalResponse.SerializeToString,
             ),
-            'WriteFields': grpc.unary_unary_rpc_method_handler(
-                    servicer.WriteFields,
-                    request_deserializer=motion__pb2.WriteFieldsRequest.FromString,
-                    response_serializer=motion__pb2.WriteFieldsResponse.SerializeToString,
+            'ReadScaraStatus': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReadScaraStatus,
+                    request_deserializer=motion__pb2.StatusRequest.FromString,
+                    response_serializer=motion__pb2.ScaraStatusResponse.SerializeToString,
             ),
-            'ReadField': grpc.unary_unary_rpc_method_handler(
-                    servicer.ReadField,
-                    request_deserializer=motion__pb2.ReadFieldRequest.FromString,
-                    response_serializer=motion__pb2.ReadFieldResponse.SerializeToString,
+            'SubmitArm6Goal': grpc.unary_unary_rpc_method_handler(
+                    servicer.SubmitArm6Goal,
+                    request_deserializer=motion__pb2.Arm6Goal.FromString,
+                    response_serializer=motion__pb2.GoalResponse.SerializeToString,
+            ),
+            'ReadArm6Status': grpc.unary_unary_rpc_method_handler(
+                    servicer.ReadArm6Status,
+                    request_deserializer=motion__pb2.StatusRequest.FromString,
+                    response_serializer=motion__pb2.Arm6StatusResponse.SerializeToString,
             ),
     }
     generic_handler = grpc.method_handlers_generic_handler(
@@ -130,20 +153,27 @@ def add_MotionServiceServicer_to_server(servicer, server):
 
  # This class is part of an EXPERIMENTAL API.
 class MotionService(object):
-    """motion-runtime 0.7.0 — thin translation layer.
+    """motion-runtime 0.8.0 — goal service layer.
 
-    Leaves read/write by field name; runtime looks up (slave_position, offset,
-    type) in the YAML contract and does the actual PDO byte I/O.
+    Leaves submit business-level goals ("do a LINEAR move to (x, y, z, u) at
+    speed N"); runtime owns the field-level write/trigger/done handshake plus
+    EtherCAT byte translation. Field-level RPCs are intentionally not exposed:
+    the protocol contract between Python and Rust is the goal vocabulary, not
+    the wire layout.
 
-    Core stance: runtime understands no business semantics; leaves know nothing
-    about byte layouts. The three parties (leaf / runtime / external controller
-    code) couple only through "the set of field names"; the YAML contract is
-    the single source of truth.
+    Atomicity: runtime stages target fields in a shadow PDO buffer and commits
+    them as one snapshot before raising the trigger edge — the external
+    controller never sees a torn write.
+
+    Status: submit is non-blocking. The runtime starts the handshake, returns
+    immediately, and the caller polls Read*Status for done/busy/error. A BT
+    leaf's on_running ticks once per BT tick and reads status — submit must
+    not block the tick.
 
     """
 
     @staticmethod
-    def WriteField(request,
+    def SubmitScaraGoal(request,
             target,
             options=(),
             channel_credentials=None,
@@ -156,9 +186,9 @@ class MotionService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/motion.MotionService/WriteField',
-            motion__pb2.WriteFieldRequest.SerializeToString,
-            motion__pb2.WriteFieldResponse.FromString,
+            '/motion.MotionService/SubmitScaraGoal',
+            motion__pb2.ScaraGoal.SerializeToString,
+            motion__pb2.GoalResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -170,7 +200,7 @@ class MotionService(object):
             _registered_method=True)
 
     @staticmethod
-    def WriteFields(request,
+    def ReadScaraStatus(request,
             target,
             options=(),
             channel_credentials=None,
@@ -183,9 +213,9 @@ class MotionService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/motion.MotionService/WriteFields',
-            motion__pb2.WriteFieldsRequest.SerializeToString,
-            motion__pb2.WriteFieldsResponse.FromString,
+            '/motion.MotionService/ReadScaraStatus',
+            motion__pb2.StatusRequest.SerializeToString,
+            motion__pb2.ScaraStatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
@@ -197,7 +227,7 @@ class MotionService(object):
             _registered_method=True)
 
     @staticmethod
-    def ReadField(request,
+    def SubmitArm6Goal(request,
             target,
             options=(),
             channel_credentials=None,
@@ -210,9 +240,36 @@ class MotionService(object):
         return grpc.experimental.unary_unary(
             request,
             target,
-            '/motion.MotionService/ReadField',
-            motion__pb2.ReadFieldRequest.SerializeToString,
-            motion__pb2.ReadFieldResponse.FromString,
+            '/motion.MotionService/SubmitArm6Goal',
+            motion__pb2.Arm6Goal.SerializeToString,
+            motion__pb2.GoalResponse.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def ReadArm6Status(request,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.unary_unary(
+            request,
+            target,
+            '/motion.MotionService/ReadArm6Status',
+            motion__pb2.StatusRequest.SerializeToString,
+            motion__pb2.Arm6StatusResponse.FromString,
             options,
             channel_credentials,
             insecure,
