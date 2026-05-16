@@ -16,6 +16,7 @@ dependencies = [
     { name = "pymodbus" },
     { name = "pyyaml" },
     { name = "requests" },
+    { name = "scipy" },
 ]
 
 [package.optional-dependencies]
@@ -43,6 +44,7 @@ requires-dist = [
     { name = "pymodbus", specifier = ">=3.11.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32.5" },
+    { name = "scipy", specifier = ">=1.11" },
     { name = "ultralytics", marker = "extra == 'yolo'", specifier = ">=8.0" },
     { name = "websockets", marker = "extra == 'websocket'", specifier = ">=12" },
 ]
