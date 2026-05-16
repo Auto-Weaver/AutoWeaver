@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import threading
 import time
-from typing import TYPE_CHECKING, Sequence
+from typing import Sequence
+
+import numpy as np
 
 from autoweaver.device.arm._dobot_sdk import (
     DobotApiDashboard,
@@ -19,9 +21,7 @@ from autoweaver.device.arm.dobot_states import (
     ROBOT_MODES_NEED_STOP,
     robot_mode_name,
 )
-
-if TYPE_CHECKING:
-    from autoweaver.motion_policy.world_board import WorldBoard
+from autoweaver.geometry import transforms
 
 
 logger = logging.getLogger(__name__)
@@ -33,16 +33,22 @@ FEEDBACK_PORT = 30004
 COORD_POSE = 0   # Cartesian (X, Y, Z, Rx, Ry, Rz)
 COORD_JOINT = 1  # Joint angles (J1, J2, J3, J4, J5, J6)
 
+# Dobot's ToolVectorActual returns (x, y, z, rx, ry, rz) where the angles
+# are ZYX intrinsic (RPY) in degrees. Everything else in autoweaver works
+# in matrix form — translation in mm — so the driver translates once at
+# the SDK boundary and leaves the rest of the stack convention-free.
+_POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
+
 
 class Dobot:
-    """Dobot Nova 5 / Nova 2 arm.
+    """Dobot Nova 5 / Nova 2 arm (NEXT-008 / NEXT-009 pull model).
 
     Lifecycle:
         dobot1 = Dobot(ip="192.168.1.10", name="dobot1")
-        dobot1.register_outputs(world_board)   # offline; declares keys
-        dobot1.start()                         # connects + starts feedback thread
-        ...                                    # use through ActionLeaf
-        dobot1.stop()                          # closes feedback thread
+        dobot1.start()             # opens dashboard + feedback sockets
+        dobot1.acquire_control()   # TCP handover + PowerOn + EnableRobot
+        ...                        # use through ActionLeaf
+        dobot1.stop()              # releases control + closes sockets
 
     Construction is intentionally side-effect-free; sockets are opened in
     ``start()``. This keeps construction safe for tests and dry runs and
@@ -51,11 +57,16 @@ class Dobot:
     Move semantics (NEXT-006):
       - ``move_j`` / ``move_l`` are fire-and-forget at the task level.
         The TCP RPC blocks ~5-15ms waiting for the controller's ACK; the
-        physical motion (hundreds of ms to seconds) is observed via the
-        feedback stream, not by waiting on the RPC.
+        physical motion (hundreds of ms to seconds) is observed by
+        pulling pose with ``get_flange_pose()``, not by waiting on the RPC.
       - ``halt(goal_id)`` sends Stop() to the controller. Stale halts —
         where ``goal_id`` no longer matches the current goal — are
         ignored so a delayed halt cannot interrupt a newer goal.
+
+    Feedback semantics (NEXT-008):
+      - ``get_flange_pose()`` pulls the latest SDK feedback frame on demand.
+      - No background thread, no WorldBoard publishing. Status signals
+        (running / error / safety_state / ...) are paused — see NEXT-009.
     """
 
     def __init__(
@@ -74,11 +85,7 @@ class Dobot:
         self._goal_counter: GoalId = 0
         self._current_goal_id: GoalId | None = None
 
-        self._stop_flag = threading.Event()
-        self._fb_thread: threading.Thread | None = None
         self._lock = threading.Lock()
-
-        self._board: WorldBoard | None = None
 
     # --- control ---
 
@@ -131,39 +138,38 @@ class Dobot:
             self._dashboard.MovL(a, b, c, d, e, f, coord_mode, v=v)
         return gid
 
-    # --- feedback registration ---
+    # --- feedback (pull) ---
 
-    def register_outputs(self, board: WorldBoard) -> None:
-        self._board = board
-        prefix = self.name
-        board.declare_state(f"{prefix}.pose", tuple, writer=self.name)
-        board.declare_state(f"{prefix}.joint", tuple, writer=self.name)
-        board.declare_state(f"{prefix}.running", bool, writer=self.name)
-        board.declare_state(f"{prefix}.enabled", bool, writer=self.name)
-        board.declare_state(f"{prefix}.error", bool, writer=self.name)
-        board.declare_state(f"{prefix}.safety_state", int, writer=self.name)
-        board.declare_state(f"{prefix}.current_cmd_id", int, writer=self.name)
-        board.declare_state(f"{prefix}.robot_mode", int, writer=self.name)
+    def get_flange_pose(self) -> np.ndarray:
+        if self._feedback is None:
+            raise RuntimeError(f"call {self.name}.start() before reading pose")
+        frame = self._pull_frame()
+        pose = frame["ToolVectorActual"]
+        return transforms.euler_to_matrix(
+            np.array(pose[:3], dtype=np.float64),
+            pose[3:],
+            _POSE_RPY_CONVENTION,
+        )
+
+    def _pull_frame(self) -> dict:
+        """Read one feedback frame from the SDK and return the first sub-frame.
+
+        The Dobot feedback stream pushes a frame every ~8ms; this just
+        consumes whatever is currently in the SDK's internal buffer.
+        """
+        assert self._feedback is not None
+        frame = self._feedback.feedBackData()
+        if frame is None or len(frame) == 0:
+            raise RuntimeError(f"{self.name}: no feedback frame available")
+        return frame[0]
 
     # --- lifecycle ---
 
     def start(self) -> None:
-        if self._board is None:
-            raise RuntimeError(
-                f"call {self.name}.register_outputs(board) before start()"
-            )
-        if self._fb_thread is not None and self._fb_thread.is_alive():
-            return
-
+        if self._dashboard is not None:
+            return  # already started
         self._dashboard = DobotApiDashboard(self.ip, DASHBOARD_PORT)
         self._feedback = DobotApiFeedBack(self.ip, FEEDBACK_PORT)
-        self._stop_flag.clear()
-        self._fb_thread = threading.Thread(
-            target=self._feedback_loop,
-            daemon=True,
-            name=f"{self.name}-feedback",
-        )
-        self._fb_thread.start()
 
     def acquire_control(
         self,
@@ -184,20 +190,26 @@ class Dobot:
           6. if currently DISABLED:  PowerOn → EnableRobot → wait for ENABLE
              if currently ENABLE  :  no-op, already good
 
-        Idempotent: safe to call repeatedly.
+        Idempotent: safe to call repeatedly. Polls the SDK feedback
+        stream directly — controller mode is a driver-internal concern
+        and does not leak to WorldBoard (NEXT-009).
         """
-        if self._dashboard is None or self._board is None:
+        if self._dashboard is None or self._feedback is None:
             raise RuntimeError(f"call {self.name}.start() before acquire_control()")
 
         deadline = time.monotonic() + timeout_s
 
-        # 1. wait for first feedback frame so robot_mode is populated
-        while self._board.read_state(f"{self.name}.robot_mode") is None:
-            if time.monotonic() > deadline:
-                raise RuntimeError(
-                    f"{self.name}: no feedback received within {timeout_s}s"
-                )
-            time.sleep(poll_interval_s)
+        # 1. wait for first feedback frame
+        while True:
+            try:
+                self._pull_frame()
+                break
+            except RuntimeError:
+                if time.monotonic() > deadline:
+                    raise RuntimeError(
+                        f"{self.name}: no feedback received within {timeout_s}s"
+                    ) from None
+                time.sleep(poll_interval_s)
 
         # 2. wait out INIT phase
         while self._read_mode() == ROBOT_MODE_INIT:
@@ -273,10 +285,17 @@ class Dobot:
             logger.exception("%s: DisableRobot failed during release_control", self.name)
 
     def _read_mode(self) -> int:
-        if self._board is None:
+        """Pull one feedback frame and extract RobotMode.
+
+        Used only inside acquire_control() — controller mode is a
+        driver-internal handshake concern (NEXT-009). Returns
+        ROBOT_MODE_NO_CONTROLLER if no frame is available.
+        """
+        try:
+            frame = self._pull_frame()
+        except RuntimeError:
             return ROBOT_MODE_NO_CONTROLLER
-        value = self._board.read_state(f"{self.name}.robot_mode")
-        return ROBOT_MODE_NO_CONTROLLER if value is None else int(value)
+        return int(frame["RobotMode"])
 
     def _wait_until_mode(
         self,
@@ -310,10 +329,6 @@ class Dobot:
         # release control before shutting down — operator gets the arm back in DISABLED
         self.release_control()
 
-        self._stop_flag.set()
-        if self._fb_thread is not None:
-            self._fb_thread.join(timeout=2.0)
-            self._fb_thread = None
         for sdk in (self._dashboard, self._feedback):
             if sdk is None:
                 continue
@@ -323,38 +338,3 @@ class Dobot:
                 logger.exception("error closing %s socket on %s", sdk, self.name)
         self._dashboard = None
         self._feedback = None
-
-    def _feedback_loop(self) -> None:
-        assert self._feedback is not None
-        while not self._stop_flag.is_set():
-            try:
-                frame = self._feedback.feedBackData()
-            except Exception:  # noqa: BLE001 -- main flow lets the thread die
-                logger.exception("feedback read failed on %s", self.name)
-                return
-            if frame is None or len(frame) == 0:
-                continue
-            self._publish(frame)
-
-    def _publish(self, frame) -> None:
-        board = self._board
-        if board is None:
-            return
-        prefix = self.name
-        f0 = frame[0]
-        pose = tuple(float(v) for v in f0["ToolVectorActual"])
-        joint = tuple(float(v) for v in f0["QActual"])
-        running = bool(f0["RunningStatus"])
-        enabled = bool(f0["EnableStatus"])
-        error = bool(f0["ErrorStatus"])
-        safety = int(f0["SafetyState"])
-        cmd_id = int(f0["CurrentCommandId"])
-
-        board.post_state(f"{prefix}.pose", pose, writer=self.name)
-        board.post_state(f"{prefix}.joint", joint, writer=self.name)
-        board.post_state(f"{prefix}.running", running, writer=self.name)
-        board.post_state(f"{prefix}.enabled", enabled, writer=self.name)
-        board.post_state(f"{prefix}.error", error, writer=self.name)
-        board.post_state(f"{prefix}.safety_state", safety, writer=self.name)
-        board.post_state(f"{prefix}.current_cmd_id", cmd_id, writer=self.name)
-        board.post_state(f"{prefix}.robot_mode", int(f0["RobotMode"]), writer=self.name)

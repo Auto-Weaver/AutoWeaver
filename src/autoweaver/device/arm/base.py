@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, Sequence, runtime_checkable
+from typing import Protocol, Sequence, runtime_checkable
 
-if TYPE_CHECKING:
-    from autoweaver.motion_policy.world_board import WorldBoard
+import numpy as np
 
 
 GoalId = int
@@ -18,10 +17,10 @@ class ArmBase(Protocol):
     level synchronous waiting (e.g. TCP RPC ACK) is expected and
     acceptable as long as it stays well within the BT tick budget.
 
-    Feedback is published asynchronously: ``register_outputs`` declares
-    the keys this instance owns on the WorldBoard, and a background
-    thread started by ``start()`` pushes the latest controller state
-    under those keys.
+    Feedback is pull-style (NEXT-008): leaves call ``get_flange_pose()``
+    on demand. The driver is responsible for converting the SDK's native
+    pose representation into a standard 4×4 matrix; leaves never see the
+    SDK's Euler convention or unit choices.
     """
 
     name: str
@@ -44,23 +43,22 @@ class ArmBase(Protocol):
         """
         ...
 
-    # --- feedback ---
+    # --- feedback (pull) ---
 
-    def register_outputs(self, board: WorldBoard) -> None:
-        """Register the keys this arm writes on ``board``.
+    def get_flange_pose(self) -> np.ndarray:
+        """Return T(base ← flange) as a 4×4 matrix, translation in mm.
 
-        Called once during setup, before ``start()``. After registration
-        the background feedback thread is allowed to write under
-        ``<self.name>.*`` keys.
+        Pulled on demand from the SDK. Must be called after ``start()``.
         """
         ...
 
     # --- lifecycle ---
 
     def start(self) -> None:
-        """Connect (if needed) and start the background feedback thread."""
+        """Connect (if needed) and prepare for control / feedback access."""
         ...
 
     def stop(self) -> None:
-        """Stop the feedback thread and disconnect."""
+        """Disconnect and release resources."""
         ...
+

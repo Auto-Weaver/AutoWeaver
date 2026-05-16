@@ -1,10 +1,10 @@
 from __future__ import annotations
 
+import numpy as np
 import pytest
 
 from autoweaver.device.arm.base import ArmBase
 from autoweaver.device.arm.dobot import COORD_JOINT, COORD_POSE, Dobot
-from autoweaver.motion_policy.world_board import WorldBoard
 
 
 class _FakeDashboard:
@@ -24,6 +24,26 @@ class _FakeDashboard:
         self.calls.append(("close",))
 
 
+class _FakeFeedback:
+    """Returns a single canned feedback frame on every read."""
+
+    def __init__(self, frame: dict):
+        self._frame = frame
+        self.read_count = 0
+
+    def feedBackData(self):
+        self.read_count += 1
+        return [self._frame]
+
+    def close(self):
+        pass
+
+
+def _frame_with_pose(pose: tuple[float, ...]) -> dict:
+    """Construct a minimal feedback frame holding the given pose tuple."""
+    return {"ToolVectorActual": pose}
+
+
 def test_dobot_satisfies_arm_base_protocol():
     arm = Dobot(ip="127.0.0.1", name="d1")
     assert isinstance(arm, ArmBase)
@@ -34,22 +54,6 @@ def test_construction_does_not_open_sockets():
     arm = Dobot(ip="127.0.0.1", name="d1")
     assert arm._dashboard is None
     assert arm._feedback is None
-
-
-def test_register_outputs_declares_expected_keys():
-    arm = Dobot(ip="127.0.0.1", name="d1")
-    board = WorldBoard()
-    arm.register_outputs(board)
-    assert set(board.declared_states()) == {
-        "d1.pose",
-        "d1.joint",
-        "d1.running",
-        "d1.enabled",
-        "d1.error",
-        "d1.safety_state",
-        "d1.current_cmd_id",
-        "d1.robot_mode",
-    }
 
 
 def test_move_j_uses_joint_mode_by_default():
@@ -149,7 +153,30 @@ def test_move_rejects_speed_out_of_range():
         arm.move_j((1, 2, 3, 4, 5, 6), speed=101)
 
 
-def test_start_without_register_raises():
+# ─── get_flange_pose (NEXT-008) ────────────────────────────────────────────
+
+
+def test_get_flange_pose_translates_sdk_frame_to_matrix():
+    """ToolVectorActual = (x, y, z, rx, ry, rz) in mm + degrees (ZYX intrinsic)
+    must turn into a 4×4 matrix with translation in mm."""
     arm = Dobot(ip="127.0.0.1", name="d1")
-    with pytest.raises(RuntimeError):
-        arm.start()
+    arm._feedback = _FakeFeedback(_frame_with_pose((100.0, 200.0, 300.0, 0.0, 0.0, 0.0)))
+    m = arm.get_flange_pose()
+    assert m.shape == (4, 4)
+    assert np.allclose(m[:3, 3], [100.0, 200.0, 300.0])
+    assert np.allclose(m[:3, :3], np.eye(3))
+
+
+def test_get_flange_pose_90deg_z_rotates_x_axis_to_y_axis():
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    # rx (yaw, first ZYX axis) = 90° → rotates +X to +Y
+    arm._feedback = _FakeFeedback(_frame_with_pose((0.0, 0.0, 0.0, 90.0, 0.0, 0.0)))
+    m = arm.get_flange_pose()
+    rotated_x = m[:3, :3] @ np.array([1.0, 0.0, 0.0])
+    assert np.allclose(rotated_x, [0.0, 1.0, 0.0], atol=1e-9)
+
+
+def test_get_flange_pose_without_start_raises():
+    arm = Dobot(ip="127.0.0.1", name="d1")
+    with pytest.raises(RuntimeError, match="start"):
+        arm.get_flange_pose()

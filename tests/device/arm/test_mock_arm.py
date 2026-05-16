@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-import time
-
+import numpy as np
 import pytest
 
 from autoweaver.device.arm.base import ArmBase
 from autoweaver.device.arm.mock import MockArm
-from autoweaver.motion_policy.world_board import WorldBoard
+
+
+def _new_arm(**kwargs) -> MockArm:
+    """Construct + start a MockArm. Most tests don't care about start()."""
+    arm = MockArm(**kwargs)
+    arm.start()
+    return arm
 
 
 def test_mock_arm_satisfies_arm_base_protocol():
@@ -15,7 +20,7 @@ def test_mock_arm_satisfies_arm_base_protocol():
 
 
 def test_move_j_increments_goal_and_records_call():
-    arm = MockArm(name="m1")
+    arm = _new_arm(name="m1")
     gid1 = arm.move_j((0, 0, 0, 0, 0, 0))
     gid2 = arm.move_j((1, 1, 1, 1, 1, 1))
     assert gid1 == 1
@@ -25,13 +30,13 @@ def test_move_j_increments_goal_and_records_call():
 
 
 def test_move_j_rejects_wrong_arity():
-    arm = MockArm(name="m1")
+    arm = _new_arm(name="m1")
     with pytest.raises(ValueError):
         arm.move_j((1, 2, 3))
 
 
 def test_halt_with_current_goal_clears_state():
-    arm = MockArm(name="m1")
+    arm = _new_arm(name="m1")
     gid = arm.move_j((0, 0, 0, 0, 0, 0))
     arm.halt(gid)
     assert arm._current_goal_id is None
@@ -39,7 +44,7 @@ def test_halt_with_current_goal_clears_state():
 
 
 def test_halt_with_stale_goal_does_not_clear_current():
-    arm = MockArm(name="m1")
+    arm = _new_arm(name="m1")
     gid1 = arm.move_j((0, 0, 0, 0, 0, 0))
     arm.halt(gid1)
     gid2 = arm.move_j((1, 1, 1, 1, 1, 1))
@@ -47,77 +52,54 @@ def test_halt_with_stale_goal_does_not_clear_current():
     assert arm._current_goal_id == gid2
 
 
-def test_register_outputs_declares_expected_keys():
-    arm = MockArm(name="m1")
-    board = WorldBoard()
-    arm.register_outputs(board)
-    keys = set(board.declared_states())
-    assert keys == {
-        "m1.pose",
-        "m1.joint",
-        "m1.running",
-        "m1.enabled",
-        "m1.error",
-        "m1.safety_state",
-        "m1.current_cmd_id",
-    }
+def test_get_flange_pose_returns_4x4_matrix():
+    arm = _new_arm(name="m1")
+    m = arm.get_flange_pose()
+    assert m.shape == (4, 4)
+    assert np.allclose(m, np.eye(4))  # home pose is the identity
 
 
-def test_publish_once_writes_world_board():
-    arm = MockArm(name="m1")
-    board = WorldBoard()
-    arm.register_outputs(board)
-    arm.publish_once()
-    snap = board.snapshot()
-    assert snap["m1.pose"] == (0.0,) * 6
-    assert snap["m1.joint"] == (0.0,) * 6
-    assert snap["m1.running"] is False
-    assert snap["m1.enabled"] is True
-    assert snap["m1.current_cmd_id"] == 0
+def test_get_flange_pose_reflects_set_pose():
+    arm = _new_arm(name="m1")
+    arm.set_pose((100, 200, 300, 0, 0, 0))
+    m = arm.get_flange_pose()
+    assert np.allclose(m[:3, 3], [100, 200, 300])
+    assert np.allclose(m[:3, :3], np.eye(3))
 
 
-def test_move_j_updates_joint_after_publish():
-    arm = MockArm(name="m1", move_duration=0.0)
-    board = WorldBoard()
-    arm.register_outputs(board)
-    arm.publish_once()  # initial state
-    arm.move_j((1.0, 2.0, 3.0, 4.0, 5.0, 6.0))
-    arm.publish_once()  # arrives at target instantly
-    snap = board.snapshot()
-    assert snap["m1.joint"] == (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
-    assert snap["m1.running"] is False
+def test_move_l_completes_immediately_when_duration_zero():
+    arm = _new_arm(name="m1", move_duration=0.0)
+    arm.move_l((1.0, 2.0, 3.0, 0.0, 0.0, 0.0))
+    m = arm.get_flange_pose()
+    assert np.allclose(m[:3, 3], [1.0, 2.0, 3.0])
 
 
 def test_halt_freezes_pose_at_current_value():
-    arm = MockArm(name="m1", move_duration=10.0)
-    board = WorldBoard()
-    arm.register_outputs(board)
+    arm = _new_arm(name="m1", move_duration=10.0)
     gid = arm.move_l((9.0, 9.0, 9.0, 0.0, 0.0, 0.0))
-    arm.publish_once()  # still in flight
-    snap = board.snapshot()
-    assert snap["m1.running"] is True
+    # Pose hasn't reached target — move is still in flight.
+    m_before = arm.get_flange_pose()
     arm.halt(gid)
-    arm.publish_once()
-    snap = board.snapshot()
-    assert snap["m1.running"] is False
-    # Pose did not jump to target because halt cancelled the goal.
-    assert snap["m1.pose"] != (9.0, 9.0, 9.0, 0.0, 0.0, 0.0)
+    m_after = arm.get_flange_pose()
+    # Halt cancelled the in-flight goal; pose should not have jumped to target.
+    assert not np.allclose(m_after[:3, 3], [9.0, 9.0, 9.0])
+    assert np.allclose(m_before, m_after)
 
 
-def test_lifecycle_thread_starts_and_stops():
-    arm = MockArm(name="m1", feedback_hz=200.0)
-    board = WorldBoard()
-    arm.register_outputs(board)
-    arm.start()
-    try:
-        time.sleep(0.05)
-        assert board.snapshot().seq > 0
-    finally:
-        arm.stop()
-    assert arm._fb_thread is None or not arm._fb_thread.is_alive()
-
-
-def test_start_without_register_raises():
+def test_move_without_start_raises():
     arm = MockArm(name="m1")
-    with pytest.raises(RuntimeError):
-        arm.start()
+    with pytest.raises(RuntimeError, match="start"):
+        arm.move_j((0, 0, 0, 0, 0, 0))
+
+
+def test_get_flange_pose_without_start_raises():
+    arm = MockArm(name="m1")
+    with pytest.raises(RuntimeError, match="start"):
+        arm.get_flange_pose()
+
+
+def test_stop_disables_subsequent_calls():
+    arm = _new_arm(name="m1")
+    arm.stop()
+    with pytest.raises(RuntimeError, match="start"):
+        arm.move_j((0, 0, 0, 0, 0, 0))
