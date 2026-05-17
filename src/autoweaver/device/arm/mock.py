@@ -8,15 +8,14 @@ import numpy as np
 
 from autoweaver.device.arm.base import (
     GoalId,
-    validate_cartesian_target,
     validate_joint_target,
+    validate_target_6dof,
 )
 from autoweaver.geometry import transforms
 
 
 _HOME_POSE: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-_HOME_JOINT_6DOF: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-_HOME_JOINT_4DOF: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0)
+_HOME_JOINT: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 # MockArm mirrors Dobot's pose convention so leaves see the same matrix
 # shape whether they're talking to a mock or real hardware. See NEXT-008.
@@ -24,12 +23,13 @@ _POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
 
 
 class MockArm:
-    """In-memory arm for tests and dry runs (NEXT-008 pull model).
+    """In-memory 6-DOF arm for tests and dry runs. Conforms to ArmBase6.
 
     Behavior:
-      - ``move_j`` / ``move_l`` take a Cartesian target and "complete" by
-        jumping ``_pose`` to it after ``move_duration`` seconds.
-      - ``move_j_joints`` takes a joint-angle target and jumps ``_joint``.
+      - ``move_j`` / ``move_l`` take a 6-tuple Cartesian target and
+        "complete" by jumping ``_pose`` to it after ``move_duration`` seconds.
+      - ``move_j_joints`` takes a 6-element joint-angle target and jumps
+        ``_joint``.
       - ``halt`` clears the in-flight goal and freezes pose / joint at
         the current value.
       - ``get_flange_pose()`` returns a 4×4 matrix derived from the
@@ -42,18 +42,21 @@ class MockArm:
 
     All control calls are recorded in ``self.calls`` so tests can assert
     on the sequence of interactions without spying.
+
+    For 4-DOF SCARA testing use ``EpsonLS6`` with ``MockRuntimeClient``;
+    there is no parameterized 4-DOF mock because the SCARA shape diverges
+    enough (4-tuple targets, ``jump`` method, no ``move_j_joints``) that
+    a dedicated path is clearer than a dof flag.
     """
+
+    dof = 6
 
     def __init__(
         self,
         name: str,
         move_duration: float = 0.0,
-        dof: int = 6,
     ):
-        if dof not in (4, 6):
-            raise ValueError(f"dof must be 4 or 6, got {dof}")
         self.name = name
-        self.dof = dof
         self._move_duration = move_duration
 
         self.calls: list[tuple] = []
@@ -62,9 +65,7 @@ class MockArm:
         self._current_goal_id: GoalId | None = None
 
         self._pose: tuple[float, ...] = _HOME_POSE
-        self._joint: tuple[float, ...] = (
-            _HOME_JOINT_6DOF if dof == 6 else _HOME_JOINT_4DOF
-        )
+        self._joint: tuple[float, ...] = _HOME_JOINT
         self._running: bool = False
 
         self._goal_target: tuple[float, ...] | None = None
@@ -77,11 +78,11 @@ class MockArm:
     # --- control ---
 
     def move_j(self, target: Sequence[float]) -> GoalId:
-        target = validate_cartesian_target(target, self.dof, self.name)
+        target = validate_target_6dof(target, self.name)
         return self._start_goal("j", target)
 
     def move_l(self, target: Sequence[float]) -> GoalId:
-        target = validate_cartesian_target(target, self.dof, self.name)
+        target = validate_target_6dof(target, self.name)
         return self._start_goal("l", target)
 
     def move_j_joints(self, target: Sequence[float]) -> GoalId:

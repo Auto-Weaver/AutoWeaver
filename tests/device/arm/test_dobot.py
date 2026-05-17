@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autoweaver.device.arm.base import ArmBase
+from autoweaver.device.arm.base import ArmBase6
 from autoweaver.device.arm.dobot import COORD_JOINT, COORD_POSE, Dobot
 
 
@@ -44,9 +44,9 @@ def _frame_with_pose(pose: tuple[float, ...]) -> dict:
     return {"ToolVectorActual": pose}
 
 
-def test_dobot_satisfies_arm_base_protocol():
+def test_dobot_satisfies_arm_base_6_protocol():
     arm = Dobot(ip="127.0.0.1", name="d1")
-    assert isinstance(arm, ArmBase)
+    assert isinstance(arm, ArmBase6)
 
 
 def test_construction_does_not_open_sockets():

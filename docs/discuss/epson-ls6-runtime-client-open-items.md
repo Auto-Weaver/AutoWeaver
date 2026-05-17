@@ -1,8 +1,8 @@
 # 讨论：EpsonLS6 / RuntimeClient 主流程未决项
 
-日期：2026-05-16（最近更新：定 goal 服务层）
+日期：2026-05-16（最近更新：E 节拍板 — 2026-05-17）
 
-状态：B/C/F 已落、D/E 待讨论
+状态：B/C/D/E/F 全部已落
 
 前置：[EVO-003: Rust Motion Runtime](../evo/003-motion-runtime.md)（0.8.0 goal 服务层）、[EVO-008: Geometry](../evo/008-geometry-frames.md)、[NEXT-006: Dobot Arm 集成](../next/006-dobot-arm-mainline.md)、[NEXT-011: LS6 halt 协议（推后）](../next/011-epson-ls6-halt-protocol.md)
 
@@ -22,8 +22,8 @@ EpsonLS6 接入 BT 这条主路径上，**RuntimeClient 文件本身**之外还�
 
 - ~~**B**（Trigger 边沿协议）~~ —— 拍：握手由 runtime 内部硬编码，Python 端走 goal 级 API，见本文档 B 节
 - ~~**C**（SPEL+ 项目模板）~~ —— 已基本消化进 EVO-003 和现有 controller_program.spel
-- **D**（EpsonLS6 driver 形态）—— 等 motion-runtime 那边 0.8.0 实现进度
-- **E**（多设备 wiring）—— 不阻塞 RuntimeClient
+- ~~**D**（EpsonLS6 driver 形态）~~ —— 拍：push 模型 + ArmBase4/6 拆分 + EpsonLS6Worker，见本文档 D 节
+- ~~**E**（多设备 wiring）~~ —— 拍：E.0 加 DobotWorker（NEXT-012）+ E.1 wiring 显式创建 + E.2/E.4 推后，见本文档 E 节
 - ~~**F**（contract.yaml 在 Python 端的角色）~~ —— 拍 F1：Python 端不读 contract，见本文档 F 节
 
 ---
@@ -119,19 +119,33 @@ Loop
 
 ### 一句话
 
-motion-runtime 仓库 contracts/arm/epson-rc90b/ 下的 SPEL+ 项目模板形态——主循环节奏、routine 编号、错误字段、保留字段。
+motion-runtime 仓库 contracts/arm/epson-rc90b/ 下的 SPEL+ 项目模板形态——主循环节奏、routine 编号、错误字段、保留字段。这一整套是 **motion-runtime ↔ SPEL+ 之间的合同**（contract.yaml + controller_program.spel），0.8 之后 Python 端完全不可见。
 
 ### 现状
 
-实际上 C 节里的 5 个子问题，**绝大多数在现有 `controller_program.spel` 里已经定下来了**——这份文件在写 RuntimeClient 之前就存在、注释里写明已上机验证。本节是事后对齐。
+`controller_program.spel` 在写 RuntimeClient 之前就存在、注释里写明已上机验证，0.8 时主循环又改成 `Wait` 条件等待。本节是事后对齐。
 
 | 子问题 | 状态 |
 |---|---|
 | 主循环周期 | **不存在** —— 改为 `Wait Sw(...) = 1` 事件驱动后没有"循环周期"概念，控制器内部 10ms 级采样 |
-| routine 编号 | 已定 1=Go / 2=Jump / 3=Move / 4=Home / 10=ReportPose / 11=ReportJoints / 12=SetMotorPower |
+| routine 编号 | 已定 1=Go / 2=Jump / 3=Move(LINEAR) / 4=Home / 10=ReportPose / 11=ReportJoints / 12=SetMotorPower |
 | 错误字段 | 已定 `error_code` u16，常量 `ERR_NONE=0` / `ERR_UNKNOWN_ROUTINE=1001` / `ERR_MOTION_FAILED=1002` |
 | spare 字段 | **未预留** —— 真有扩展再加，YAGNI |
 | status 字段 | 已定 `done` bit + `busy` bit；done 在新 trigger 上升沿之前保持高电平 |
+| wire layout | 已定 protocol_version=2，见 controller_program.spel 顶部注释 + contract.yaml |
+
+### routine 编号 ↔ proto Motion4 enum 映射
+
+motion 类 routine（1-4）与 proto `Motion4` enum 一一对应；映射本身由 contract.yaml 的 `motion_routines` 表声明，motion-runtime 启动时读取：
+
+| Motion4 enum | routine | SPEL+ 实现 |
+|---|---|---|
+| `MOTION4_GO` = 1 | 1 | `Speed/Accel + Go XY(...) /R` |
+| `MOTION4_JUMP` = 2 | 2 | `Speed/Accel + Jump XY(...) /R` |
+| `MOTION4_LINEAR` = 3 | 3 | `Speed/Accel + Move XY(...) /R`（SPEL+ 的 `Move` = 直线插补） |
+| `MOTION4_HOME` = 4 | 4 | `Speed/Accel + Home` |
+
+**Python 端不知道 routine 编号，只知道 Motion4 enum**——换品牌时只调 contract.yaml 把 enum 映射到新品牌的 routine 编号，Python 业务层不动。
 
 ### 编号分段约定（事后总结）
 
@@ -155,103 +169,336 @@ Do
 Loop
 ```
 
-底层采样精度都是控制器内核的 10ms 量级（SPEL+ Ref 8.0 p.890 注），延迟没变；代码更干净、CPU 占用更低。**未来真需要"主任务同时响应多种事件"（比如同时听 trigger + halt + status query）时再考虑 Trap Xqt 中断回调**——当前不需要。
+底层采样精度都是控制器内核的 10ms 量级（SPEL+ Ref 8.0 p.890 注），延迟没变；代码更干净、CPU 占用更低。**未来真需要"主任务同时响应多种事件"（halt 协议进来后，主循环要同时听 trigger + halt 中断）时再考虑 Trap Xqt 中断回调**——见 NEXT-011，当前不需要。
+
+### 0.8 之后浮现的两个缺口（SPEL+ 已支持但 Python 没暴露）
+
+SPEL+ 端的 routine 10/11/12 在写 RuntimeClient 之前就存在，但 0.8 的 proto 只把 motion（1-4）做成 enum，状态查询和状态变更没对应 RPC。两个缺口：
+
+**1. routine 10/11（ReportPose / ReportJoints）什么时候被触发？**
+
+`current_x/y/z/u` 和 `joint_1..4` 只在 routine 10/11 执行之后被写入 TxPDO output area；motion routine（1-4）不写这些字段。所以 `read_scara_status()` 返回的 pose/joints **可能是上次 routine 10/11 之后的快照，不是实时值**。
+
+- 候选 C-stale：runtime 直接读 TxPDO（快照可能旧）；leaf 想要新鲜的话自己关心
+- 候选 C-fresh：runtime 在 ReadScaraStatus 内部自动注入一次 routine 10/11 再读
+
+`done` / `busy` / `error_code` 不受影响——这三个 bit 每个 routine 进入和退出时都会更新，永远新鲜。问题只在 pose / joints 字段。
+
+**当前判**：YAGNI——0.8 实现先用 C-stale，业务层 driver 真需要"submit 完再读 pose"时再加 explicit refresh。这块归 D（driver 形态）讨论。
+
+**2. routine 12（SetMotorPower）完全没暴露给 Python**
+
+SPEL+ 启动时硬编码 `Motor On + Power High`（spel 文件 line 115-116），Python 端没有 RPC 触发 routine 12。
+
+- 真要从 Python 触发，需要加一个独立 RPC（如 `SetScaraMotorPower`），**不能塞进 Motion4 enum**——运动和状态变更是两个层次，混进 enum 会污染语义
+- 当前判：YAGNI——安全停机/teach 模式有业务需求时再设计
+
+这两块都是"SPEL+ 已经能做，proto 还没暴露"，记下来等真有需求时再补。本节状态仍 ✅。
 
 ---
 
-## D. EpsonLS6 driver 形态
+## D. EpsonLS6 driver 形态 ✅
 
 ### 一句话
 
-EpsonLS6 类内部的几个具体设计点：goal 提交、动作完成判定、错误抛出。
+EpsonLS6 在 BT 体系内的形态：driver 控制接口 + Worker 持有的运行时上下文 + 通过 WorldBoard push state，业务层零 proto 痕迹。
 
-### 形态（0.8.0 下变简单了）
+### 拍板：push 模型 + ArmBase4/ArmBase6 拆分 + 业务级 state key（2026-05-17）
+
+**走 push（不走 pull）**——pull 破坏响应式、给 BT 主线程引入 N 次 RPC 占用；push 通过 Worker 把"talk to runtime"封死在 arm 上下文里，BT 只读 WorldBoard 快照，界限上下文最干净。
+
+**架构总览**：
+
+```
+界限：arm 设备上下文（EpsonLS6Worker 圈住）
+  EpsonLS6Worker（Worker 子类）
+    持有 RuntimeClient + EpsonLS6 driver
+    accept_notes: move_l / move_j / jump / halt （leaf 通过 NotifyAndWait 触发）
+    on_tick: read_scara_status → write_state(business-level fields)
+             + 检测 busy 边沿，pending rid 完成时写 last_completed_id
+  ↓ write_state
+WorldBoard
+  ls6_1.done / busy / error_code / pose / joints
+  ls6_1.last_request_id / last_completed_id / last_error  ← 框架级 request 协议
+  ↓ snapshot + last_completed_id
+界限：BT 上下文
+  NotifyAndWait(target="ls6_1", note_name="move_l", payload=lambda bb: {"target": (...)}):
+    on_start: 分配 rid，pass_note + 注入 __request_id__
+    on_running: 等 snapshot["ls6_1.last_completed_id"] >= rid → SUCCESS
+```
+
+### 设计决策（D.push.1 - D.push.6）
+
+**D.push.1 — Worker 一对一**：每个 arm 一个 `EpsonLS6Worker` 实例，namespace 就是设备名（`ls6_1` / `ls6_2`）。多 arm 多 Worker 多 namespace，符合 Worker 抽象的"一个 Worker 负责一片外部世界"原则。
+
+**D.push.2 — 业务级 state key**：
+
+| state key | 类型 | 含义 |
+|---|---|---|
+| `<device>.done` | bool | 上次 motion 是否完成 |
+| `<device>.busy` | bool | 当前是否正在 motion |
+| `<device>.error_code` | int | 0 = 无错；非 0 见 SPEL+ ERR_* 常量 |
+| `<device>.pose` | np.ndarray (4×4) | flange 位姿，Worker 内部已转矩阵 |
+| `<device>.joints` | tuple[float, ...] | 关节角，工程单位（deg / mm） |
+
+proto 类型不进 WorldBoard——Worker 内部把 `ScaraStatusResponse` 翻译成业务字段再 post。
+
+**D.push.3 — Worker tick 跟 BT 同频**：on_tick 跟 BTClock 同频（典型 20-50Hz）。如果未来需要更细的状态轮询，再通过 `run_background` 起独立线程。YAGNI 先跟同频。
+
+**D.push.4 — Worker owns driver**：Worker 是 arm 上下文的 entry point，driver 是它的内部实现细节。外部 wiring：
+
+```python
+runtime = RuntimeClient("localhost:50051")
+worker = EpsonLS6Worker(runtime, device_name="ls6_1", name="ls6_1")
+arm = worker.driver  # ArmBase4 实例，传给 ActionLeaf 做控制
+```
+
+**D.push.5 — ArmBase 拆 ArmBase4 / ArmBase6**：
+- 两个 Protocol 同一文件 `device/arm/base.py`
+- ArmBase4：4-tuple target `(x, y, z, u)`，含 `jump` 方法（SCARA 共性）
+- ArmBase6：6-tuple target `(x, y, z, rx, ry, rz)`，无 jump
+- **不加 `is_done()`**——完成判定走 snapshot
+- 保留 `get_flange_pose()` driver 直读——driver-direct 用于脚本/调试；BT 走 snapshot
+- `validate_cartesian_target` 拆为 `validate_target_4dof` + `validate_target_6dof`
+
+**D.push.6 — note-based + request_id 协议（来自 hub 项目实战验证）**：
+
+最初想法是 leaf 直接调 `driver.move_l()` 然后读 `snapshot["ls6_1.done"]`——但这有个 race：
+
+```
+Tick N: leaf 调 move_l → motion 启动；EpsonLS6Worker 这个 tick 已经跑过
+Tick N+1: EpsonLS6Worker.on_tick 跑：runtime 还没来得及把 status 翻 busy=True
+          → 写 done=True（旧值）进 WorldBoard
+          leaf 读 done=True → 错误地返回 SUCCESS
+```
+
+走 hub 项目实战验证过的 note-based 模式消除这个 race：
+
+| 层 | 做什么 |
+|---|---|
+| BT leaf | `NotifyAndWait(target="ls6_1", note_name="move_l", payload=...)`——分配 rid，注入 `__request_id__` 到 payload，pass_note 给 Worker |
+| Worker note handler | 收到 note，记 `_pending_move_rid = rid`，调 `driver.move_l(...)` |
+| Worker on_tick | 读 status；如果 pending、且看到 busy 上升沿后又下降 → 写 `last_completed_id = pending_rid` |
+| BT leaf 后续 tick | `snapshot["ls6_1.last_completed_id"] >= rid` → SUCCESS |
+
+`last_completed_id` 是单调递增计数器，**只在本 rid 的 motion 真完成时才被本 rid 触发**——前面 motion 留下的 done=True 残值不会让后续 leaf 提前 SUCCESS。
+
+driver-direct 调用（`worker.driver.move_l(...)`）仍然可用，但**绕过 request_id 协议**——只适合测试和脚本，BT 主路径走 note。
+
+### EpsonLS6 driver 形态（最终）
 
 ```python
 class EpsonLS6:
+    """SCARA arm via motion-runtime gRPC. Conforms to ArmBase4.
+
+    Driver is a *thin* wrapper: ArmBase4 calls translate to RuntimeClient
+    builder calls. State publishing (done/busy/pose/...) is done by
+    EpsonLS6Worker, not by this class.
+    """
+
     dof = 4
 
-    def __init__(self, client: RuntimeClient, device_name: str, name: str):
+    def __init__(
+        self,
+        client: RuntimeClient,
+        device_name: str,
+        name: str,
+        *,
+        speed: int = 50,
+        accel: int = 200,
+    ):
         self._client = client
         self._device_name = device_name
         self.name = name
+        self._speed = speed
+        self._accel = accel
+        self._goal_counter: GoalId = 0
 
-    def move_l(self, target):
-        x, y, z, u = target  # SCARA 只用 4 个分量
-        (self._client.scara_goal(self._device_name)
-            .linear(x=x, y=y, z=z, u=u)
-            .speed(50).accel(200)        # 默认值待定
-            .submit())
+    def move_j(self, target: Sequence[float], *, speed=None, accel=None) -> GoalId:
+        x, y, z, u = validate_target_4dof(target, self.name)
+        self._submit("go", x, y, z, u, speed, accel)
+        self._goal_counter += 1
+        return self._goal_counter
 
-    def move_j(self, target):
-        x, y, z, u = target
-        (self._client.scara_goal(self._device_name)
-            .go(x=x, y=y, z=z, u=u)
-            .speed(50).accel(200)
-            .submit())
+    def move_l(self, target, *, speed=None, accel=None) -> GoalId:
+        x, y, z, u = validate_target_4dof(target, self.name)
+        self._submit("linear", x, y, z, u, speed, accel)
+        self._goal_counter += 1
+        return self._goal_counter
 
-    def is_done(self) -> bool:
-        return self._client.read_scara_status(self._device_name).done
+    def move_j_joints(self, target, *, speed=None, accel=None) -> GoalId:
+        # SPEL+ 端 Go XY(...) 直接是关节空间运动；joint target 在 SCARA
+        # 上等价于 cartesian（4-tuple = J1,J2,Z,J4）
+        raise NotImplementedError("move_j_joints for SCARA: 用 move_j(cartesian)")
 
-    def get_flange_pose(self):
+    def jump(self, target, *, speed=None, accel=None) -> GoalId:
+        """SCARA 专有 pick-place（抬 Z → 平移 XY → 落 Z）。不在 ArmBase6 中。"""
+        x, y, z, u = validate_target_4dof(target, self.name)
+        self._submit("jump", x, y, z, u, speed, accel)
+        self._goal_counter += 1
+        return self._goal_counter
+
+    def halt(self, goal_id: GoalId) -> None:
+        # NEXT-011 落地之前：no-op
+        pass
+
+    def get_flange_pose(self) -> np.ndarray:
+        """Direct pose read — for scripts / debugging. BT 路径走 snapshot."""
         status = self._client.read_scara_status(self._device_name)
-        return (status.current_x, status.current_y, status.current_z, status.current_u)
+        return _scara_pose_to_matrix(status)
+
+    def start(self) -> None:
+        # RuntimeClient 由 Worker 持有生命周期，driver no-op
+        pass
+
+    def stop(self) -> None:
+        pass
+
+    def _submit(self, motion_kind, x, y, z, u, speed, accel):
+        builder = self._client.scara_goal(self._device_name)
+        getattr(builder, motion_kind)(x=x, y=y, z=z, u=u)
+        builder.speed(speed or self._speed).accel(accel or self._accel)
+        builder.submit()
 ```
 
-### 要回答的子问题
+### EpsonLS6Worker 形态
 
-1. **完成判定**：leaf 的 `on_running` 调什么？
-   - 候选 D-done：driver 暴露 `is_done()`，内部读 `read_scara_status().done`
-   - 候选 D-status：driver 暴露 `get_status() -> StatusResponse`，leaf 自己看 done
+```python
+class EpsonLS6Worker(Worker):
+    """Push-side counterpart of EpsonLS6 driver. Owns runtime channel for one device."""
 
-2. **goal_id / 当前 goal 追踪**：当前 GoalResponse 不带 goal_id，halt 协议没落地之前 driver 不持有"当前 goal"概念。**halt 协议（NEXT-011）落地时再加**。
+    def __init__(
+        self,
+        client: RuntimeClient,
+        device_name: str,
+        name: str,
+        *,
+        speed: int = 50,
+        accel: int = 200,
+    ):
+        super().__init__()
+        self.name = name
+        self._client = client
+        self._device_name = device_name
+        self.driver = EpsonLS6(
+            client, device_name, name, speed=speed, accel=accel,
+        )
 
-3. **错误怎么抛**：
-   - SPEL+ 那边 `error_code != 0` 时，driver `is_done()` 调用应该 raise 还是返回 status？
-   - 候选 D-poll：`is_done()` 看到 error_code != 0 直接 raise `MotionFailed(code, msg)`
-   - 候选 D-state：driver 暴露 error_code，leaf 自己处理
+    def on_attach(self) -> None:
+        self.declare_state(f"{self.name}.done", bool)
+        self.declare_state(f"{self.name}.busy", bool)
+        self.declare_state(f"{self.name}.error_code", int)
+        self.declare_state(f"{self.name}.pose", np.ndarray)
+        self.declare_state(f"{self.name}.joints", tuple)
 
-4. **speed / accel 默认值**：每次 move_l/move_j 调用都用同一组默认值？还是从 ArmBase 构造时配？还是 driver 类属性？
+    def on_tick(self, ctx: TickContext) -> None:
+        status = self._client.read_scara_status(self._device_name)
+        self.write_state(f"{self.name}.done", status.done)
+        self.write_state(f"{self.name}.busy", status.busy)
+        self.write_state(f"{self.name}.error_code", status.error_code)
+        self.write_state(f"{self.name}.pose", _scara_pose_to_matrix(status))
+        self.write_state(
+            f"{self.name}.joints",
+            (status.joint_1, status.joint_2, status.joint_3, status.joint_4),
+        )
+```
 
-### 我的初判
+### 落地状态
 
-- D-done + D-poll 组合最干净——driver 内部封装一切，leaf 拿到的就是 SUCCESS / FAILURE
-- speed/accel 默认值放 driver 类属性，构造时可覆盖
+- ⏳ ArmBase4 / ArmBase6 拆分 + validate_target_4dof
+- ⏳ Dobot 改用 ArmBase6 + validate_target_6dof（机械迁移）
+- ⏳ EpsonLS6 driver 实现
+- ⏳ EpsonLS6Worker 实现
+- ⏳ driver + Worker 的测试
 
-D 等 motion-runtime 端 0.8.0 进度上来之后再具体落地——proto / Python 已经定型，driver 这层是消费方。
+### 历史 sketch（pull 模型，被废）
+
+D 节最初拍 D-done + D-poll（pull），但 2026-05-17 复盘时发现 pull 破坏响应式、且 ArmBase Protocol 当前的设计意图就是 push（leaf 读 snapshot）。改走 push，本节描述的是 push 模型的最终落点。pull 模型的 `is_done()` / `MotionFailed` / `_decode_error` 全部不需要。
 
 ---
 
-## E. 多设备 wiring 的细节
+## E. 多设备 wiring 的细节 ✅
 
 ### 一句话
 
-"一个 RuntimeClient 实例多个设备共享" 已定。但**谁创建 RuntimeClient、谁注入给 EpsonLS6 / IoModule** 还没拍。
+"一个 RuntimeClient 实例多个设备共享" 已定；剩下的 wiring 细节——谁创建 RuntimeClient、Dobot 怎么接入 push、多 runtime 进程怎么表达——按"现在拍 vs 推后"分两类处理。
 
-### 现状
+### 拍板汇总（2026-05-17）
 
-EVO-008 里 Geometry 是 "motion_policy 启动时实例化一次"——这是已有的范例。RuntimeClient 是不是同样形态？
+| 子问题 | 拍板 |
+|---|---|
+| **E.0** Dobot push 一致性 | ✅ `DobotWorker` 已落地，hub 项目 ArmWorker 模式 upstream 到 autoweaver；NEXT-012 已关闭 |
+| **E.1** RuntimeClient 是否单例 | 非单例，wiring 层显式创建并注入 |
+| **E.2** 多 motion-runtime 进程的 YAML schema | 推后到真有双产线/双总线需求时再设计 |
+| **E.3** Dobot + EpsonLS6 混合 | 被 E.0 吸收——配套 Worker 之后 BT 层走 snapshot 看不出差异 |
+| **E.4** IoModule / ValveBank 形态 | 推后；当前 codebase 还没有此类设备 |
+
+### E.0 — Dobot push 一致性
+
+D 节拍 push 之后，EpsonLS6 是 driver + Worker 双层结构。Dobot 目前只有 driver，没有 Worker——这导致 BT leaf 写法分裂（一个走 snapshot、一个走 pull），破坏了 ArmBase4/6 Protocol 的传输无关性。
+
+走 **E.0a — 加 DobotWorker，所有 arm 都走 push**。设计形态跟 EpsonLS6Worker 一致：on_attach 声明 5 个业务级 state field、on_tick 拉 Dobot feedback frame 写 WorldBoard。
+
+实现推后——主要卡点是"Dobot 的 done 怎么判"需要在 Nova 5 真机上看 RobotMode / MotionStatus 的实际节奏才能拍准。详见 NEXT-012。
+
+### E.1 — RuntimeClient 非单例，wiring 层创建
+
+wiring 代码（composition root）是唯一知道"具体类是什么"的地方。其它代码全部面向 Protocol 编程。形态：
 
 ```python
-# 大致形态（具体 wiring 看实现）
+# 假想的 src/autoweaver/motion_policy/start.py
 def start_motion_policy(config):
-    geometry = Geometry(config["calibration_path"])
-    runtime = RuntimeClient(config["runtime_address"])
-    arm_1 = EpsonLS6(client=runtime, device_name="ls6_1", name="arm_1")
-    arm_2 = Dobot(ip=config["dobot_ip"], name="arm_2")  # Dobot 走自己的 TCP SDK
-    valves = ValveBank(client=runtime, device_name="valve_bank", name="valves")
+    world_board = WorldBoard()
+    clock = BTClock(world_board, hz=config["bt_hz"])
+
+    runtime = RuntimeClient(config["runtime_address"])  # 显式创建
+
+    arm1 = EpsonLS6Worker(runtime, device_name="ls6_1", name="ls6_1")
+    arm2 = DobotWorker(ip=config["dobot_ip"], name="dobot_1")
+
+    clock.attach_worker(arm1)
+    clock.attach_worker(arm2)
+
+    tree = build_tree(arm=arm1.driver, dobot=arm2.driver)  # 传 driver 给 leaf
+    clock.attach_tree(tree)
+    clock.run()
 ```
 
-### 要回答的子问题
+理由：
+- 多 runtime 进程时需要多个 RuntimeClient（见 E.2）
+- 测试用 MockRuntimeClient 注入更直接
+- 单例 = 隐式全局状态，破坏界限上下文
 
-1. **RuntimeClient 跟 Geometry 一样不做全局单例**——确认这一条
-2. **多 motion-runtime 进程怎么办**：一个产线两台 EtherCAT 总线 = 两个 motion-runtime = 两个 RuntimeClient。配置怎么表达
-3. **Dobot 跟 EpsonLS6 混在一台机器上**：上面例子里 arm_1 走 runtime、arm_2 走自己的 TCP SDK。leaf 写的时候是不是完全感知不到差异——`ArmBase` Protocol 已经抽象了，应该是
-4. **IoModule / ValveBank 这种非机械臂设备的形态**：要不要有 `IoModuleBase` Protocol？还是各设备类自己定义自己的 method
+当前 codebase 还**没有这个 wiring 函数**——每个测试自己 new 一套。生产化的时候再写 `start_motion_policy(config)`。
 
-### 我的初判
+### E.2 — 多 motion-runtime 进程
 
-E 的核心已经定了（一个 client 多设备），剩下都是 wiring 的具体形态。可以在 EpsonLS6 落地之后顺手定——**E 不阻塞 RuntimeClient 本身**。
+**E.2 ≠ 多机械臂**。多机械臂共享一个 RuntimeClient 是 E.1 的事，普通 wiring。
+
+E.2 特指**多个 motion-runtime Rust 进程**。场景：产线物理上有两条 EtherCAT 总线（每条总线一个实时控制环），就必须有两个 motion-runtime 进程、两个 RuntimeClient。
+
+```
+[单总线场景 — 不是 E.2]
+  一个 motion-runtime 进程 + 一个 RuntimeClient
+   ├─ ls6_1 ├─ ls6_2 ├─ valve_bank
+
+[双总线场景 — E.2 才出现]
+  motion-runtime 进程 A          motion-runtime 进程 B
+   ├─ ls6_1 ├─ ls6_2              ├─ ls6_3 ├─ ls6_4
+  RuntimeClient A                 RuntimeClient B
+```
+
+90% 单机生产现场是单总线。E.2 推后到真有双总线需求时再设计 YAML schema（按 runtime name 索引、arm 引用 runtime name）。
+
+### E.4 — IoModule / ValveBank
+
+**当前 codebase 没有任何 IoModule / ValveBank 代码**——纯前瞻。未来落地时：
+
+- **不预先定 `IoModuleBase` Protocol**——valve / gripper / pneumatic 各自语义差异大，硬塞 Protocol 反而别扭
+- **走 push 模式跟 arm 一致**——每个 IO 设备一个 driver + Worker，state key 用业务级语义（如 `valve_bank.suction_1` bool）
+- 暴露的控制方法各自定义（`ValveBank.open(channel)` / `Gripper.grasp()`）
+
+具体形态等真有 IoModule 接入时再设计。
 
 ---
 
@@ -292,3 +539,13 @@ motion-runtime 启动时按 contract.yaml 做"字段名 → 字节"翻译。Pyth
 | 2026-05-16 | 0.7.5 原子批量 WriteFields + WriteBatch | 短暂存在 |
 | 2026-05-16 | 0.8.0 goal 服务层 + 4DOF/6DOF 分离 proto | EVO-003 0.8.0 |
 | 2026-05-16 | SPEL+ 主循环改为 Wait 条件等待 | controller_program.spel |
+| 2026-05-17 | C 节补 routine ↔ Motion4 enum 映射；识别 routine 10/11/12 暴露缺口 | 本文档 §C |
+| 2026-05-17 | D 节首拍：D-done + D-poll（pull）—— 后废弃 | 本文档 §D 历史 sketch |
+| 2026-05-17 | D 节复盘：改走 push（Worker + WorldBoard），界限上下文最干净 | 本文档 §D |
+| 2026-05-17 | ArmBase 拆 ArmBase4 + ArmBase6（同一文件）；保留 get_flange_pose driver 直读 | 本文档 §D.push.5 |
+| 2026-05-17 | pose 新鲜度走人工约定，driver / proto / runtime 不做 refresh | 本文档 §D（被 push 吸收） |
+| 2026-05-17 | E.0 拍 DobotWorker（推后到 EpsonLS6 真机后） | 本文档 §E、NEXT-012 |
+| 2026-05-17 | E.1 RuntimeClient 由 wiring 显式创建，非单例 | 本文档 §E.1 |
+| 2026-05-17 | E.2 / E.4 推后到真有需求时再设计 | 本文档 §E.2 / §E.4 |
+| 2026-05-17 | D.push.6 + 落地：note-based + request_id 协议（消除 done race） | 本文档 §D.push.6 |
+| 2026-05-17 | 从 hub 项目 upstream `NotifyAndWait` / `WaitForAdvance` / `DobotWorker`（吃掉 NEXT-012） | 本文档 §D §E |

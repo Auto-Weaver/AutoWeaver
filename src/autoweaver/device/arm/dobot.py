@@ -13,8 +13,8 @@ from autoweaver.device.arm._dobot_sdk import (
 )
 from autoweaver.device.arm.base import (
     GoalId,
-    validate_cartesian_target,
     validate_joint_target,
+    validate_target_6dof,
 )
 from autoweaver.device.arm.dobot_states import (
     ROBOT_MODE_DISABLED,
@@ -61,8 +61,9 @@ class Dobot:
     Move semantics (NEXT-006):
       - ``move_j`` / ``move_l`` are fire-and-forget at the task level.
         The TCP RPC blocks ~5-15ms waiting for the controller's ACK; the
-        physical motion (hundreds of ms to seconds) is observed by
-        pulling pose with ``get_flange_pose()``, not by waiting on the RPC.
+        physical motion (hundreds of ms to seconds) is observed via the
+        snapshot path (Worker pushes pose / status to WorldBoard) for BT
+        flows, or via ``get_flange_pose()`` direct read for scripts.
       - ``halt(goal_id)`` sends Stop() to the controller. Stale halts —
         where ``goal_id`` no longer matches the current goal — are
         ignored so a delayed halt cannot interrupt a newer goal.
@@ -95,15 +96,15 @@ class Dobot:
     # --- control ---
 
     def move_j(self, target: Sequence[float], speed: int | None = None) -> GoalId:
-        # ArmBase contract: move_j target is Cartesian (x,y,z,rx,ry,rz).
+        # ArmBase6 contract: move_j target is Cartesian (x,y,z,rx,ry,rz).
         # For joint-angle targets use move_j_joints.
-        target = validate_cartesian_target(target, self.dof, self.name)
+        target = validate_target_6dof(target, self.name)
         return self._send_move("j", target, COORD_POSE, speed=speed)
 
     def move_l(self, target: Sequence[float], speed: int | None = None) -> GoalId:
         # MovL is Cartesian-only in practice — joint-space MovL doesn't
         # have a clean physical meaning.
-        target = validate_cartesian_target(target, self.dof, self.name)
+        target = validate_target_6dof(target, self.name)
         return self._send_move("l", target, COORD_POSE, speed=speed)
 
     def move_j_joints(self, target: Sequence[float], speed: int | None = None) -> GoalId:
