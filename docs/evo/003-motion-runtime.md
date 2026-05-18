@@ -164,6 +164,95 @@ submit 是**异步**——`SubmitScaraGoal` 立刻返回（runtime 内部启动�
 
 字段层 RPC（0.7.0 的 `WriteField / ReadField / WriteFields`）**不暴露给 Python**。它们要么被 goal 服务吃掉（不存在了），要么作为 runtime 内部 API 保留——proto 文件里没有它们。
 
+## Trigger 边沿协议在 goal 服务内的实现
+
+0.8.0 的 goal 服务把"写字段 + 翻 trigger 0→1 + 等 done + 翻 trigger 1→0"整套握手吞到 runtime 内部。其中**下降沿（trigger 1→0）什么时候发生**是个有非平凡选择的设计点，本节记录拍板理由。
+
+### 背景：下降沿不可省
+
+完整握手时序：
+
+```
+step 1  runtime 把字段写进 RxPDO byte 区
+step 2  runtime 翻 trigger bit 0→1            ← 上升沿
+        SPEL+ 看到 Wait Sw(IN_TRIGGER)=1 解除阻塞、执行 routine、写 done=1
+step 3  runtime 把 trigger bit 翻 1→0          ← 下降沿
+        SPEL+ 看到 Wait Sw(IN_TRIGGER)=0 解除阻塞、回到主循环顶部
+        现在 SPEL+ 又在等下一次上升沿
+```
+
+**step 3 不可省**：trigger 卡在 1 的话，下一次 `SubmitScaraGoal` 写 trigger=1 就**不是真的上升沿**，SPEL+ 那个 `Wait Sw(IN_TRIGGER)=1` 已经早就解除阻塞了，下一个 routine 永远不会触发——整套握手死锁。
+
+### 难点：异步 submit 让"何时翻 trigger 回 0"变成问题
+
+0.8.0 把 `SubmitScaraGoal` 做成异步——RPC 立刻返回，不阻塞 BT tick。这意味着 `submit_scara_goal()` handler 里只能做 step 1 + step 2，**step 3 必须发生在 SPEL+ 把 done 写成 1 之后**，但 handler 已经 return 了。
+
+### 拍板：Option A — piggyback 在 `ReadScaraStatus` 里翻下降沿
+
+`read_scara_status()` 每次被调用时，先读 TxPDO 拿 status，然后**如果检测到 `done == true && trigger == true`，顺手把 trigger 翻回 0**。
+
+伪代码：
+
+```rust
+async fn read_scara_status(&self, ...) -> ScaraStatusResponse {
+    let status = decode_status(&buffers, device)?;
+
+    // piggyback 下降沿：done 之后顺手 reset trigger
+    if status.done && trigger_is_high(device)? {
+        flip_trigger_low(device)?;
+    }
+
+    Ok(ScaraStatusResponse { done: status.done, busy: status.busy, ... })
+}
+```
+
+时序图：
+
+```
+Tick 1   Python.SubmitScaraGoal           → runtime 写字段、trigger=1、return ok
+                                           SPEL+ 看到上升沿，开始 move
+Tick 2   Python.ReadScaraStatus           → trigger=1, done=false busy=true
+                                            条件不成立，不翻 trigger
+         (SPEL+ 持续 move 中)
+...
+Tick N   Python.ReadScaraStatus           → trigger=1, done=true busy=false
+                                            条件成立！翻 trigger 1→0
+                                            返回 done=true 给 Python
+                                           SPEL+ 看到下降沿，回主循环
+                                           Python 端 EpsonLS6Worker 写
+                                           last_completed_id；BT leaf SUCCESS
+Tick N+1 Python.SubmitScaraGoal（下一次）  → trigger 已经是 0，干净写 0→1，握手 OK
+```
+
+### 为什么选 A，不选 B（后台 task 主动 poll）
+
+**Option B**：`submit_scara_goal` 内部 `tokio::spawn` 一个后台任务，每 ~10ms 自己读 done 字段，看到 done=true 就翻 trigger 回 0。
+
+两者对比：
+
+| 维度 | A（piggyback）| B（spawn task）|
+|---|---|---|
+| 代码量 | 几行 if | 一个 task per submit + 取消 / shutdown / panic 路径 |
+| 下降沿延迟 | ≈ 一个 BT tick（~20-50ms） | ≈ 10ms |
+| 依赖前提 | Python 端必须持续 polling | 无 |
+| runtime 内部并发 | 完全没有 | 多个并发 task |
+| in-flight 状态管理 | 不需要（无状态） | 需要（哪个 device 有 task 在跑、submit 第二次怎么办）|
+| panic / shutdown 烫手 | 不存在 | task panic 静默、shutdown 要 join |
+
+**选 A 的核心理由**：Python 端 `EpsonLS6Worker.on_tick` 在 push-model 下**每 BT tick 都在调 `read_scara_status`**——这是 D.push 那套设计的硬性前提。既然 polling 一定会发生，piggyback 就一定会触发，B 多出来的并发开销没有真实业务收益。
+
+延迟差 ~20-40ms 在 BT 决策频率下不可感知（BT 本身就是 20-50Hz，一个 tick 的延迟就是 BT 自己的延迟）。
+
+**A 的"边界情况"——Python 端不 polling 怎么办**：这种情况对应"submit 完就不读 status"的用法。在 push-model 体系下这是 bug——Worker 必然在 polling。runtime 不为这种 bug 兜底。
+
+### 落地约束
+
+- `goal::scara::submit_scara_goal` **只做 step 1 + step 2**：写字段、翻 trigger 0→1，立刻返回
+- `goal::scara::read_scara_status` **三件事一起做**：读 TxPDO 字段 → 检测下降沿条件 → 必要时翻 trigger 1→0
+- trigger 字段的"当前值"从 RxPDO buffer 里读（runtime 自己写的，自己最清楚），不需要从总线回读
+- 下降沿翻转后**不需要确认 SPEL+ 看到了**——SPEL+ 端是 `Wait Sw(IN_TRIGGER)=0`，控制器内核每 ~10ms 采样一次输入信号，下个 cycle 就会被解除阻塞，再之后是 SPEL+ 内部状态机
+- 这条规则对应 `trigger` 字段的"runtime-internal field"语义：它是 runtime 在 RxPDO 字段表里**自己读写**的字段，不暴露给 goal RPC 层之外的任何接口
+
 ## YAML 契约
 
 每台设备一份 YAML 契约。形态示例：
@@ -308,6 +397,7 @@ Rust gRPC 标准选择。和 EtherCAT 周期循环共享同一个 tokio runtime�
 | 4-DOF / 6-DOF 用独立 proto message | 静态类型锁死维度，不用 `repeated float` 加运行时长度校验。pyright / proto 编译器都能在调用点抓错 |
 | GoalResponse 极简（ok / error） | 暂不返回 goal_id 等追踪字段；halt 协议（NEXT-011）落地时再加，YAGNI |
 | Submit 异步、状态轮询 | RPC 不阻塞 BT tick；和 Dobot driver 的"提交 → 轮询 done"模型一致 |
+| Trigger 下降沿 piggyback 在 ReadScaraStatus | Python push-model Worker 每 tick 都在 polling 状态，piggyback 一定触发；runtime 内部完全同步无后台 task |
 | 主循环用 Wait 条件等待 | SPEL+ `Wait Sw(...)=1` 取代 `Do/Loop + If + Wait 0.01`。代码更短，CPU 占用低，底层延迟相同 |
 | 字段名是 runtime ↔ 控制器耦合面 | runtime 和外部控制器代码通过字段名集合耦合，YAML 是单一真源 |
 | YAML 启动时一次性加载 | 改契约几乎一定伴随外部控制器代码变更，需要重启外部设备 |

@@ -17,7 +17,7 @@
 
 device: arm
 description: "Epson LS6-B602C via RC90-B EtherCAT slave option board"
-protocol_version: 2
+protocol_version: 3
 
 # Identify the slave by Epson's vendor + product code (from ESI).
 # vendor_id 0x057E = Epson; product_code 0x00000003 = RC90_Slave.
@@ -109,3 +109,22 @@ fields:
   joint_3:     { offset: 28, type: f32,  dir: in }
   joint_4:     { offset: 32, type: f32,  dir: in }
   # bytes 36..127 reserved for future fields
+
+# ---- Motion → routine mapping (0.8.0) ----
+# motion-runtime's goal service receives `Motion4` enum values from the
+# Python side and looks them up here to find the routine byte to write
+# into the `routine` field above. The vocabulary (GO / JUMP / LINEAR /
+# HOME) is brand-agnostic; only the numbers here are device-specific.
+#
+# Keys MUST be the Motion4 enum name without prefix — matching the names
+# in proto/motion.proto. Same names are used by EpsonLS6Worker on the
+# Python side when constructing the ScaraGoal message.
+#
+# When adding new motion vocabulary (e.g. a hypothetical CIRCULAR motion),
+# update Motion4 in proto/motion.proto AND add the matching routine to
+# both this YAML and controller_program.spel's Select arm.
+motion_routines:
+  GO: 1
+  JUMP: 2
+  LINEAR: 3
+  HOME: 4

@@ -30,6 +30,19 @@ pub struct Contract {
     /// Named field table. Field offset is within the RxPDO or TxPDO
     /// (decided by `dir`), not in some global frame.
     pub fields: std::collections::BTreeMap<String, FieldSpec>,
+
+    /// Motion enum → routine number mapping. Populated for devices that
+    /// expose a goal-service surface (e.g. SCARA arm); empty for pure-IO
+    /// devices. Keys are motion enum names without the prefix:
+    ///
+    ///   `Motion4::MOTION4_LINEAR`  →  key `"LINEAR"`  →  value e.g. 3
+    ///   `Motion4::MOTION4_HOME`    →  key `"HOME"`    →  value e.g. 4
+    ///
+    /// goal-service code uses `motion_routine()` to translate; runtime
+    /// itself remains routine-number-agnostic (different SCARA brands
+    /// can use different numbers under the same Motion4 vocabulary).
+    #[serde(default)]
+    pub motion_routines: std::collections::BTreeMap<String, u8>,
 }
 
 /// Slave-matching predicate. At least one criterion must be set;

@@ -89,6 +89,26 @@ impl ContractRegistry {
         Ok((entry, spec))
     }
 
+    /// Look up the routine number for a given motion enum on a device.
+    /// `motion_name` is the enum name without the prefix, e.g. `"LINEAR"`,
+    /// `"GO"`, `"JUMP"`, `"HOME"`. Errors if the device has no
+    /// `motion_routines` table or the motion isn't in it.
+    pub fn motion_routine(&self, device: &str, motion_name: &str) -> Result<u8> {
+        let entry = self.get(device)?;
+        entry
+            .contract
+            .motion_routines
+            .get(motion_name)
+            .copied()
+            .ok_or_else(|| {
+                anyhow!(
+                    "device {} has no motion_routines entry for {}",
+                    device,
+                    motion_name
+                )
+            })
+    }
+
     /// Iterate all entries (for the binding phase).
     pub fn iter(&self) -> impl Iterator<Item = (&str, &Arc<ContractEntry>)> {
         self.by_device
@@ -121,6 +141,9 @@ mod tests {
                 bit: None,
             },
         );
+        let mut motion_routines = std::collections::BTreeMap::new();
+        motion_routines.insert("LINEAR".to_string(), 3);
+        motion_routines.insert("GO".to_string(), 1);
         Contract {
             device: device.to_string(),
             description: String::new(),
@@ -133,6 +156,7 @@ mod tests {
                 tx_pdo_size: 16,
             },
             fields,
+            motion_routines,
         }
     }
 
@@ -169,5 +193,28 @@ mod tests {
         reg.insert(mk_contract("arm")).unwrap();
         reg.bind_slave("arm", 3).unwrap();
         assert_eq!(reg.get("arm").unwrap().slave_position, Some(3));
+    }
+
+    #[test]
+    fn motion_routine_lookup_returns_number() {
+        let mut reg = ContractRegistry::new();
+        reg.insert(mk_contract("arm")).unwrap();
+        assert_eq!(reg.motion_routine("arm", "LINEAR").unwrap(), 3);
+        assert_eq!(reg.motion_routine("arm", "GO").unwrap(), 1);
+    }
+
+    #[test]
+    fn motion_routine_unknown_motion_errors() {
+        let mut reg = ContractRegistry::new();
+        reg.insert(mk_contract("arm")).unwrap();
+        let err = reg.motion_routine("arm", "PIROUETTE").unwrap_err();
+        assert!(err.to_string().contains("PIROUETTE"));
+    }
+
+    #[test]
+    fn motion_routine_unknown_device_errors() {
+        let reg = ContractRegistry::new();
+        let err = reg.motion_routine("ghost", "GO").unwrap_err();
+        assert!(err.to_string().contains("ghost"));
     }
 }

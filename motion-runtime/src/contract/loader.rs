@@ -123,4 +123,54 @@ contracts:
         assert_eq!(cfg.contracts.len(), 2);
         let _ = fs::remove_file(&path);
     }
+
+    #[test]
+    fn parses_motion_routines_section() {
+        let yaml = r#"
+device: arm
+description: ""
+protocol_version: 3
+slave_match: {}
+pdo_mapping:
+  rx_pdo_index: 0x1600
+  rx_pdo_size: 32
+  tx_pdo_index: 0x1A00
+  tx_pdo_size: 16
+fields:
+  target_x:
+    offset: 0
+    type: f32
+    dir: out
+motion_routines:
+  GO: 1
+  JUMP: 2
+  LINEAR: 3
+  HOME: 4
+"#;
+        let path = write_temp("contract_routines_test.yaml", yaml);
+        let c = load_contract(&path).unwrap();
+        assert_eq!(c.motion_routines.get("GO"), Some(&1));
+        assert_eq!(c.motion_routines.get("JUMP"), Some(&2));
+        assert_eq!(c.motion_routines.get("LINEAR"), Some(&3));
+        assert_eq!(c.motion_routines.get("HOME"), Some(&4));
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn parses_real_ls6_contract_file() {
+        // The actual contract.yaml shipped under contracts/arm/epson-rc90b/
+        // must load cleanly — protects against schema drift in either
+        // direction (rust types vs yaml file).
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("contracts")
+            .join("arm")
+            .join("epson-rc90b")
+            .join("contract.yaml");
+        let c = load_contract(&path).unwrap();
+        assert_eq!(c.device, "arm");
+        assert_eq!(c.protocol_version, 3);
+        // motion_routines must be present and have the four LS6 motions.
+        assert_eq!(c.motion_routines.get("LINEAR"), Some(&3));
+        assert_eq!(c.motion_routines.get("HOME"), Some(&4));
+    }
 }
