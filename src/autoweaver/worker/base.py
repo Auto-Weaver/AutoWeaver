@@ -85,6 +85,19 @@ class Worker(ABC):
     pass it notes via ``pass_note``. Subclasses only need to react to
     those notes and to optionally write state asynchronously.
 
+    **Do not subclass `Worker` directly.** The base class only provides
+    lifecycle / state / async helpers — it has no note acceptance API.
+    Pick a completion-protocol subclass:
+
+      - ``PerceptionWorker`` — handler returns = work done. Suits
+        perception, IO, comm, and any case where the work runs inside
+        the handler (or via ``run_async``).
+      - ``MotionWorker`` — work is started by the handler but completes
+        later on a tick-observed state edge. Suits motion control, where
+        the real work happens on external hardware over multiple ticks.
+
+    See EVO-007 for the rationale behind the split.
+
     Lifecycle (driven by BTClock):
 
         UNATTACHED
@@ -107,33 +120,30 @@ class Worker(ABC):
         on_pause() / on_resume()
         on_stop()                — close external resources
         on_detach()              — final teardown
-        on_tick(ctx)             — periodic work (default no-op; most Workers
-                                    are pure note responders and do not need it)
+        on_tick(ctx)             — periodic work (default no-op for
+                                    PerceptionWorker; MotionWorker uses
+                                    it as the completion detector)
 
     Subclasses use these convenience methods (do not override):
 
         declare_state(key, type)
         write_state(key, value)
         read_state(key)
-        accept_notes(name, payload_type, on_receive)
         run_async(fn, on_done)
         run_background(fn, thread_name)
 
-    request_id protocol
-    -------------------
-    Every Worker automatically declares two state fields::
+    request_id state fields
+    -----------------------
+    Every Worker automatically declares three state fields::
 
         <self.name>.last_request_id     — most recent inbound request_id
-        <self.name>.last_completed_id   — last request_id whose handler returned
+        <self.name>.last_completed_id   — last request_id whose work finished
+        <self.name>.last_error          — most recent error description
 
-    Note handlers are wrapped: on receipt, the framework records
-    ``last_request_id``; if the handler returns successfully it records
-    ``last_completed_id``; if the handler raises, the framework records
-    ``last_error`` and transitions the Worker to FAULTED.
-
-    BT nodes use this protocol via the standard ``notify_and_wait`` /
-    ``wait_for`` patterns to determine when a Worker has finished its
-    response to a specific request.
+    The fields are declared here for the namespace; **how and when they
+    are written** is the responsibility of the completion-protocol
+    subclass. BT nodes use these fields via the standard
+    ``NotifyAndWait`` pattern.
     """
 
     # Subclasses may override:
@@ -222,29 +232,6 @@ class Worker(ABC):
         """Read any state field on the WorldBoard (cross-worker read OK)."""
         assert self._board is not None
         return self._board.read_state(key, default)
-
-    def accept_notes(
-        self,
-        name: str,
-        payload_type: type,
-        on_receive: Callable[[Any], None],
-    ) -> None:
-        """Declare that this Worker will receive notes named ``name``
-        (the full address is ``(self.name, name)``).
-
-        The framework wraps ``on_receive`` to automatically maintain the
-        ``last_request_id`` / ``last_completed_id`` protocol and to
-        transition the Worker to FAULTED if the handler raises. Subclass
-        code receives the payload exactly as passed.
-        """
-        assert self._board is not None
-        wrapped = self._wrap_note_receiver(on_receive)
-        self._board.accept_notes(
-            namespace=self.name,
-            name=name,
-            payload_type=payload_type,
-            on_receive=wrapped,
-        )
 
     def run_async(
         self,
@@ -376,59 +363,6 @@ class Worker(ABC):
                 f"starting with '{prefix}'; got '{key}'"
             )
 
-    def _wrap_note_receiver(
-        self, user_on_receive: Callable[[Any], None]
-    ) -> Callable[[Any], None]:
-        """Return a receiver that maintains the request_id protocol.
-
-        Pulls the framework-injected ``__request_id__`` out of the
-        payload before handing it to the user. If the user handler
-        returns successfully, writes ``last_completed_id``. If it raises,
-        records ``last_error``, transitions to FAULTED, and re-raises so
-        BTClock can mark the worker out.
-        """
-
-        def wrapper(payload: Any) -> None:
-            request_id = _pop_request_id(payload)
-            if request_id is not None:
-                self._board.post_state(
-                    f"{self.name}.last_request_id", request_id, writer=self.name
-                )
-                self._current_request_id = request_id
-            try:
-                user_on_receive(payload)
-            except BaseException as exc:
-                self._current_request_id = None
-                try:
-                    self._board.post_state(
-                        f"{self.name}.last_error", repr(exc), writer=self.name
-                    )
-                except Exception:
-                    logger.exception(
-                        "worker '%s' failed to record last_error", self.name
-                    )
-                self._transition(WorkerState.FAULTED)
-                logger.exception(
-                    "worker '%s' note handler raised; transitioning to FAULTED",
-                    self.name,
-                )
-                return
-            if request_id is not None:
-                try:
-                    self._board.post_state(
-                        f"{self.name}.last_completed_id",
-                        request_id,
-                        writer=self.name,
-                    )
-                except Exception:
-                    logger.exception(
-                        "worker '%s' failed to record last_completed_id",
-                        self.name,
-                    )
-            self._current_request_id = None
-
-        return wrapper
-
 
 def _pop_request_id(payload: Any) -> int | None:
     """Extract a framework-injected request_id from a payload.
@@ -436,6 +370,9 @@ def _pop_request_id(payload: Any) -> int | None:
     For dict payloads we pop the reserved key ``__request_id__``. For
     non-dict payloads (or dicts without that key) we return None and
     fall back to the no-tracking behavior.
+
+    Shared utility for both PerceptionWorker (synchronous completion)
+    and MotionWorker (tick-async completion).
     """
     if isinstance(payload, dict):
         rid = payload.pop("__request_id__", None)

@@ -128,21 +128,11 @@ def test_read_state_can_cross_namespaces():
 
 
 # ---- Convenience API: notes ---------------------------------------------
-
-def test_accept_notes_registers_under_own_namespace():
-    board = WorldBoard()
-    worker = _MinimalWorker(name="demo")
-    pool = _wire_worker(worker, board)
-    try:
-        received = []
-        worker.accept_notes("hello", dict, received.append)
-
-        # Anyone can pass a note addressed to (demo, hello).
-        board.pass_note("demo", "hello", {"x": 1}, sender="bt")
-        board.deliver_notes()
-        assert received == [{"x": 1}]
-    finally:
-        pool.close()
+#
+# Note acceptance lives on the completion-protocol subclasses
+# (PerceptionWorker / MotionWorker), not on Worker itself. The
+# corresponding tests live in test_perception_worker.py and
+# test_motion_worker.py.
 
 
 # ---- Convenience API: run_async ----------------------------------------

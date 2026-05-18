@@ -9,12 +9,16 @@ from autoweaver.worker.base import (
     next_request_id,
 )
 from autoweaver.worker.clock import BTClock, TreeHandle
+from autoweaver.worker.motion import MotionWorker
+from autoweaver.worker.perception import PerceptionWorker
 
 __all__ = [
     "AsyncPool",
     "AsyncPoolConfig",
     "AsyncPoolRegistry",
     "BTClock",
+    "MotionWorker",
+    "PerceptionWorker",
     "TickContext",
     "TreeHandle",
     "Worker",

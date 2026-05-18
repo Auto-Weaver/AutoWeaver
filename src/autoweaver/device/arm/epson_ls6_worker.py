@@ -3,7 +3,8 @@
 Owns one device's runtime context: holds the gRPC channel and the
 ``EpsonLS6`` driver, polls status on every tick, publishes business-
 level state to the WorldBoard under ``<self.name>.*``, and exposes
-async motion commands via the standard note + request_id protocol.
+async motion commands via the standard MotionWorker async-note
+protocol.
 
 BT leaves drive this Worker through ``NotifyAndWait``:
 
@@ -14,9 +15,9 @@ BT leaves drive this Worker through ``NotifyAndWait``:
         payload=lambda bb: {"target": (x, y, z, u), "speed": 30},
     )
 
-The note handler issues the corresponding ``driver.move_*()`` call and
-records the pending request id. ``on_tick`` watches the SCARA status
-``done`` flag and writes ``<self.name>.last_completed_id`` when the
+The note handler issues the corresponding ``driver.move_*()`` call.
+The MotionWorker base watches the busy / done / error_code edges on
+``on_tick`` and writes ``<self.name>.last_completed_id`` when the
 motion finishes — at which point ``NotifyAndWait`` flips to SUCCESS.
 
 State fields published under namespace ``<self.name>``:
@@ -28,7 +29,7 @@ State fields published under namespace ``<self.name>``:
   - ``pose`` (np.ndarray) — 4×4 flange pose matrix
   - ``joints`` (tuple) — joint angles (J1, J2, Z, J4) in deg / mm
   - ``last_request_id`` / ``last_completed_id`` / ``last_error`` —
-    framework-managed request protocol
+    framework-managed (see MotionWorker)
 
 Direct ``self.driver.move_l(...)`` calls still work for tests and
 scripts but bypass the request_id protocol — leaves inside a BT should
@@ -39,18 +40,18 @@ always use the note path so sequential moves don't race on the
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 
 from autoweaver.device.arm.epson_ls6 import EpsonLS6, _scara_status_to_matrix
 from autoweaver.motion_policy.runtime_client import RuntimeClient
-from autoweaver.worker.base import TickContext, Worker
+from autoweaver.worker.base import TickContext
+from autoweaver.worker.motion import MotionWorker
 
 logger = logging.getLogger(__name__)
 
 
-class EpsonLS6Worker(Worker):
+class EpsonLS6Worker(MotionWorker):
     dof = 4
 
     def __init__(
@@ -70,17 +71,6 @@ class EpsonLS6Worker(Worker):
             client, device_name, name, speed=speed, accel=accel,
         )
 
-        # Pending move tracking. Only one move can be in-flight at a time;
-        # accepting a new move_* note while one is pending logs a warning
-        # and completes the older request to avoid leaving the BT hung.
-        self._pending_move_rid: Optional[int] = None
-        # ``_move_started`` flips True the first time we see busy=True
-        # after the move was submitted; only then do we watch for the
-        # busy → False transition that signals completion. Without this,
-        # a stale "done=True" from before the submission would falsely
-        # complete the request on the very first tick.
-        self._move_started: bool = False
-
     @property
     def name(self) -> str:
         return self._name
@@ -96,30 +86,26 @@ class EpsonLS6Worker(Worker):
         self.declare_state(f"{self._name}.pose", np.ndarray)
         self.declare_state(f"{self._name}.joints", tuple)
 
-        # move_* are async motions — register raw so the framework's
-        # auto-completion wrapper doesn't write last_completed_id at
-        # handler return (which would be far too early). on_tick writes
-        # it when the motion truly finishes.
-        for note_name, handler in [
-            ("move_l", self._on_move_l),
-            ("move_j", self._on_move_j),
-            ("jump", self._on_jump),
-        ]:
-            assert self._board is not None
-            self._board.accept_notes(
-                namespace=self._name,
-                name=note_name,
-                payload_type=dict,
-                on_receive=handler,
-            )
+        self.accept_async_notes("move_l", dict, self._dispatch_move_l)
+        self.accept_async_notes("move_j", dict, self._dispatch_move_j)
+        self.accept_async_notes("jump", dict, self._dispatch_jump)
 
-        # halt is fire-and-forget at the protocol level (currently no-op
-        # until NEXT-011). The auto-wrapper's synchronous completion is
-        # correct here.
-        self.accept_notes("halt", dict, self._on_halt)
+        # halt is synchronous from the BT's perspective. MotionWorker
+        # doesn't provide a synchronous accept_notes, so wire it
+        # directly through the board. We pop __request_id__ ourselves
+        # because we're bypassing both wrappers; halt is always a
+        # success at the protocol level so we just need to keep
+        # last_completed_id moving.
+        assert self._board is not None
+        self._board.accept_notes(
+            namespace=self._name,
+            name="halt",
+            payload_type=dict,
+            on_receive=self._on_halt,
+        )
 
     # ------------------------------------------------------------------
-    # State publishing + completion detection
+    # State publishing + completion detection (MotionWorker pattern)
     # ------------------------------------------------------------------
 
     def on_tick(self, ctx: TickContext) -> None:
@@ -134,118 +120,63 @@ class EpsonLS6Worker(Worker):
             (status.joint_1, status.joint_2, status.joint_3, status.joint_4),
         )
 
-        if self._pending_move_rid is None:
-            return
-
-        # Error path: the controller raised an alarm. Surface it as
-        # last_error + complete the pending request so the BT doesn't
-        # hang waiting for a done that will never come.
         if status.error_code != 0:
-            msg = (
-                f"motion error during request rid={self._pending_move_rid}: "
-                f"error_code={status.error_code}"
-            )
-            logger.error("EpsonLS6Worker '%s': %s", self._name, msg)
-            self.write_state(f"{self._name}.last_error", msg)
-            self._write_completion(self._pending_move_rid)
-            self._pending_move_rid = None
-            self._move_started = False
-            return
-
-        # Normal completion path: wait until we've observed busy=True
-        # at least once (the move is actually in flight), then look for
-        # busy=False with done=True (the move has finished).
-        if not self._move_started:
-            if status.busy:
-                self._move_started = True
-            return
-
-        if not status.busy and status.done:
-            self._write_completion(self._pending_move_rid)
-            self._pending_move_rid = None
-            self._move_started = False
+            self.note_error(f"error_code={int(status.error_code)}")
+        elif status.busy:
+            self.note_busy_started()
+        elif status.done:
+            self.note_completion()
 
     # ------------------------------------------------------------------
     # Note handlers
     # ------------------------------------------------------------------
 
-    def _on_move_l(self, payload: dict) -> None:
-        self._dispatch_motion(payload, self.driver.move_l)
+    def _dispatch_move_l(self, payload: dict) -> None:
+        self.driver.move_l(
+            tuple(payload["target"]),
+            speed=payload.get("speed"),
+            accel=payload.get("accel"),
+        )
 
-    def _on_move_j(self, payload: dict) -> None:
-        self._dispatch_motion(payload, self.driver.move_j)
+    def _dispatch_move_j(self, payload: dict) -> None:
+        self.driver.move_j(
+            tuple(payload["target"]),
+            speed=payload.get("speed"),
+            accel=payload.get("accel"),
+        )
 
-    def _on_jump(self, payload: dict) -> None:
-        self._dispatch_motion(payload, self.driver.jump)
+    def _dispatch_jump(self, payload: dict) -> None:
+        self.driver.jump(
+            tuple(payload["target"]),
+            speed=payload.get("speed"),
+            accel=payload.get("accel"),
+        )
 
     def _on_halt(self, payload: dict) -> None:
-        # NEXT-011: halt against runtime is no-op for now (proto has no
-        # goal_id). We still cancel local pending state so the BT
-        # doesn't hang waiting for a request the user explicitly halted.
-        if self._pending_move_rid is not None:
-            self._write_completion(self._pending_move_rid)
-        self._pending_move_rid = None
-        self._move_started = False
+        # halt is synchronous: cancel the pending motion (writes
+        # last_completed_id so the BT doesn't hang) then call driver.
+        # We still need to maintain last_request_id / last_completed_id
+        # for the halt request itself, in case the caller used
+        # NotifyAndWait — pop __request_id__ and complete it
+        # immediately after the driver call.
+        request_id = payload.pop("__request_id__", None)
+        if request_id is not None:
+            assert self._board is not None
+            self._board.post_state(
+                f"{self._name}.last_request_id", int(request_id),
+                writer=self._name,
+            )
+
+        self.cancel_pending(reason="halt")
+
         try:
-            self.driver.halt(0)  # no-op in current impl
+            self.driver.halt(0)  # NEXT-011: no-op in current impl
         except Exception:
             logger.exception("EpsonLS6Worker '%s': halt raised", self._name)
 
-    def _dispatch_motion(self, payload: dict, motion_fn) -> None:
-        rid = payload.pop("__request_id__", None)
-        if rid is None:
-            logger.warning(
-                "EpsonLS6Worker '%s': motion note missing __request_id__ — "
-                "BT must use NotifyAndWait to dispatch motion notes",
-                self._name,
+        if request_id is not None:
+            assert self._board is not None
+            self._board.post_state(
+                f"{self._name}.last_completed_id", int(request_id),
+                writer=self._name,
             )
-
-        target = payload.get("target")
-        if target is None:
-            msg = "motion note payload missing 'target'"
-            logger.error("EpsonLS6Worker '%s': %s", self._name, msg)
-            self.write_state(f"{self._name}.last_error", msg)
-            if rid is not None:
-                self.write_state(f"{self._name}.last_request_id", int(rid))
-                self._write_completion(int(rid))
-            return
-
-        # If a previous move is still pending, complete it so the
-        # caller's NotifyAndWait doesn't hang — log loudly because this
-        # usually means the BT dispatched two motions without waiting.
-        if self._pending_move_rid is not None:
-            logger.warning(
-                "EpsonLS6Worker '%s': dispatched new motion while rid=%d "
-                "still pending; force-completing the old rid",
-                self._name, self._pending_move_rid,
-            )
-            self._write_completion(self._pending_move_rid)
-
-        if rid is not None:
-            self.write_state(f"{self._name}.last_request_id", int(rid))
-
-        speed = payload.get("speed")
-        accel = payload.get("accel")
-        try:
-            motion_fn(tuple(target), speed=speed, accel=accel)
-        except Exception as exc:
-            logger.exception(
-                "EpsonLS6Worker '%s': motion dispatch failed (target=%s)",
-                self._name, target,
-            )
-            self.write_state(f"{self._name}.last_error", repr(exc))
-            if rid is not None:
-                self._write_completion(int(rid))
-            self._pending_move_rid = None
-            self._move_started = False
-            return
-
-        self._pending_move_rid = int(rid) if rid is not None else None
-        self._move_started = False
-
-    # ------------------------------------------------------------------
-    # Internals
-    # ------------------------------------------------------------------
-
-    def _write_completion(self, rid: int) -> None:
-        self.write_state(f"{self._name}.last_completed_id", int(rid))

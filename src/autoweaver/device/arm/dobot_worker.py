@@ -3,7 +3,7 @@
 Owns one Dobot arm's TCP connection: holds the driver, polls the
 feedback frame on every tick, publishes business-level state to the
 WorldBoard under ``<self.name>.*``, and exposes async motion commands
-via the standard note + request_id protocol.
+via the standard MotionWorker async-note protocol.
 
 BT leaves drive this Worker via ``NotifyAndWait``, exactly the same
 way they drive ``EpsonLS6Worker``. The state field names match (done,
@@ -11,27 +11,24 @@ busy, error_code, pose, joints) so leaf code is dof- and brand-
 agnostic — replacing a Dobot with an LS6 (where physically possible)
 is a one-line wiring change, not a BT rewrite.
 
-The async completion model differs from EpsonLS6 in implementation but
-not in interface:
+The async completion model differs from EpsonLS6 in *what* is read
+each tick, not in *how* completion is signalled:
 
   - EpsonLS6 reads done/busy directly from the SCARA runtime status.
   - Dobot derives them from the controller ``RobotMode`` field
     (RUNNING = busy; anything else after RUNNING = done).
 
-Both then write ``last_completed_id`` on the busy → done transition.
+Both then feed busy/done/error to the same MotionWorker edge helpers.
 
 The "move to current pose" no-op case (controller skips motion because
-target equals current) is handled by a tick-count grace period: if
-busy never goes True within ``_NO_OP_TICK_THRESHOLD`` ticks of
-dispatch, the request is treated as already complete. At BT 20Hz this
-is ~1.5s, well beyond any legitimate motion that would have raised
-busy by then.
+target equals current) is handled by MotionWorker's no_op_tick
+mechanism. ``no_op_tick_threshold = 30`` ≈ 1.5s at BT 20Hz, well
+beyond any legitimate motion that would have raised busy by then.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 import numpy as np
 
@@ -41,7 +38,8 @@ from autoweaver.device.arm.dobot_states import (
     ROBOT_MODE_RUNNING,
 )
 from autoweaver.geometry import transforms
-from autoweaver.worker.base import TickContext, Worker
+from autoweaver.worker.base import TickContext
+from autoweaver.worker.motion import MotionWorker
 
 logger = logging.getLogger(__name__)
 
@@ -50,13 +48,14 @@ logger = logging.getLogger(__name__)
 # ZYX-intrinsic in degrees. See dobot.py for the rationale.
 _POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
 
-# Ticks to wait for busy = True before treating a dispatched move as a
-# no-op completion. At BT 20Hz this is ~1.5s.
-_NO_OP_TICK_THRESHOLD = 30
 
-
-class DobotWorker(Worker):
+class DobotWorker(MotionWorker):
     dof = 6
+
+    # Enable MotionWorker's no-op grace: if busy never goes True
+    # within this many ticks of dispatch, treat the request as a
+    # controller-skipped no-op (target == current pose).
+    no_op_tick_threshold = 30
 
     def __init__(
         self,
@@ -69,15 +68,6 @@ class DobotWorker(Worker):
         self._name = name
         self.driver = Dobot(ip=ip, name=name)
         self._default_speed = default_speed
-
-        self._pending_move_rid: Optional[int] = None
-        # ``_move_started`` flips True the first time we see busy=True
-        # for this rid. Until then a stale done from before dispatch
-        # would falsely complete the request.
-        self._move_started: bool = False
-        # No-op grace: if busy never goes True we assume the controller
-        # skipped the motion (target == current pose).
-        self._no_op_ticks: int = 0
 
     @property
     def name(self) -> str:
@@ -94,22 +84,21 @@ class DobotWorker(Worker):
         self.declare_state(f"{self._name}.pose", np.ndarray)
         self.declare_state(f"{self._name}.joints", tuple)
 
-        # Motion notes registered raw; on_tick manages last_completed_id.
-        assert self._board is not None
-        for note_name, handler in [
-            ("move_l", self._on_move_l),
-            ("move_j", self._on_move_j),
-            ("move_j_joints", self._on_move_j_joints),
-        ]:
-            self._board.accept_notes(
-                namespace=self._name,
-                name=note_name,
-                payload_type=dict,
-                on_receive=handler,
-            )
+        self.accept_async_notes("move_l", dict, self._dispatch_move_l)
+        self.accept_async_notes("move_j", dict, self._dispatch_move_j)
+        self.accept_async_notes(
+            "move_j_joints", dict, self._dispatch_move_j_joints,
+        )
 
-        # halt is synchronous from the BT's perspective; auto-wrapper OK.
-        self.accept_notes("halt", dict, self._on_halt)
+        # halt is synchronous from the BT's perspective. See
+        # EpsonLS6Worker for why this bypasses MotionWorker's wrapper.
+        assert self._board is not None
+        self._board.accept_notes(
+            namespace=self._name,
+            name="halt",
+            payload_type=dict,
+            on_receive=self._on_halt,
+        )
 
     def on_start(self) -> None:
         self.driver.start()
@@ -126,7 +115,7 @@ class DobotWorker(Worker):
             logger.exception("DobotWorker '%s': driver.stop raised", self._name)
 
     # ------------------------------------------------------------------
-    # State publishing + completion detection
+    # State publishing + completion detection (MotionWorker pattern)
     # ------------------------------------------------------------------
 
     def on_tick(self, ctx: TickContext) -> None:
@@ -157,118 +146,80 @@ class DobotWorker(Worker):
         self.write_state(f"{self._name}.pose", pose_matrix)
         self.write_state(f"{self._name}.joints", joints)
 
-        if self._pending_move_rid is None:
-            return
-
-        # Error path: controller tripped (workspace limit, joint limit,
-        # singularity, etc.). Surface as last_error and release the
-        # pending rid so the BT doesn't hang.
         if error:
-            rid = self._pending_move_rid
-            msg = (
-                f"controller raised alarm during motion rid={rid} "
-                "(workspace / joint / singularity limit likely)"
+            self.note_error(
+                f"controller alarm (RobotMode={robot_mode}: workspace / "
+                "joint / singularity limit likely)"
             )
-            logger.error("DobotWorker '%s': %s", self._name, msg)
-            self.write_state(f"{self._name}.last_error", msg)
-            self._write_completion(rid)
-            self._reset_pending()
-            return
-
-        if not self._move_started:
-            if busy:
-                self._move_started = True
-                self._no_op_ticks = 0
-            else:
-                # No-op grace period: target may equal current pose.
-                self._no_op_ticks += 1
-                if self._no_op_ticks >= _NO_OP_TICK_THRESHOLD:
-                    logger.info(
-                        "DobotWorker '%s': rid=%d never entered RUNNING "
-                        "after %d ticks; treating as no-op completion",
-                        self._name, self._pending_move_rid, self._no_op_ticks,
-                    )
-                    self._write_completion(self._pending_move_rid)
-                    self._reset_pending()
-            return
-
-        # busy went True, now watch for True → False transition.
-        if not busy:
-            self._write_completion(self._pending_move_rid)
-            self._reset_pending()
+        elif busy:
+            self.note_busy_started()
+        elif done:
+            # If busy was ever seen, complete; otherwise count idle
+            # ticks toward no-op grace.
+            self.note_completion()
+            self.note_idle_tick()
 
     # ------------------------------------------------------------------
     # Note handlers
     # ------------------------------------------------------------------
 
-    def _on_move_l(self, payload: dict) -> None:
-        self._dispatch_motion(payload, self.driver.move_l)
+    def _dispatch_move_l(self, payload: dict) -> None:
+        target = self._extract_target(payload)
+        speed = int(payload.get("speed", self._default_speed))
+        self.driver.move_l(tuple(target), speed=speed)
 
-    def _on_move_j(self, payload: dict) -> None:
-        self._dispatch_motion(payload, self.driver.move_j)
+    def _dispatch_move_j(self, payload: dict) -> None:
+        target = self._extract_target(payload)
+        speed = int(payload.get("speed", self._default_speed))
+        self.driver.move_j(tuple(target), speed=speed)
 
-    def _on_move_j_joints(self, payload: dict) -> None:
-        self._dispatch_motion(payload, self.driver.move_j_joints)
+    def _dispatch_move_j_joints(self, payload: dict) -> None:
+        target = self._extract_target(payload)
+        speed = int(payload.get("speed", self._default_speed))
+        self.driver.move_j_joints(tuple(target), speed=speed)
+
+    @staticmethod
+    def _extract_target(payload: dict):
+        """Pull the motion target from a payload.
+
+        Accepts ``target`` (canonical) and ``pose`` (legacy alias).
+        Raises KeyError with a clear name so the framework's dispatch
+        wrapper records a helpful ``last_error``.
+        """
+        target = payload.get("target")
+        if target is None:
+            target = payload.get("pose")
+        if target is None:
+            raise KeyError(
+                "motion note payload missing 'target' (or legacy 'pose')"
+            )
+        return target
 
     def _on_halt(self, payload: dict) -> None:
-        rid = self._pending_move_rid
+        request_id = payload.pop("__request_id__", None)
+        if request_id is not None:
+            assert self._board is not None
+            self._board.post_state(
+                f"{self._name}.last_request_id", int(request_id),
+                writer=self._name,
+            )
+
+        # Use the current pending request id if there is one; the
+        # driver's halt treats stale ids as no-ops.
+        halt_target = self._pending_request_id if self._pending_request_id is not None else 0
+        self.cancel_pending(reason="halt")
+
         try:
-            # Pass current pending goal id (or 0 if none — driver's halt
-            # treats stale ids as no-ops).
-            self.driver.halt(rid if rid is not None else 0)
+            self.driver.halt(halt_target)
         except Exception:
             logger.exception("DobotWorker '%s': halt raised", self._name)
-        if rid is not None:
-            self._write_completion(rid)
-        self._reset_pending()
 
-    def _dispatch_motion(self, payload: dict, motion_fn) -> None:
-        rid = payload.pop("__request_id__", None)
-        if rid is None:
-            logger.warning(
-                "DobotWorker '%s': motion note missing __request_id__ — "
-                "BT must use NotifyAndWait to dispatch motion notes",
-                self._name,
+        if request_id is not None:
+            assert self._board is not None
+            self._board.post_state(
+                f"{self._name}.last_completed_id", int(request_id),
+                writer=self._name,
             )
-
-        target = payload.get("target") or payload.get("pose")
-        if target is None:
-            msg = "motion note payload missing 'target' (or legacy 'pose') field"
-            logger.error("DobotWorker '%s': %s", self._name, msg)
-            self.write_state(f"{self._name}.last_error", msg)
-            if rid is not None:
-                self.write_state(f"{self._name}.last_request_id", int(rid))
-                self._write_completion(int(rid))
-            return
-
-        if self._pending_move_rid is not None:
-            logger.warning(
-                "DobotWorker '%s': dispatched new motion while rid=%d "
-                "still pending; force-completing the old rid",
-                self._name, self._pending_move_rid,
-            )
-            self._write_completion(self._pending_move_rid)
-
-        if rid is not None:
-            self.write_state(f"{self._name}.last_request_id", int(rid))
-
-        speed = int(payload.get("speed", self._default_speed))
-        try:
-            motion_fn(tuple(target), speed=speed)
-        except Exception as exc:
-            logger.exception(
-                "DobotWorker '%s': motion dispatch failed (target=%s)",
-                self._name, target,
-            )
-            self.write_state(f"{self._name}.last_error", repr(exc))
-            if rid is not None:
-                self._write_completion(int(rid))
-            self._reset_pending()
-            return
-
-        self._pending_move_rid = int(rid) if rid is not None else None
-        self._move_started = False
-        self._no_op_ticks = 0
 
     # ------------------------------------------------------------------
     # Internals
@@ -284,11 +235,3 @@ class DobotWorker(Worker):
             return self.driver._pull_frame()
         except RuntimeError:
             return None
-
-    def _write_completion(self, rid: int) -> None:
-        self.write_state(f"{self._name}.last_completed_id", int(rid))
-
-    def _reset_pending(self) -> None:
-        self._pending_move_rid = None
-        self._move_started = False
-        self._no_op_ticks = 0

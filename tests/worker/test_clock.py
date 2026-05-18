@@ -13,6 +13,7 @@ from autoweaver.motion_policy.world_board import WorldBoard
 from autoweaver.worker.async_pool import AsyncPoolRegistry
 from autoweaver.worker.base import TickContext, Worker, WorkerState
 from autoweaver.worker.clock import BTClock
+from autoweaver.worker.perception import PerceptionWorker
 
 
 # ---- Fixtures -----------------------------------------------------------
@@ -283,7 +284,7 @@ def test_tick_order_drains_then_delivers_then_trees_then_workers():
             events.append("tree_tick")
             return Status.RUNNING
 
-    class _OrderingWorker(Worker):
+    class _OrderingWorker(PerceptionWorker):
         @property
         def name(self) -> str:
             return "order"
@@ -334,7 +335,7 @@ def test_pass_note_during_tree_tick_delivers_on_next_tick():
             board.pass_note("rcv", "ping", {"i": self.sent}, sender="tree")
             return Status.RUNNING
 
-    class _Receiver(Worker):
+    class _Receiver(PerceptionWorker):
         @property
         def name(self) -> str:
             return "rcv"
@@ -405,7 +406,7 @@ def test_request_id_tracked_in_state():
     clock = BTClock(world_board=board)
     received: list[dict] = []
 
-    class _TrackedWorker(Worker):
+    class _TrackedWorker(PerceptionWorker):
         @property
         def name(self) -> str:
             return "tracked"
@@ -444,7 +445,7 @@ def test_note_handler_exception_marks_worker_faulted():
     board = WorldBoard()
     clock = BTClock(world_board=board)
 
-    class _BoomWorker(Worker):
+    class _BoomWorker(PerceptionWorker):
         @property
         def name(self) -> str:
             return "boom"

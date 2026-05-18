@@ -17,13 +17,18 @@ import threading
 from typing import Optional
 
 from autoweaver.comm.base import CommBase
-from autoweaver.worker.base import TickContext, Worker
+from autoweaver.worker.base import TickContext
+from autoweaver.worker.perception import PerceptionWorker
 
 logger = logging.getLogger(__name__)
 
 
-class CommWorker(Worker):
+class CommWorker(PerceptionWorker):
     """Base Worker for protocol-driven I/O.
+
+    Inherits ``PerceptionWorker`` (handler returns = work done) — comm
+    handlers pull a packet → decode → write state, which fits the
+    synchronous-completion protocol exactly.
 
     Subclasses provide the protocol (via constructor) and override
     ``handle_message`` to react to inbound messages. The framework runs
