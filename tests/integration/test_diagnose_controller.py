@@ -6,8 +6,8 @@ import time
 
 import pytest
 
-from autoweaver.device.arm._dobot_sdk import DobotApiDashboard, DobotApiFeedBack
-from autoweaver.device.arm.dobot_states import robot_mode_name
+from autoweaver.device.arm.dobot._sdk import DobotApiDashboard, DobotApiFeedBack
+from autoweaver.device.arm.dobot.states import robot_mode_name
 
 
 @pytest.mark.integration_safe

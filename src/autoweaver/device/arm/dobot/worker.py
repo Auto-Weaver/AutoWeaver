@@ -32,8 +32,8 @@ import logging
 
 import numpy as np
 
-from autoweaver.device.arm.dobot import Dobot
-from autoweaver.device.arm.dobot_states import (
+from autoweaver.device.arm.dobot.driver import Dobot
+from autoweaver.device.arm.dobot.states import (
     ROBOT_MODE_ERROR,
     ROBOT_MODE_RUNNING,
 )
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 
 # Convention matches Dobot SDK: ToolVectorActual is (x, y, z, rx, ry, rz)
-# ZYX-intrinsic in degrees. See dobot.py for the rationale.
+# ZYX-intrinsic in degrees. See driver.py for the rationale.
 _POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
 
 

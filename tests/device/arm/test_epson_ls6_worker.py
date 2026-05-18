@@ -5,8 +5,8 @@ from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
 from autoweaver.device.arm.base import ArmBase4
-from autoweaver.device.arm.epson_ls6 import EpsonLS6
-from autoweaver.device.arm.epson_ls6_worker import EpsonLS6Worker
+from autoweaver.device.arm.epson_ls6.driver import EpsonLS6
+from autoweaver.device.arm.epson_ls6.worker import EpsonLS6Worker
 from autoweaver.motion_policy.mock_runtime_client import MockRuntimeClient
 from autoweaver.motion_policy.world_board import WorldBoard
 from autoweaver.worker.async_pool import AsyncPool

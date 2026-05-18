@@ -7,7 +7,7 @@ from typing import Sequence
 
 import numpy as np
 
-from autoweaver.device.arm._dobot_sdk import (
+from autoweaver.device.arm.dobot._sdk import (
     DobotApiDashboard,
     DobotApiFeedBack,
 )
@@ -16,7 +16,7 @@ from autoweaver.device.arm.base import (
     validate_joint_target,
     validate_target_6dof,
 )
-from autoweaver.device.arm.dobot_states import (
+from autoweaver.device.arm.dobot.states import (
     ROBOT_MODE_DISABLED,
     ROBOT_MODE_ENABLE,
     ROBOT_MODE_ERROR,

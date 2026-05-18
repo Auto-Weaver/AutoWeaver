@@ -4,13 +4,13 @@ from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
 
-from autoweaver.device.arm.dobot import Dobot
-from autoweaver.device.arm.dobot_states import (
+from autoweaver.device.arm.dobot.driver import Dobot
+from autoweaver.device.arm.dobot.states import (
     ROBOT_MODE_ENABLE,
     ROBOT_MODE_ERROR,
     ROBOT_MODE_RUNNING,
 )
-from autoweaver.device.arm.dobot_worker import DobotWorker
+from autoweaver.device.arm.dobot.worker import DobotWorker
 from autoweaver.motion_policy.world_board import WorldBoard
 from autoweaver.worker.async_pool import AsyncPool
 from autoweaver.worker.base import TickContext

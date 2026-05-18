@@ -43,7 +43,7 @@ import logging
 
 import numpy as np
 
-from autoweaver.device.arm.epson_ls6 import EpsonLS6, _scara_status_to_matrix
+from autoweaver.device.arm.epson_ls6.driver import EpsonLS6, _scara_status_to_matrix
 from autoweaver.motion_policy.runtime_client import RuntimeClient
 from autoweaver.worker.base import TickContext
 from autoweaver.worker.motion import MotionWorker

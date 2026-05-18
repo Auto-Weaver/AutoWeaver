@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from autoweaver.device.arm.base import ArmBase4
-from autoweaver.device.arm.epson_ls6 import EpsonLS6
+from autoweaver.device.arm.epson_ls6.driver import EpsonLS6
 from autoweaver.motion_policy.mock_runtime_client import MockRuntimeClient
 
 

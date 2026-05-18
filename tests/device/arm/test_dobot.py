@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from autoweaver.device.arm.base import ArmBase6
-from autoweaver.device.arm.dobot import COORD_JOINT, COORD_POSE, Dobot
+from autoweaver.device.arm.dobot.driver import COORD_JOINT, COORD_POSE, Dobot
 
 
 class _FakeDashboard:
