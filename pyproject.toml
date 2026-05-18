@@ -4,13 +4,14 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autoweaver"
-version = "0.6.0"
+version = "0.9.1"
 description = "A framework for industrial vision inspection systems"
 requires-python = ">=3.12"
 dependencies = [
   "grpcio>=1.60",
   "numpy",
   "opencv-python",
+  "protobuf>=4",
   "pymodbus>=3.11.4",
   "pyyaml>=6.0",
   "requests>=2.32.5",

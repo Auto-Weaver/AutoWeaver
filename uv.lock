@@ -8,12 +8,13 @@ resolution-markers = [
 
 [[package]]
 name = "autoweaver"
-version = "0.6.0"
+version = "0.9.1"
 source = { editable = "." }
 dependencies = [
     { name = "grpcio" },
     { name = "numpy" },
     { name = "opencv-python" },
+    { name = "protobuf" },
     { name = "pymodbus" },
     { name = "pyyaml" },
     { name = "requests" },
@@ -44,6 +45,7 @@ requires-dist = [
     { name = "iai-gxipy", marker = "extra == 'daheng'", specifier = ">=2.0.2407.9061" },
     { name = "numpy" },
     { name = "opencv-python" },
+    { name = "protobuf", specifier = ">=4" },
     { name = "pymodbus", specifier = ">=3.11.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "requests", specifier = ">=2.32.5" },
