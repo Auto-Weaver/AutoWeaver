@@ -19,6 +19,7 @@
 use std::sync::Arc;
 
 use anyhow::{anyhow, Context, Result};
+use tracing::info;
 
 use crate::contract::{ContractRegistry, FieldDir};
 use crate::ethercat::PdoBuffers;
@@ -98,6 +99,21 @@ pub fn submit_scara_goal(
     let slave_bufs = buffers.get(slave_position)?;
     let mut rx = slave_bufs.rx.lock().unwrap();
 
+    // Log the trigger bit state BEFORE we write — so we can tell whether
+    // it was 0 (good, real rising edge ahead) or 1 (bad, falling-edge
+    // piggyback didn't fire and SPEL+ won't see a new rising edge).
+    let trigger_before = read_trigger_state(contracts, &args.device, &rx)
+        .unwrap_or(false);
+    info!(
+        device = %args.device,
+        motion = %args.motion,
+        routine = routine,
+        x = args.x, y = args.y, z = args.z, u = args.u,
+        speed = args.speed, accel = args.accel,
+        trigger_before = trigger_before,
+        "submit_scara_goal: staging fields"
+    );
+
     // 1) Stage target + motion params.
     write_named_field(
         contracts,
@@ -158,6 +174,10 @@ pub fn submit_scara_goal(
         TypedValue::Bool(true),
         &mut rx,
     )?;
+    info!(
+        device = %args.device,
+        "submit_scara_goal: trigger written to 1 (rising edge)"
+    );
 
     Ok(())
 }
@@ -200,6 +220,18 @@ pub fn read_scara_status(
                 TypedValue::Bool(false),
                 &mut rx,
             )?;
+            info!(
+                device = %device,
+                "read_scara_status: trigger flipped 1→0 (falling edge piggyback)"
+            );
+        } else {
+            // done=true but trigger already low — happens during idle
+            // polling when SPEL+ is already back at Wait Sw=1 and waiting.
+            // Log at debug so we don't spam.
+            tracing::debug!(
+                device = %device,
+                "read_scara_status: done=true but trigger already low (idle)"
+            );
         }
     }
 
