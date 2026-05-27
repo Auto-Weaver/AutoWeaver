@@ -26,7 +26,7 @@ class Action:
     """Holds a BT tree, its Blackboard, and per-tick instrumentation.
 
     In 0.5.0 the ``Action`` is no longer a self-driving tick loop —
-    that responsibility moved to ``BTClock`` (see EVO-006). The Action's
+    that responsibility moved to ``BTClock`` (see EVO-007). The Action's
     role is:
 
       - own one BT tree and its Blackboard

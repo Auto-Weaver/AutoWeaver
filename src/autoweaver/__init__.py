@@ -45,7 +45,7 @@ from .worker import (
 )
 from .tasks import Task, TaskBase
 
-__version__ = "0.6.0"
+__version__ = "0.10.0"
 
 __all__ = [
     # Worker framework

@@ -1,11 +1,11 @@
 """Sensor base class — passive device driver.
 
-A Sensor is a stateful device driver held by a Subsystem. It does NOT
+A Sensor is a stateful device driver held by a Worker. It does NOT
 respond to ticks; its node just exposes open / close / snapshot /
-configure for the subsystem to call. See EVO-006.
+configure for the Worker to call. See EVO-007.
 
 Continuous sensors (pressure, distance) and triggered sensors (cameras)
-share the same shape — the Subsystem decides per-tick whether to call
+share the same shape — the Worker decides per-tick whether to call
 ``snapshot``.
 """
 
@@ -18,17 +18,17 @@ from typing import Any
 class Sensor(ABC):
     """Abstract device driver.
 
-    Subsystems hold one or more Sensors. The Sensor itself is passive:
+    Workers hold one or more Sensors. The Sensor itself is passive:
     no internal heartbeat, no thread (other than what the device SDK
     requires), no tick handling. Its only job is to expose:
 
-      - ``open / close``        — lifecycle, called by Subsystem on_start / on_stop
+      - ``open / close``        — lifecycle, called by Worker on_start / on_stop
       - ``is_open``              — query
       - ``snapshot``             — return current reading (synchronous)
       - ``configure``            — set device parameters
 
     ``snapshot`` may be slow (e.g. waiting for a fresh frame from a
-    camera). Subsystems are responsible for calling it from
+    camera). Workers are responsible for calling it from
     ``run_async`` if it doesn't fit a single tick budget.
     """
 

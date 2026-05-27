@@ -1,9 +1,10 @@
 """TaskBase — optional helper for EventBus-aware task components.
 
-In 0.5.0 (EVO-006), Tasks are subsystem-internal components, no longer
+In 0.6.0+ (EVO-007), Tasks are Worker-internal components, no longer
 driven by an Engine.tick(data) loop. ``TaskBase`` is provided as a
 small helper for components that need to subscribe / broadcast on an
-EventBus the Subsystem owns. Subsystems may use it or roll their own.
+EventBus the Worker owns. Workers may use it or roll their own.
+(Historically these were called Subsystems in 0.5.x.)
 """
 
 from __future__ import annotations
@@ -26,7 +27,7 @@ class TaskBase:
       - ``broadcast(event, payload)`` helper
 
     Subclasses define their own work surface — e.g. a method
-    ``process(detections)`` invoked by their owning Subsystem. The
+    ``process(detections)`` invoked by their owning Worker. The
     framework does not impose a fixed entrypoint.
     """
 

@@ -1,8 +1,8 @@
-"""NotifyLeaf — pass a note to a Subsystem and immediately return SUCCESS.
+"""NotifyLeaf — pass a note to a Worker and immediately return SUCCESS.
 
-Fire-and-forget: the leaf does not wait for the subsystem to act on the
+Fire-and-forget: the leaf does not wait for the Worker to act on the
 note. Use a separate WaitFor downstream to observe the result via state.
-See EVO-005 / EVO-006.
+See EVO-005 / EVO-007.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 
 
 class NotifyLeaf(TreeNode):
-    """Pass a note to a target Subsystem and SUCCEED immediately.
+    """Pass a note to a target Worker and SUCCEED immediately.
 
     Example::
 
@@ -24,8 +24,8 @@ class NotifyLeaf(TreeNode):
 
     The leaf calls ``world_board.pass_note(target, note_name, payload, sender)``
     in ``on_start`` and returns SUCCESS. It never observes whether the
-    subsystem actually acts on the note — that's a job for a downstream
-    WaitFor (or other Condition) reading the subsystem's state.
+    Worker actually acts on the note — that's a job for a downstream
+    WaitFor (or other Condition) reading the Worker's state.
 
     The leaf is stateless across ticks; once it returns SUCCESS the BT's
     parent control node decides what to do next.

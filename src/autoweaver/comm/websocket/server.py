@@ -21,8 +21,8 @@ class WSServerProtocol(CommBase):
 
     The server is NOT started in ``__init__``.  Call ``open()`` to bind
     and start accepting connections — typically done by
-    ``CommSubsystem.on_start()`` so that the protocol only runs while
-    the Subsystem is attached.
+    ``CommWorker.on_start()`` so that the protocol only runs while
+    the Worker is attached.
     """
 
     def __init__(

@@ -20,7 +20,7 @@ class WebSocketProtocol(CommBase):
     """WebSocket client protocol implementation.
 
     Maintains a background receiver thread so ``receive()`` remains
-    non-blocking and fits the ``CommSubsystem`` polling model. Frames
+    non-blocking and fits the ``CommWorker`` polling model. Frames
     are encoded as JSON objects by default.
     """
 

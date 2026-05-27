@@ -78,7 +78,7 @@ class WorldBoard:
 
     State (the bulletin board)
     --------------------------
-    Persistent fields written by Subsystems under their own namespace.
+    Persistent fields written by Workers under their own namespace.
     Each key is of the form ``<namespace>.<rest>``. A namespace is owned
     by exactly one writer — once any key in ``foo.*`` is declared with
     writer ``X``, every other ``foo.*`` key must also be declared (and
@@ -90,7 +90,7 @@ class WorldBoard:
 
     Notes (passed slips of paper)
     -----------------------------
-    One-shot, one-way slips passed to a Subsystem from outside (typically
+    One-shot, one-way slips passed to a Worker from outside (typically
     by a BT NotifyLeaf). Notes do NOT enter the state snapshot — they sit
     in a pending queue until ``deliver_notes()`` runs the registered
     receiver(s). After delivery they're gone.
@@ -108,7 +108,7 @@ class WorldBoard:
                                                     that have a receiver
 
     BT Clock calls ``deliver_notes()`` at the start of each tick before
-    broadcasting tick to subsystems.
+    broadcasting tick to Workers.
     """
 
     DEFAULT_HISTORY_SIZE = 100
@@ -185,7 +185,7 @@ class WorldBoard:
 
         Args:
             namespace: namespace of the receiver. By convention this is the
-                receiving Subsystem's name.
+                receiving Worker's name.
             name: short note name (e.g. ``"start_picking"``). Must not
                 contain dots.
             payload_type: expected payload type; checked at ``pass_note``.
@@ -235,7 +235,7 @@ class WorldBoard:
         if acceptor is None:
             raise KeyError(
                 f"No receiver for note ({namespace!r}, {name!r}). "
-                "The receiving Subsystem must call accept_notes() first."
+                "The receiving Worker must call accept_notes() first."
             )
         if not isinstance(payload, acceptor.payload_type):
             raise TypeError(
