@@ -188,8 +188,8 @@ def test_unknown_frame_raises_frame_not_found(tmp_path):
 
 
 def test_flange_unreferenced_explains_bind(tmp_path):
-    """A flange with no tool and no bound pose edge isn't a graph node at
-    all — explain that it needs bind_dynamic."""
+    """A frame named nowhere isn't a graph node — the error lists what is
+    known and explains how a frame comes to exist."""
     f = Frames(_write(tmp_path, """
         frames:
           - name: arm_1_base
@@ -197,7 +197,7 @@ def test_flange_unreferenced_explains_bind(tmp_path):
             xyz: [0, 0, 0]
             rpy: [0, 0, 0]
     """))
-    with pytest.raises(FrameNotFound, match="bind_dynamic"):
+    with pytest.raises(FrameNotFound, match="not in the graph"):
         f.lookup("world", "arm_1_flange")
 
 
@@ -249,3 +249,56 @@ def test_can_lookup_reflects_missing_required(tmp_path):
     assert not f.can_lookup("world", "arm_1_tool_camera", {})
     snap = {"arm_1.pose": np.eye(4)}
     assert f.can_lookup("world", "arm_1_tool_camera", snap)
+
+
+# ---------------------------------------------------------------------------
+# Dynamic edges declared in YAML (not bound in code)
+# ---------------------------------------------------------------------------
+
+# A full cell where the flange-pose dynamic edge and a droop compensation
+# edge are declared in the YAML itself.
+_CELL_WITH_DYNAMIC = """
+    frames:
+      - name: arm_1_base
+        parent: world
+        xyz: [0, 0, 0]
+        rpy: [0, 0, 0]
+      - name: arm_1_flange
+        parent: arm_1_base
+        dynamic:
+          state_key: arm_1.pose
+          required: true
+      - name: arm_1_flange_corrected
+        parent: arm_1_flange
+        dynamic:
+          state_key: droop.arm_1        # optional: missing → identity
+      - name: arm_1_tool_gripper
+        parent: arm_1_flange_corrected
+        xyz: [0, 0, 100]
+        rpy: [0, 0, 0]
+"""
+
+
+def test_yaml_dynamic_edge_full_chain(tmp_path):
+    f = Frames(_write(tmp_path, _CELL_WITH_DYNAMIC))
+    # flange at (500,0,200); droop not published yet → corrected == flange.
+    snap = {"arm_1.pose": _translation(500, 0, 200)}
+    # gripper is +100z on the corrected flange → (500, 0, 300) in world.
+    p = f.transform_point([0, 0, 0], "arm_1_tool_gripper", "world", snap)
+    assert np.allclose(p, [500, 0, 300])
+
+
+def test_yaml_optional_droop_applies_when_present(tmp_path):
+    f = Frames(_write(tmp_path, _CELL_WITH_DYNAMIC))
+    snap = {
+        "arm_1.pose": _translation(500, 0, 200),
+        "droop.arm_1": _translation(0, 0, -5),  # 5mm sag at the flange
+    }
+    p = f.transform_point([0, 0, 0], "arm_1_tool_gripper", "world", snap)
+    assert np.allclose(p, [500, 0, 295])  # 300 - 5
+
+
+def test_yaml_required_flange_missing_raises(tmp_path):
+    f = Frames(_write(tmp_path, _CELL_WITH_DYNAMIC))
+    with pytest.raises(FramesDisconnected, match="load-bearing"):
+        f.transform_point([0, 0, 0], "arm_1_tool_gripper", "world", {})

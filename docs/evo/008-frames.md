@@ -168,24 +168,34 @@ leaf 基类把当前 tick 的 snapshot 隐式喂进 `resolve`，业务侧看到�
 
 静态边不需要单独注册：开机从 YAML 加载时全部进表（沿用现 `Geometry.__init__` 的形态）。
 
-## YAML schema（静态边部分，沿用 05-16）
+## YAML schema
 
-静态标定边的写法不变——一条记录 = 一次标定的产物，扁平 list，`rpy`（ZYX intrinsic 度数，钉死）为主、`matrix` 为 escape hatch：
+一份 YAML 描述一个工位的**完整拓扑**——静态边和动态边都在里面，扁平 list。一个条目是两类之一：
+
+**静态边**：`xyz`+`rpy`（ZYX intrinsic 度数，钉死）为主、`matrix` 为 escape hatch。
+
+**动态边**：一个 `dynamic:` 块，带 `state_key`（Worker 往 WorldBoard 写的 key）和 `required`（缺值是否致命）。不带 xyz/rpy/matrix——它的 4×4 运行时从快照取。
 
 ```yaml
 frames:
-  - name: arm_1_base
+  - name: arm_1_base                  # 静态边
     parent: world
     xyz: [0.0, 0.0, 0.0]              # mm，钉死
     rpy: [0, 0, 0]                    # ZYX intrinsic 度数，钉死
 
-  - name: arm_2_base
-    parent: world
-    xyz: [1200.0, 0.0, 0.0]
-    rpy: [180, 0, 0]                  # 朝向跟 arm_1 相反
+  - name: arm_1_flange                # 动态边：flange 实时 pose（主边，required）
+    parent: arm_1_base
+    dynamic:
+      state_key: arm_1.pose
+      required: true
 
-  - name: arm_1_tool_camera
+  - name: arm_1_flange_corrected      # 动态边：下垂补偿（补偿边，optional）
     parent: arm_1_flange
+    dynamic:
+      state_key: droop.arm_1          # required 缺省 false → 缺值当 identity
+
+  - name: arm_1_tool_camera           # 静态边：挂在补偿后的 flange 上
+    parent: arm_1_flange_corrected
     xyz: [50, 0, 100]
     rpy: [0, -90, 0]
 
@@ -198,17 +208,33 @@ frames:
       - [0, 0, 0, 1]
 ```
 
-**旋转格式钉死 rpy + matrix、删四元数和所有 convention/unit 开关**——这部分（05-16 的决定）原样保留，理由不变：没有任何主流厂商示教器输出四元数，ZYX intrinsic 度 + mm 是工业事实标准，多 convention 开关是过度设计。`transforms.quat_to_matrix` 仍留在 `transforms.py` 作通用工具，将来真出现四元数源时重新接 schema 只是 10 行的事。
+**旋转格式钉死 rpy + matrix、删四元数和所有 convention/unit 开关**——这部分（05-16 的决定）原样保留：没有任何主流厂商示教器输出四元数，ZYX intrinsic 度 + mm 是工业事实标准。`transforms.quat_to_matrix` 仍留在 `transforms.py`，将来真出现四元数源时重新接 schema 只是 10 行的事。
 
-### schema 需要放开的地方（重写引入的实打工作项）
+### 命名约定已删除，只保留结构校验
 
-现状 `schema.py` 的命名 / parent 规则是为"只有 flange 一条动态边"硬死的，新设计要支持更长的链路和嵌套 frame，这几处必须放开：
+06-02 把初版的**命名约定强校验删掉**了：frame 名和 parent 不再受任何 regex 约束（初版那套 `arm_<id>_base` / `arm_<id>_tool_<x>` / `fixture_<x>` 和 `parent ∈ {world, arm_*_flange}` 全部移除）。你按工位实际拓扑随便起名、随便接 parent，`world` 也只是个普通名字（约定上当根，但不强制）。
 
-- **`_validate_parent`** 现在只允许 `parent ∈ {world, arm_*_flange}`。要支持把 tool 挂到补偿后的 frame（如 `arm_1_flange_corrected`）或 fixture 上挂 frame，parent 白名单要扩。
-- **`_NAME_PATTERNS`** 现在硬死 base / tool / fixture 三类。要支持嵌套（如 `arm_1_tool_camera_optical`，对齐 REP-103 的 `_optical` 后缀约定）和补偿 frame 命名，name regex 要放开。
-- 动态边的占位：YAML 是否要为动态边（flange / 补偿）声明占位行，还是完全由 `bind_dynamic` 在代码侧注册——见「待拍板」。
+理由：初版的命名警察是为"只有 flange 一条动态边"的窄拓扑定的。新设计有补偿边、嵌套 frame（如 `_optical` 后缀）、跨臂任意接法——再用 regex 一刀切只会挡路。命名对不对是人的责任，框架不替你管。
 
-**注意：保留 YAML ≠ schema 不动。** 静态边的旋转格式不变，但命名 / 拓扑校验规则要为更长的链路放开，这是重写的真实工作量，不是零成本。
+但**结构校验保留**，因为坐标是物理正确性基线，畸形文件必须启动即炸、不能静默错放：
+
+- name 在文件内唯一
+- 字段白名单（拦 `quaternion` / `quat` 这类 typo 或老字段，给清晰报错而非静默 fallback）
+- `rpy` / `matrix` / `dynamic` 三选一互斥，动态边不能再带 xyz/rpy/matrix
+- `matrix` 必须是合法 4×4（底行 `[0,0,0,1]`、左上 3×3 正交 det=+1）
+- `dynamic.state_key` 必须非空字符串、`dynamic.required` 必须布尔
+
+这条线的取舍是：**删的是"命名警察"，留的是"防坐标静默错乱的底线"**——两者性质不同，不能一起删。
+
+### 动态边：YAML 声明 vs 代码注册
+
+动态边现在**两条路都通**，等价：
+
+- **YAML 声明**（上面的 `dynamic:` 块）——拓扑集中、一眼看全工位，加载时自动 `bind_dynamic`。
+- **代码注册**（`frames.bind_dynamic(parent, child, state_key=..., required=...)`）——给"边的存在依赖运行期信息"的场景留口子。
+
+推荐默认走 YAML，让"一份 YAML 看全拓扑"成立；代码注册作为补充。两者最终都进同一张图，`lookup` 不区分来源。
+
 
 ## 生命周期与拥有关系
 
@@ -261,16 +287,22 @@ autoweaver 不知道下垂、不知道视觉闭环——它只提供"动态边"�
 | 结构性失败 fail loud（FrameNotFound / FramesDisconnected） | 坐标是物理正确性基线 | 延续初版"启动 fail-loud" |
 | YAML 而非 URDF / JSON | 标定文件要注释；URDF 是没人用还得学的重 DSL，留作 export 出口 | 不变 |
 | 旋转钉死 rpy（ZYX intrinsic 度）+ matrix | 所有主流厂商示教器输出 Euler 度 | 不变（05-16） |
-| 命名 / parent 校验放开以支持更长链路和嵌套 frame | 新设计有补偿边、嵌套 frame | **新** |
+| 删除命名约定（regex/parent 白名单），只留结构校验 | 命名警察是窄拓扑的产物；命名对错是人的责任，但畸形文件仍须 fail loud | **新** |
+| 动态边可在 YAML 声明（`dynamic:` 块）或代码 `bind_dynamic` | 拓扑集中可读优先；代码注册留作补充 | **新** |
 | 由 motion_policy 持有，不做全局单例 | 测试友好、初始化顺序显式 | 不变 |
 | Frames 分层架在 WorldBoard 之上，不合并不父子 | 两边 API 语义不同，合并会互相污染 | 明确化初版"不读不写 WorldBoard"的待定项 |
 
+## 已拍板（06-02 落地）
+
+- **动态边在 YAML 声明**（`dynamic:` 块），加载时自动注册；`bind_dynamic` 代码注册作为补充。两者等价，进同一张图。→ 解决了原"动态边要不要在 YAML 占位"和"binding 谁注册"。
+- **`required` / `optional` 写在 YAML 的 `dynamic.required`**（缺省 false）。谁声明这条边谁定缺值语义，且拓扑仍"一眼看全"。
+- **命名约定删除**，只留结构校验。
+
 ## 待拍板
 
-1. **动态边 binding 谁注册、何时注册？** 倾向：publisher Worker 在 `on_attach` 时，除了 `declare_state("arm_1.pose")`，再 `frames.bind_dynamic(...)` 声明这条边。binding 开机期定死、运行期不可变。要求 Worker attach 时 Frames 已存在且拿得到引用——wiring 顺序待定。
-2. **`required` / `optional` 写哪？** 倾向：publisher 注册 binding 时带（谁发谁定缺值语义）。代价：YAML 不再"一眼看全部拓扑"，动态边的存在散在代码侧。
-3. **动态边要不要在 YAML 占位行？** 占位 → 拓扑集中可读，但要和 `bind_dynamic` 对账；不占位 → 代码侧唯一来源，但 YAML 只剩静态边。
-4. **`ArmBase.get_flange_pose()` 直读接口去留？** 现状它和 `snapshot["<arm>.pose"]` 并存（脚本调试用前者、BT 用后者）。新设计 BT 侧统一走 lookup，直读接口可保留给脚本。
+1. **动态边 binding 何时注册？** YAML 声明在 `Frames.__init__` 加载时就进图。但有些边（如 publisher 才知道 state_key 的）可能要 Worker `on_attach` 时 `bind_dynamic`。后者要求 Worker attach 时 Frames 已存在且拿得到引用——**wiring 顺序待定**（下一步）。
+2. **Frames 引用怎么注入 Worker / leaf？** 跟 WorldBoard 一样由 BTClock 在 attach 时注入，还是别的路径——wiring 的核心问题。
+3. **`ArmBase.get_flange_pose()` 直读接口去留？** 现状它和 `snapshot["<arm>.pose"]` 并存（脚本调试用前者、BT 用后者）。新设计 BT 侧统一走 lookup，直读接口可保留给脚本。
 
 ## 不做的事
 

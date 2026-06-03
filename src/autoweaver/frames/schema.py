@@ -1,25 +1,26 @@
 """YAML schema parser and validator for calibration files.
 
-Produces a list of `FrameEdge` dataclasses with translation in mm and
-rotation expressed as a standard 4×4 matrix. Downstream code (Frames)
-sees only the standardized form.
+Produces a list of `FrameEdge` dataclasses. A frame entry is one of two
+kinds:
 
-The schema accepts two rotation representations:
-  - `rpy: [rx, ry, rz]` — Euler angles, ZYX intrinsic, degrees. The
-    canonical format: matches every common vendor's teach-pendant
-    convention (Dobot, KUKA, Yaskawa, Epson SPEL+) and is what the
-    forthcoming N-point calibration tool will emit.
-  - `matrix: [[...]]` — 4×4 homogeneous transform. Escape hatch for
-    test fixtures and externally-generated calibrations.
+  - **static** — a fixed calibrated transform. Rotation given as
+    `rpy: [rx, ry, rz]` (Euler, ZYX intrinsic, degrees — the canonical
+    vendor teach-pendant convention) or `matrix: [[...]]` (4×4 homogeneous,
+    an escape hatch). Translation `xyz` is always in mm.
+  - **dynamic** — a live edge whose 4×4 is *not* stored here but read at
+    runtime from a WorldBoard snapshot. Declared with a `dynamic:` block
+    carrying `state_key` (the snapshot key a Worker publishes to) and
+    `required` (whether a missing value is fatal or treated as identity).
 
-xyz is always in mm — no unit switch. Quaternions are not accepted; the
-N-point calibration tool and human-authored entries both produce Euler
-angles natively.
+Frame names and parents are **not** constrained to any naming convention —
+declare whatever topology the cell needs. The validator only enforces
+structural integrity (unique names, known fields, well-formed matrices,
+exactly one of the mutually-exclusive rotation/dynamic forms) so that a
+malformed file fails loud at load instead of silently mis-placing a frame.
 """
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -29,30 +30,35 @@ import yaml
 
 from autoweaver.frames import transforms
 
-_NAME_PATTERNS = (
-    re.compile(r"^arm_[a-z0-9_]+_base$"),
-    re.compile(r"^arm_[a-z0-9_]+_tool_[a-z0-9_]+$"),
-    re.compile(r"^fixture_[a-z0-9_]+$"),
-)
-
-_FLANGE_PATTERN = re.compile(r"^arm_[a-z0-9_]+_flange$")
-
 _ROTATION_FIELDS = ("rpy", "matrix")
-_KNOWN_FIELDS = frozenset({"name", "parent", "xyz", "rpy", "matrix"})
+_KNOWN_FIELDS = frozenset({"name", "parent", "xyz", "rpy", "matrix", "dynamic"})
+_KNOWN_DYNAMIC_FIELDS = frozenset({"state_key", "required"})
 
 _RPY_CONVENTION = "zyx_intrinsic_deg"
 
 
 @dataclass(frozen=True)
 class FrameEdge:
-    """One calibrated transform: `parent ← name`.
+    """One frame edge: `parent ← name`.
 
-    `matrix` is the 4×4 homogeneous transform with translation in mm.
+    Static edge: `matrix` is the fixed 4×4 homogeneous transform (mm), and
+    `state_key` is None.
+
+    Dynamic edge: `matrix` is None and the transform is read at runtime from
+    ``snapshot[state_key]``; `required` says whether a missing value is fatal
+    (True) or treated as identity (False).
     """
 
     name: str
     parent: str
-    matrix: np.ndarray
+    matrix: np.ndarray | None = None
+    state_key: str | None = None
+    required: bool = False
+
+    @property
+    def is_dynamic(self) -> bool:
+        return self.state_key is not None
+
 
 
 class CalibrationSchemaError(ValueError):
@@ -101,44 +107,46 @@ def _parse_entry(entry: dict[str, Any]) -> FrameEdge:
     parent = entry.get("parent")
     if not isinstance(name, str) or not isinstance(parent, str):
         raise CalibrationSchemaError("'name' and 'parent' must be strings")
+    if not name or not parent:
+        raise CalibrationSchemaError("'name' and 'parent' must be non-empty")
 
-    _validate_name(name)
-    _validate_parent(parent, name)
+    is_dynamic = "dynamic" in entry
+    has_static = any(f in entry for f in (*_ROTATION_FIELDS, "xyz"))
+    if is_dynamic and has_static:
+        raise CalibrationSchemaError(
+            "a dynamic edge must not also carry 'xyz' / 'rpy' / 'matrix'; "
+            "its transform comes from the snapshot at runtime"
+        )
+
+    if is_dynamic:
+        state_key, required = _parse_dynamic(entry["dynamic"])
+        return FrameEdge(
+            name=name, parent=parent, matrix=None,
+            state_key=state_key, required=required,
+        )
 
     xyz_raw = entry.get("xyz")
     if xyz_raw is None and "matrix" not in entry:
-        raise CalibrationSchemaError("must provide 'xyz' (or use 'matrix' for full transform)")
-
+        raise CalibrationSchemaError(
+            "must provide 'xyz' (+ 'rpy'), 'matrix', or a 'dynamic' block"
+        )
     matrix = _build_matrix(entry, xyz_raw)
     return FrameEdge(name=name, parent=parent, matrix=matrix)
 
 
-def _validate_name(name: str) -> None:
-    if any(p.match(name) for p in _NAME_PATTERNS):
-        return
-    if name == "world":
-        raise CalibrationSchemaError(
-            "'world' must not appear as a frame name; it is the implicit root"
-        )
-    if _FLANGE_PATTERN.match(name):
-        raise CalibrationSchemaError(
-            f"flange frame {name!r} must not appear as a name; "
-            "flange pose is dynamic and provided by the arm SDK"
-        )
-    raise CalibrationSchemaError(
-        f"name {name!r} does not match any allowed pattern: "
-        f"arm_<id>_base, arm_<id>_tool_<x>, fixture_<x>"
-    )
-
-
-def _validate_parent(parent: str, name: str) -> None:
-    if parent == "world":
-        return
-    if _FLANGE_PATTERN.match(parent):
-        return
-    raise CalibrationSchemaError(
-        f"parent {parent!r} is invalid; must be 'world' or 'arm_<id>_flange'"
-    )
+def _parse_dynamic(block: Any) -> tuple[str, bool]:
+    if not isinstance(block, dict):
+        raise CalibrationSchemaError("'dynamic' must be a mapping")
+    unknown = set(block.keys()) - _KNOWN_DYNAMIC_FIELDS
+    if unknown:
+        raise CalibrationSchemaError(f"unknown 'dynamic' fields: {sorted(unknown)}")
+    state_key = block.get("state_key")
+    if not isinstance(state_key, str) or not state_key:
+        raise CalibrationSchemaError("'dynamic.state_key' must be a non-empty string")
+    required = block.get("required", False)
+    if not isinstance(required, bool):
+        raise CalibrationSchemaError("'dynamic.required' must be a boolean")
+    return state_key, required
 
 
 def _build_matrix(entry: dict[str, Any], xyz_raw: Any) -> np.ndarray:

@@ -25,7 +25,6 @@ in tests). See docs/evo/008-frames.md for the design contract.
 from __future__ import annotations
 
 import logging
-import re
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,9 +33,6 @@ from typing import Any, Protocol
 import numpy as np
 
 from autoweaver.frames import schema, transforms
-
-_BASE_PATTERN = re.compile(r"^arm_[a-z0-9_]+_base$")
-_FLANGE_PATTERN = re.compile(r"^arm_[a-z0-9_]+_flange$")
 
 logger = logging.getLogger(__name__)
 
@@ -123,17 +119,24 @@ class Frames:
         self._dynamic_edges: dict[tuple[str, str], _Edge] = {}
 
         for edge in schema.load(calibration_path):
-            self._add_edge(
-                _Edge(
-                    parent=edge.parent,
-                    child=edge.name,
-                    matrix=edge.matrix,
-                    state_key=None,
-                    required=False,
+            if edge.is_dynamic:
+                assert edge.state_key is not None
+                self.bind_dynamic(
+                    edge.parent, edge.name,
+                    state_key=edge.state_key, required=edge.required,
                 )
-            )
+            else:
+                self._add_edge(
+                    _Edge(
+                        parent=edge.parent,
+                        child=edge.name,
+                        matrix=edge.matrix,
+                        state_key=None,
+                        required=False,
+                    )
+                )
 
-        logger.info("frames: loaded static graph from %s", calibration_path)
+        logger.info("frames: loaded graph from %s", calibration_path)
         self._log_tree(calibration_path)
 
     # ─── Graph construction ─────────────────────────────────────────────
@@ -383,82 +386,56 @@ class Frames:
         return hops
 
     def _explain_unknown(self, name: str) -> str:
-        if _FLANGE_PATTERN.match(name) and name not in self._adj:
-            return (
-                f"frame {name!r} is not in the graph; a flange frame only "
-                "exists once its arm's flange-pose edge is bound via "
-                "bind_dynamic()"
-            )
-        return f"frame {name!r} is not in the graph; known: {self.frame_names()}"
+        return (
+            f"frame {name!r} is not in the graph; known frames: "
+            f"{self.frame_names()}. (A frame only exists once some edge — "
+            "static in YAML or bound via bind_dynamic() — names it.)"
+        )
 
     def _log_tree(self, path: str | Path) -> None:
-        """Print the static topology rooted at `world` at INFO level, so a
-        human can sanity-check what was loaded by glancing at startup logs.
-
-        Only static edges are known at load time; dynamic edges are bound
-        later, so they appear here as the gap between an arm base and its
-        tools (annotated)."""
-        lines = [f"frames: static topology loaded from {path}"]
-        roots = [n for n in ("world",) if n in self._adj]
-        # Frames reachable but with no 'world' root (dangling) still listed.
-        if not roots:
-            roots = sorted(self._adj)
+        """Print the frame topology at INFO level so a human can sanity-check
+        what was loaded by glancing at startup logs. Rooted at `world` if
+        present; dynamic edges are annotated with their snapshot key."""
+        lines = [f"frames: topology loaded from {path}"]
+        roots = ["world"] if "world" in self._adj else sorted(self._adj)
         seen: set[str] = set()
         for root in roots:
-            self._render_subtree(root, "", True, lines, seen, is_root=True)
-        # Anything unreached (disconnected island) — flag it.
+            if root not in seen:
+                lines.append(root)
+                self._render_subtree(root, "", lines, seen)
+        # Anything unreached from the chosen root(s) — flag it.
         for name in sorted(self._adj):
             if name not in seen:
-                lines.append(f"⚠ {name} (not connected to world)")
+                lines.append(f"⚠ {name} (not connected to {roots[0]!r})")
                 seen.add(name)
         logger.info("\n".join(lines))
 
     def _render_subtree(
         self,
         node: str,
-        indent: str,
-        is_last: bool,
+        prefix: str,
         lines: list[str],
         seen: set[str],
         *,
+        edge_tag: str = "",
         is_root: bool = False,
     ) -> None:
-        if is_root:
-            lines.append(node)
-        else:
-            lines.append(f"{indent}{'└── ' if is_last else '├── '}{node}")
+        """Render `node` and its descendants. `prefix` is the indentation
+        already laid down by ancestors (the connector for `node` itself is
+        included by the caller)."""
         seen.add(node)
-        child_indent = indent + ("    " if is_last or is_root else "│   ")
-
-        # An arm base connects to its flange only through the (dynamic)
-        # flange-pose edge, which isn't a static edge — so bridge it here for
-        # readability and render the flange's tool subtree underneath.
-        if _BASE_PATTERN.match(node):
-            arm_id = node[len("arm_") : -len("_base")]
-            flange = f"arm_{arm_id}_flange"
-            if flange in self._adj and flange not in seen:
-                lines.append(f"{child_indent}└── {flange} (dynamic, from SDK)")
-                seen.add(flange)
-                tools = sorted(
-                    e.child
-                    for e in self._adj.get(flange, ())
-                    if e.parent == flange and not e.is_dynamic and e.child not in seen
-                )
-                tool_indent = child_indent + "    "
-                for i, tool in enumerate(tools):
-                    self._render_subtree(
-                        tool, tool_indent, i == len(tools) - 1, lines, seen
-                    )
-
-        children = sorted(
-            e.child
-            for e in self._adj.get(node, ())
-            if e.parent == node and not e.is_dynamic and e.child not in seen
+        child_edges = sorted(
+            (e for e in self._adj.get(node, ())
+             if e.parent == node and e.child not in seen),
+            key=lambda e: e.child,
         )
-        for i, child in enumerate(children):
-            self._render_subtree(
-                child, child_indent, i == len(children) - 1, lines, seen
-            )
+        for i, edge in enumerate(child_edges):
+            last = i == len(child_edges) - 1
+            connector = "└── " if last else "├── "
+            tag = f"  (dynamic ← {edge.state_key})" if edge.is_dynamic else ""
+            lines.append(f"{prefix}{connector}{edge.child}{tag}")
+            child_prefix = prefix + ("    " if last else "│   ")
+            self._render_subtree(edge.child, child_prefix, lines, seen)
 
 
 

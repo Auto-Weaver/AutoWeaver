@@ -84,42 +84,36 @@ def test_yaml_parse_error_wrapped(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Name validation
+# Name / parent: no naming convention — arbitrary names accepted
 # ---------------------------------------------------------------------------
 
-def test_world_name_rejected(tmp_path):
-    path = _write(tmp_path, """
-        frames:
-          - name: world
-            parent: world
-            xyz: [0, 0, 0]
-            rpy: [0, 0, 0]
-    """)
-    with pytest.raises(CalibrationSchemaError, match="implicit root"):
-        schema.load(path)
-
-
-def test_flange_as_name_rejected(tmp_path):
-    path = _write(tmp_path, """
-        frames:
-          - name: arm_1_flange
-            parent: world
-            xyz: [0, 0, 0]
-            rpy: [0, 0, 0]
-    """)
-    with pytest.raises(CalibrationSchemaError, match="dynamic"):
-        schema.load(path)
-
-
-def test_arbitrary_name_rejected(tmp_path):
+def test_arbitrary_names_accepted(tmp_path):
+    """Naming convention was removed — any non-empty name/parent is fine."""
     path = _write(tmp_path, """
         frames:
           - name: my_robot
+            parent: shop_floor
+            xyz: [0, 0, 0]
+            rpy: [0, 0, 0]
+          - name: weird.frame-name
+            parent: my_robot
+            xyz: [1, 2, 3]
+            rpy: [0, 0, 0]
+    """)
+    edges = schema.load(path)
+    assert {e.name for e in edges} == {"my_robot", "weird.frame-name"}
+    assert edges[1].parent == "my_robot"
+
+
+def test_empty_name_rejected(tmp_path):
+    path = _write(tmp_path, """
+        frames:
+          - name: ""
             parent: world
             xyz: [0, 0, 0]
             rpy: [0, 0, 0]
     """)
-    with pytest.raises(CalibrationSchemaError, match="does not match"):
+    with pytest.raises(CalibrationSchemaError, match="non-empty"):
         schema.load(path)
 
 
@@ -140,21 +134,74 @@ def test_duplicate_name_rejected(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Parent validation
+# Dynamic edges
 # ---------------------------------------------------------------------------
 
-def test_parent_not_world_or_flange_rejected(tmp_path):
+def test_dynamic_edge_parsed(tmp_path):
     path = _write(tmp_path, """
         frames:
-          - name: arm_1_tool_camera
+          - name: arm_1_flange
+            parent: arm_1_base
+            dynamic:
+              state_key: arm_1.pose
+              required: true
+    """)
+    edges = schema.load(path)
+    e = edges[0]
+    assert e.is_dynamic
+    assert e.matrix is None
+    assert e.state_key == "arm_1.pose"
+    assert e.required is True
+
+
+def test_dynamic_required_defaults_false(tmp_path):
+    path = _write(tmp_path, """
+        frames:
+          - name: arm_1_flange_corrected
+            parent: arm_1_flange
+            dynamic:
+              state_key: droop.arm_1
+    """)
+    edges = schema.load(path)
+    assert edges[0].required is False
+
+
+def test_dynamic_with_static_fields_rejected(tmp_path):
+    path = _write(tmp_path, """
+        frames:
+          - name: arm_1_flange
             parent: arm_1_base
             xyz: [0, 0, 0]
-            rpy: [0, 0, 0]
+            dynamic:
+              state_key: arm_1.pose
     """)
-    with pytest.raises(CalibrationSchemaError, match="parent"):
+    with pytest.raises(CalibrationSchemaError, match="must not also carry"):
         schema.load(path)
 
 
+def test_dynamic_missing_state_key_rejected(tmp_path):
+    path = _write(tmp_path, """
+        frames:
+          - name: arm_1_flange
+            parent: arm_1_base
+            dynamic:
+              required: true
+    """)
+    with pytest.raises(CalibrationSchemaError, match="state_key"):
+        schema.load(path)
+
+
+def test_dynamic_unknown_subfield_rejected(tmp_path):
+    path = _write(tmp_path, """
+        frames:
+          - name: arm_1_flange
+            parent: arm_1_base
+            dynamic:
+              state_key: arm_1.pose
+              freqency: 50
+    """)
+    with pytest.raises(CalibrationSchemaError, match="unknown 'dynamic' fields"):
+        schema.load(path)
 # ---------------------------------------------------------------------------
 # Rotation field validation
 # ---------------------------------------------------------------------------
@@ -307,9 +354,9 @@ def test_error_includes_frame_name_context(tmp_path):
             xyz: [0, 0, 0]
             rpy: [0, 0, 0]
           - name: arm_2_base
-            parent: floor
+            parent: world
             xyz: [0, 0, 0]
-            rpy: [0, 0, 0]
+            bogus_field: 1
     """)
     with pytest.raises(CalibrationSchemaError, match="arm_2_base"):
         schema.load(path)
