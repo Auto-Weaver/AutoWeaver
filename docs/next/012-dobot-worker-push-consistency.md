@@ -2,7 +2,7 @@
 
 日期：2026-05-17（同日完成）
 
-前置文档：[NEXT-006: Dobot Arm 集成](006-dobot-arm-mainline.md)、[NEXT-008: Flange Pose Pull 模型](008-flange-pose-pull-model.md)、[Discuss: EpsonLS6 / RuntimeClient 主流程](../discuss/epson-ls6-runtime-client-open-items.md)
+前置文档：[NEXT-006: Dobot Arm 集成](006-dobot-arm-mainline.md)、[EVO-008: Frames](../evo/008-frames.md)、[Discuss: EpsonLS6 / RuntimeClient 主流程](../discuss/epson-ls6-runtime-client-open-items.md)
 
 状态：✅ **已完成** —— 从 hub 项目 upstream 了 `ArmWorker` 模式到 autoweaver `DobotWorker`，伴随 `NotifyAndWait` / `WaitForAdvance` 也一起进 autoweaver。原计划"等 EpsonLS6 真机后再做"被前推，因为发现 hub 已有实战验证过的实现，三机协同上线前 upstream 比延后合并代价更低。落地见 `src/autoweaver/device/arm/dobot_worker.py` + 17 个单元测试。
 

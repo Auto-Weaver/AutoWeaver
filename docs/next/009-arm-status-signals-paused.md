@@ -2,9 +2,11 @@
 
 日期：2026-05-15
 
-前置文档：[NEXT-001: PLC 角色降级](001-plc-role-downgrade.md)、[NEXT-006: Dobot Arm 集成](006-dobot-arm-mainline.md)、[NEXT-008: Flange pose 改 pull 模型](008-flange-pose-pull-model.md)
+前置文档：[NEXT-001: PLC 角色降级](001-plc-role-downgrade.md)、[NEXT-006: Dobot Arm 集成](006-dobot-arm-mainline.md)、[EVO-008: Frames](../evo/008-frames.md)
 
 状态：**暂停** —— 主要功能完成后回头做
+
+> **2026-06-02 注**：本文多处提到的 "NEXT-008 把 pose 改 pull、从 WorldBoard 移出" 这个前提**已被 EVO-008 Frames 取代**。最终方案是 flange pose **保留在 WorldBoard `<arm>.pose`**（由 ArmWorker 写），Frames 从 tick snapshot 读、不自己存。所以下文凡涉及 "pose 退出 WorldBoard / pull 模型" 的描述按此修正理解；本文真正还成立的部分是"状态信号（running/error/safety_state/...）暂停、无消费方不推"这条。
 
 ## 背景
 

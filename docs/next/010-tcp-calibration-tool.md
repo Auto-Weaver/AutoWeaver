@@ -2,7 +2,7 @@
 
 日期：2026-05-16
 
-前置文档：[EVO-008: Frames](../evo/008-frames.md)、[NEXT-008: Flange pose pull](008-flange-pose-pull-model.md)
+前置文档：[EVO-008: Frames](../evo/008-frames.md)
 
 状态：**暂缓** —— 多臂协同走通后再做
 
@@ -38,7 +38,7 @@ EVO-008 拍定了 `flange ← tool` 静态边的 schema：
 - **厂商之间约定不一样**：Dobot 的"工具坐标系"和 Epson 的、ABB 的定义都不相同，写进 YAML 的语义未必匹配 autoweaver 期望的 `T(flange ← tool)`
 - **手工抄数据**：肉眼读数 / 复制粘贴的环节自带误差
 
-NEXT-008 已经确立了一个原则：**SDK 读的 raw flange pose 是唯一可信的事实源**。TCP 标定流程也应该遵守这个原则——任何让操作员"读屏幕、抄数据"的步骤都是反这个原则的。
+EVO-008 Frames 确立了一个原则：**SDK 读的 raw flange pose 是唯一可信的事实源**（动态边的值由 ArmWorker 写进 WorldBoard、Frames 只读）。TCP 标定流程也应该遵守这个原则——任何让操作员"读屏幕、抄数据"的步骤都是反这个原则的。
 
 ## 新流程（目标态）
 

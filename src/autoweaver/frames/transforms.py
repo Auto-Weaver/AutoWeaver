@@ -91,6 +91,69 @@ def euler_to_matrix(
     return _compose(rot, xyz_mm)
 
 
+def unwrap_euler(values: list[float] | tuple[float, ...] | np.ndarray) -> list[float]:
+    """Make a sequence of Euler angles (degrees) continuous across the
+    ±180° wrap-around boundary.
+
+    Euler angles are only defined up to ±360°, so the same physical
+    orientation can be reported as e.g. +179.999° or -179.999°. A teach
+    pendant reading the same wrist pose at several waypoints can return a
+    sequence that flips back and forth across the boundary::
+
+        [-179.9996, +179.9994, +179.95, -179.97]
+
+    Feeding that straight into interpolation (bilinear over corners, lerp
+    over waypoints) or a ``move_l`` makes the controller see a ~360° wrist
+    delta and either alarm on a joint limit or spin the wrist a full turn.
+
+    This shifts each value by a multiple of 360° so consecutive entries
+    never differ by more than 180° — the discrete analogue of
+    ``numpy.unwrap`` for degrees, anchored on the first value::
+
+        → [-179.9996, -180.0006, -180.05, -179.97]
+
+    The first value is returned unchanged; only relative continuity matters.
+    Apply independently to each of rx / ry / rz (see :func:`unwrap_poses`).
+    """
+    arr = np.asarray(values, dtype=np.float64)
+    if arr.ndim != 1:
+        raise ValueError(f"values must be 1-D, got shape {arr.shape}")
+    if arr.size == 0:
+        return []
+    out = [float(arr[0])]
+    for v in arr[1:]:
+        v = float(v)
+        diff = v - out[-1]
+        # Fold the step back into (-180, +180].
+        v -= 360.0 * np.ceil((diff - 180.0) / 360.0)
+        out.append(v)
+    return out
+
+
+def unwrap_poses(
+    poses: list[list[float]] | list[tuple[float, ...]] | np.ndarray,
+) -> list[list[float]]:
+    """Unwrap the rotation channels of a sequence of 6-DOF poses.
+
+    Each pose is ``(x, y, z, rx, ry, rz)`` with the rotation triplet in
+    degrees. Translation is passed through untouched; rx / ry / rz are each
+    run through :func:`unwrap_euler` so the sequence is continuous and safe
+    to interpolate. Returns a new list of 6-element lists.
+    """
+    arr = np.asarray(poses, dtype=np.float64)
+    if arr.ndim != 2 or arr.shape[1] != 6:
+        raise ValueError(
+            f"poses must be shape (N, 6) = (x,y,z,rx,ry,rz), got {arr.shape}"
+        )
+    rx = unwrap_euler(arr[:, 3])
+    ry = unwrap_euler(arr[:, 4])
+    rz = unwrap_euler(arr[:, 5])
+    return [
+        [float(arr[i, 0]), float(arr[i, 1]), float(arr[i, 2]), rx[i], ry[i], rz[i]]
+        for i in range(arr.shape[0])
+    ]
+
+
 def matrix_passthrough(matrix: list[list[float]] | np.ndarray) -> np.ndarray:
     """Validate a user-supplied 4×4 matrix and return it as float64.
 

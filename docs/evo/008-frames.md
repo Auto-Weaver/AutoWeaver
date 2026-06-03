@@ -336,6 +336,32 @@ autoweaver 不知道下垂、不知道视觉闭环——它只提供"动态边"�
 2. **`ArmBase.get_flange_pose()` 直读接口去留？** 现状它和 `snapshot["<arm>.pose"]` 并存（脚本调试用前者、BT 用后者）。新设计 BT 侧统一走 lookup，直读接口可保留给脚本。
 3. **第一份真实 cell.yaml + 跨臂示例 leaf**：在 pluck-hair / 双臂真机落地时产出，验证端到端形态。
 
+## `transforms.py`：底层纯函数工具
+
+`frames/transforms.py` 是 frames 的底层工具层（rpy/quat/matrix ↔ 4×4、闭式求逆等纯函数），driver 也直接用它做 SDK convention 翻译。除了矩阵转换，它还收纳与坐标姿态相关的通用工具——**凡是"任何用 Euler 角表示姿态的机器人都会遇到、和具体业务无关"的几何工具，归宿都是这里**，而不是散在各业务 repo 手搓。
+
+### 欧拉角连续化 `unwrap_euler` / `unwrap_poses`（原 NEXT-007）
+
+Euler 角只定义到 ±360°，同一个物理朝向在边界附近有两种数字表示（`+179.999°` vs `-179.999°`）。示教器连读同一姿态的几个 waypoint 可能吐出"两边来回跳"的序列：
+
+```
+[-179.9996, +179.9994, +179.95, -179.97]
+```
+
+直接喂插值（角点 bilinear、waypoint lerp）或 `move_l`，控制器会看到 ≈360° 的腕部跳变 → 撞关节限位告警、或腕子空转一整圈。这跟 SCARA / 6 轴无关，只要姿态用 Euler 表示、相邻位姿没做连续化就会复现（2026-05-15 pluck-hair 双臂联调实测踩到）。
+
+`unwrap_euler` 把每个值平移 360° 的整数倍，让相邻差永不超过 180°（degrees 版的 `numpy.unwrap`，锚定第一个值）：
+
+```python
+from autoweaver.frames import transforms
+rz = transforms.unwrap_euler([-179.9996, 179.9994, 179.95, -179.97])
+#  → [-179.9996, -180.0006, -180.05, -179.97]   连续，可安全插值
+
+poses = transforms.unwrap_poses(corners)   # (N,6) 的 rx/ry/rz 各自 unwrap，平移段不动
+```
+
+NEXT-007 当初还列了 `bilinear_pose` / `lerp_pose` / `slerp_pose` / `pose_distance` 等"顺手补"的候选——**这些不预先做**，等真有业务用例再按需加，不投机建一个空的 pose 工具库。
+
 ## 不做的事
 
 - **轨迹规划 / IK / FK**：机械臂 SDK 的事
@@ -347,9 +373,10 @@ autoweaver 不知道下垂、不知道视觉闭环——它只提供"动态边"�
 
 ## 后续工作
 
-- 重构 `src/autoweaver/geometry/`：把 `Geometry`（只读静态）扩成 `Frames`（静态 + 动态边 binding + resolve over snapshot）
-- 放开 `schema.py` 的命名 / parent 校验，支持更长链路和嵌套 frame
-- `bind_dynamic` 的 wiring：确定 Worker attach 时怎么拿到 Frames 引用
-- leaf 基类加 `self.lookup(target, source)`，内部喂 snapshot，结构性异常统一兜成 FAILURE
-- 第一份真实标定 YAML：在 pluck-hair 落地时产出，作为示例进 docs
+- ~~重构 `geometry/` → `Frames`（静态 + 动态边 + resolve over snapshot）~~ —— 已落地
+- ~~放开 `schema.py` 命名校验、支持动态边 YAML 声明~~ —— 已落地
+- ~~leaf 注入 wiring + `self.lookup(target, source)`~~ —— 已落地
+- ~~`unwrap_euler` / `unwrap_poses`（原 NEXT-007）~~ —— 已落地，见上
+- 第一份真实 cell.yaml：在 pluck-hair / 双臂真机落地时产出，作为示例进 docs
 - 跨臂示例 leaf（如有两台真机），验证 lookup 跨臂拼接形态
+- `ArmBase.get_flange_pose()` 直读接口的最终去留（见待拍板）

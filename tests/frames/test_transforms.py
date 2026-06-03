@@ -161,3 +161,56 @@ def test_invert_then_compose_yields_identity():
         "xyzw",
     )
     assert np.allclose(m @ transforms.invert(m), np.eye(4), atol=1e-12)
+
+
+# ---------------------------------------------------------------------------
+# unwrap_euler / unwrap_poses
+# ---------------------------------------------------------------------------
+
+def test_unwrap_euler_doc_example():
+    """The motivating teach-pendant sequence from NEXT-007."""
+    out = transforms.unwrap_euler([-179.9996, 179.9994, 179.95, -179.97])
+    assert np.allclose(out, [-179.9996, -180.0006, -180.05, -179.97])
+    # Every consecutive step is now ≤ 180° in magnitude.
+    diffs = np.diff(out)
+    assert np.all(np.abs(diffs) <= 180.0)
+
+
+def test_unwrap_euler_first_value_unchanged():
+    out = transforms.unwrap_euler([170.0, -170.0])
+    assert out[0] == 170.0
+    # 170 → -170 is a -340 raw step; unwrap folds it to +20.
+    assert np.isclose(out[1], 190.0)
+
+
+def test_unwrap_euler_no_wrap_passthrough():
+    vals = [0.0, 10.0, 20.0, 30.0]
+    assert np.allclose(transforms.unwrap_euler(vals), vals)
+
+
+def test_unwrap_euler_empty_and_single():
+    assert transforms.unwrap_euler([]) == []
+    assert transforms.unwrap_euler([42.0]) == [42.0]
+
+
+def test_unwrap_euler_rejects_2d():
+    with pytest.raises(ValueError, match="1-D"):
+        transforms.unwrap_euler([[1.0, 2.0], [3.0, 4.0]])
+
+
+def test_unwrap_poses_passes_translation_unwraps_rotation():
+    poses = [
+        [0, 0, 0, 0, 0, -179.9996],
+        [1, 2, 3, 0, 0, 179.9994],
+    ]
+    out = transforms.unwrap_poses(poses)
+    # translation untouched
+    assert out[1][:3] == [1.0, 2.0, 3.0]
+    # rz unwrapped to stay continuous
+    assert np.isclose(out[1][5], -180.0006)
+
+
+def test_unwrap_poses_rejects_wrong_shape():
+    with pytest.raises(ValueError, match=r"\(N, 6\)"):
+        transforms.unwrap_poses([[0, 0, 0, 0, 0]])  # only 5 columns
+
