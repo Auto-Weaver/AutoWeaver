@@ -2,7 +2,7 @@
 
 日期：2026-05-15
 
-前置文档：[EVO-005: Subsystem](../evo/005-bt-world-bridge.md)、[EVO-007: BT + Worker + Task](../evo/007-bt-worker-task.md)、[EVO-008: Geometry](../evo/008-geometry-frames.md)、[NEXT-006: Dobot Arm 集成](006-dobot-arm-mainline.md)
+前置文档：[EVO-005: Subsystem](../evo/005-bt-world-bridge.md)、[EVO-007: BT + Worker + Task](../evo/007-bt-worker-task.md)、[EVO-008: Frames](../evo/008-frames.md)、[NEXT-006: Dobot Arm 集成](006-dobot-arm-mainline.md)
 
 状态：待落地（临时方案，等正式 WorldBoard 重设计完成后再修订）
 

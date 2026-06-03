@@ -2,7 +2,7 @@
 
 日期：2026-05-16
 
-前置文档：[EVO-008: Geometry](../evo/008-geometry-frames.md)、[NEXT-008: Flange pose pull](008-flange-pose-pull-model.md)
+前置文档：[EVO-008: Frames](../evo/008-frames.md)、[NEXT-008: Flange pose pull](008-flange-pose-pull-model.md)
 
 状态：**暂缓** —— 多臂协同走通后再做
 

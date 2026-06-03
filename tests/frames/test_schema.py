@@ -4,8 +4,8 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from autoweaver.geometry import schema
-from autoweaver.geometry.schema import CalibrationSchemaError
+from autoweaver.frames import schema
+from autoweaver.frames.schema import CalibrationSchemaError
 
 
 def _write(tmp_path: Path, body: str) -> Path:

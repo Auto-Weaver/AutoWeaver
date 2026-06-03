@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from autoweaver.geometry import transforms
+from autoweaver.frames import transforms
 
 
 # ---------------------------------------------------------------------------

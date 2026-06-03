@@ -4,7 +4,7 @@
 
 状态：B/C/D/E/F 全部已落
 
-前置：[EVO-003: Rust Motion Runtime](../evo/003-motion-runtime.md)（0.8.0 goal 服务层）、[EVO-008: Geometry](../evo/008-geometry-frames.md)、[NEXT-006: Dobot Arm 集成](../next/006-dobot-arm-mainline.md)、[NEXT-011: LS6 halt 协议（推后）](../next/011-epson-ls6-halt-protocol.md)
+前置：[EVO-003: Rust Motion Runtime](../evo/003-motion-runtime.md)（0.8.0 goal 服务层）、[EVO-008: Frames](../evo/008-frames.md)、[NEXT-006: Dobot Arm 集成](../next/006-dobot-arm-mainline.md)、[NEXT-011: LS6 halt 协议（推后）](../next/011-epson-ls6-halt-protocol.md)
 
 ---
 

@@ -1,7 +1,7 @@
 """YAML schema parser and validator for calibration files.
 
 Produces a list of `FrameEdge` dataclasses with translation in mm and
-rotation expressed as a standard 4×4 matrix. Downstream code (Geometry)
+rotation expressed as a standard 4×4 matrix. Downstream code (Frames)
 sees only the standardized form.
 
 The schema accepts two rotation representations:
@@ -27,7 +27,7 @@ from typing import Any
 import numpy as np
 import yaml
 
-from autoweaver.geometry import transforms
+from autoweaver.frames import transforms
 
 _NAME_PATTERNS = (
     re.compile(r"^arm_[a-z0-9_]+_base$"),

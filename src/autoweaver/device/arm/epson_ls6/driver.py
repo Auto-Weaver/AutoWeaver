@@ -5,7 +5,7 @@ from typing import Sequence
 import numpy as np
 
 from autoweaver.device.arm.base import GoalId, validate_target_4dof
-from autoweaver.geometry import transforms
+from autoweaver.frames import transforms
 from autoweaver.motion_policy.runtime_client import RuntimeClient
 
 
