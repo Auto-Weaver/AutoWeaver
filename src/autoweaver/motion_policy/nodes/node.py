@@ -6,6 +6,9 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    import numpy as np
+
+    from autoweaver.frames import Frames
     from autoweaver.motion_policy.blackboard import Blackboard
     from autoweaver.motion_policy.world_board import Snapshot
 
@@ -28,6 +31,7 @@ class TreeNode(ABC):
         self._blackboard: Blackboard
         self._key_mapping: dict[str, str] = {}
         self._snapshot: Snapshot | None = None
+        self._frames: Frames | None = None
         self._exception: BaseException | None = None
 
     def tick(self, snapshot: Snapshot | None = None) -> Status:
@@ -58,6 +62,34 @@ class TreeNode(ABC):
                 "snapshot is only available during on_start / on_running"
             )
         return self._snapshot
+
+    def set_frames(self, frames: Frames) -> None:
+        """Inject the cell's coordinate-frame graph.
+
+        Called once when the tree is attached (mirrors ``set_blackboard``).
+        ControlNode propagates it to children so every node in the tree
+        shares one ``Frames`` instance.
+        """
+        self._frames = frames
+
+    def lookup(self, target: str, source: str) -> np.ndarray:
+        """Return ``T(target ← source)`` resolved against the current tick's
+        snapshot — the convenience verb for leaves doing coordinate math.
+
+        Combines the injected ``Frames`` graph with ``self.snapshot`` (the
+        per-tick frozen view), so a chain crossing several arms reads all
+        their live poses from one consistent snapshot.
+
+        Raises:
+            RuntimeError: no Frames was injected (the BTClock was created
+                without a ``frames=`` argument), or called outside a tick.
+        """
+        if self._frames is None:
+            raise RuntimeError(
+                f"node '{self.name}' called lookup() but no Frames was "
+                "injected; pass frames= to BTClock (or set_frames on the tree)"
+            )
+        return self._frames.lookup(target, source, self.snapshot)
 
     @abstractmethod
     def on_start(self) -> Status: ...

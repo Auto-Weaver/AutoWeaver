@@ -12,6 +12,7 @@ from autoweaver.worker.async_pool import AsyncPoolRegistry
 from autoweaver.worker.base import TickContext, Worker, WorkerState
 
 if TYPE_CHECKING:
+    from autoweaver.frames import Frames
     from autoweaver.motion_policy.action import Action
     from autoweaver.motion_policy.world_board import WorldBoard
 
@@ -60,10 +61,12 @@ class BTClock:
         world_board: WorldBoard,
         hz: int = DEFAULT_HZ,
         async_pool: AsyncPoolRegistry | None = None,
+        frames: Frames | None = None,
     ):
         self._board = world_board
         self._period = 1.0 / hz
         self._async_pool_registry = async_pool or AsyncPoolRegistry()
+        self._frames = frames
 
         self._trees: list[TreeHandle] = []
         self._workers: list[Worker] = []
@@ -81,8 +84,12 @@ class BTClock:
         """Attach a BT tree (an Action) to the clock.
 
         The tree starts receiving ticks on the next iteration. The Action
-        is responsible for creating its own Blackboard.
+        is responsible for creating its own Blackboard. If the clock was
+        constructed with a ``frames=`` graph, it is injected into the whole
+        tree here so leaves can call ``self.lookup(target, source)``.
         """
+        if self._frames is not None:
+            action.set_frames(self._frames)
         handle = TreeHandle(name=name or action.name, action=action)
         with self._lock:
             self._trees.append(handle)

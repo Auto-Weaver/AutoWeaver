@@ -235,6 +235,37 @@ frames:
 
 推荐默认走 YAML，让"一份 YAML 看全拓扑"成立；代码注册作为补充。两者最终都进同一张图，`lookup` 不区分来源。
 
+## wiring：Frames 怎么到达 leaf（06-02 落地）
+
+注入路径**完全复用 blackboard 的现成机制**——blackboard 是 `Action.__init__` 时 `tree.set_blackboard(...)` 一次性铺到全树的，Frames 走同一条路：
+
+```
+BTClock(world_board, frames=Frames("cell.yaml"))   # 可选参数；缺省 None
+   │ attach_tree(action)
+   ▼
+Action.set_frames(frames) → tree.set_frames(frames)
+   │ ControlNode / DecoratorNode 递归下发到每个子节点
+   ▼
+每个 TreeNode 持有同一个 frames 引用（树生命周期内不变）
+```
+
+关键区分：**frames 是树生命周期的常量，一次注入；snapshot 是每 tick 变的，每 tick 喂。** 两者在 leaf 里合流——`self.lookup` 把注入的 frames 和当前 tick 的 `self.snapshot` 拼起来：
+
+```python
+# TreeNode 基类提供的糖，业务 leaf 直接用：
+def lookup(self, target, source):
+    return self._frames.lookup(target, source, self.snapshot)
+
+# 业务 leaf 里就一句：
+T = self.lookup("world", "arm_1_tool_gripper")
+```
+
+设计取舍（已拍板）：
+
+- **`lookup` 加在 `TreeNode` 基类**（不是只在 ActionLeaf）——和 `set_blackboard` 同源、最一致；任何节点（含 WaitFor）都能查坐标。
+- **`frames` 参数可选**——不需要坐标的纯 BT（只有 WaitFor/Notify 的树）照常跑；没注入 frames 时调 `self.lookup` 抛 RuntimeError，fail loud，不静默。向后兼容现有所有测试。
+- **Worker 不需要代码 bind**——动态边在 cell.yaml 声明，Frames 加载时就建好边；Worker 只管往对应 `state_key` 写值（现状不变）。"谁写谁声明 state_key"靠命名对齐，不靠代码 bind。
+
 
 ## 生命周期与拥有关系
 
@@ -297,12 +328,13 @@ autoweaver 不知道下垂、不知道视觉闭环——它只提供"动态边"�
 - **动态边在 YAML 声明**（`dynamic:` 块），加载时自动注册；`bind_dynamic` 代码注册作为补充。两者等价，进同一张图。→ 解决了原"动态边要不要在 YAML 占位"和"binding 谁注册"。
 - **`required` / `optional` 写在 YAML 的 `dynamic.required`**（缺省 false）。谁声明这条边谁定缺值语义，且拓扑仍"一眼看全"。
 - **命名约定删除**，只留结构校验。
+- **leaf 注入 wiring 落地**：BTClock 持 `frames=`（可选），attach 时经 `Action.set_frames` → `tree.set_frames` 递归下发；leaf `self.lookup(t,s)` 内部拼当前 snapshot。见「wiring」节。
 
 ## 待拍板
 
-1. **动态边 binding 何时注册？** YAML 声明在 `Frames.__init__` 加载时就进图。但有些边（如 publisher 才知道 state_key 的）可能要 Worker `on_attach` 时 `bind_dynamic`。后者要求 Worker attach 时 Frames 已存在且拿得到引用——**wiring 顺序待定**（下一步）。
-2. **Frames 引用怎么注入 Worker / leaf？** 跟 WorldBoard 一样由 BTClock 在 attach 时注入，还是别的路径——wiring 的核心问题。
-3. **`ArmBase.get_flange_pose()` 直读接口去留？** 现状它和 `snapshot["<arm>.pose"]` 并存（脚本调试用前者、BT 用后者）。新设计 BT 侧统一走 lookup，直读接口可保留给脚本。
+1. **Worker 运行期 bind 的口子要不要做？** 目前动态边全在 YAML 声明、加载时进图，Worker 零改动。若将来出现"state_key 运行期才知道"的边，需要给 Worker 注入 Frames 引用 + `bind_frame_edge` 便捷方法（机制和 leaf 注入同源，没做是因为暂无需求）。
+2. **`ArmBase.get_flange_pose()` 直读接口去留？** 现状它和 `snapshot["<arm>.pose"]` 并存（脚本调试用前者、BT 用后者）。新设计 BT 侧统一走 lookup，直读接口可保留给脚本。
+3. **第一份真实 cell.yaml + 跨臂示例 leaf**：在 pluck-hair / 双臂真机落地时产出，验证端到端形态。
 
 ## 不做的事
 

@@ -23,3 +23,8 @@ class ControlNode(TreeNode):
         super().set_blackboard(blackboard, key_mapping)
         for child in self.children:
             child.set_blackboard(blackboard, key_mapping)
+
+    def set_frames(self, frames) -> None:
+        super().set_frames(frames)
+        for child in self.children:
+            child.set_frames(frames)

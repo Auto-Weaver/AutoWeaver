@@ -61,6 +61,14 @@ class Action:
 
         self.tree.set_blackboard(Blackboard())
 
+    def set_frames(self, frames) -> None:
+        """Inject the cell's coordinate-frame graph into the whole tree.
+
+        Called by BTClock at attach time when the clock was given a
+        ``frames=``. Propagates to every node via ``TreeNode.set_frames``.
+        """
+        self.tree.set_frames(frames)
+
     def tick(self, snapshot: Snapshot) -> Status:
         """Run one tree tick. Called by BTClock.
 
