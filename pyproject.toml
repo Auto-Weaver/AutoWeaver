@@ -38,5 +38,5 @@ markers = [
     "integration_safe: real-hardware tests that don't move the arm (run with -m integration_safe)",
     "integration: real-hardware tests that move the arm (run with -m integration; operator must be present)",
 ]
-addopts = "-m 'not integration and not integration_safe'"
+addopts = "-m 'not integration and not integration_safe' -p no:launch_pytest -p no:launch_testing -p no:launch_ros"
 asyncio_mode = "auto"
