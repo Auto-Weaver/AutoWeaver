@@ -1,22 +1,26 @@
 """Comm protocol abstraction.
 
-``CommBase`` defines the contract for a single communication endpoint:
+``CommBase`` defines the contract for a single *message-shaped* endpoint:
 how to receive a message, how to send one, how to close. Concrete
-implementations sit one level down (``ModbusProtocol``,
-``WebSocketProtocol``, ``WSServerProtocol``, ...) — they speak a
-specific wire protocol but know nothing about which device or which
-business meaning the messages carry.
+implementations sit one level down (``WebSocketProtocol``,
+``WSServerProtocol``, ...) — they speak a specific wire protocol but
+know nothing about which device or which business meaning the messages
+carry.
 
-Two-layer reading guide:
+This is the **message line**. Register-shaped peers (PLCs) use the
+separate **register line** instead — ``CommEngine`` over a ``RegisterIO``
+transport, driven by declared actions (see EVO-009 and
+``modbus_primitive.py``). The two lines coexist; pick by peer shape.
+
+Message-line reading guide:
 
     Layer 1: ``CommBase``                 — protocol contract (this file)
-    Layer 2: ``ModbusProtocol`` / ...     — concrete protocol mechanics
+    Layer 2: ``WebSocketProtocol`` / ...  — concrete protocol mechanics
     Layer 3: ``CommWorker``               — Worker template that
                                             adopts a protocol and
                                             integrates it into BTClock
     Layer 4: application code             — assigns a protocol to a
-                                            specific peer ("Nova5Link",
-                                            "PlcLink") and gives the
+                                            specific peer and gives the
                                             messages business meaning
 """
 
