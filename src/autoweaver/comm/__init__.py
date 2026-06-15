@@ -1,18 +1,27 @@
 """Comm — protocol-driven communication primitives.
 
-Layering:
+Two coexisting lines:
 
-    CommBase                ← protocol contract (base.py)
-    ModbusProtocol / ...    ← concrete protocol mechanics
-    CommWorker              ← Worker template that wraps a protocol
+  Message line (CommBase): receive / send / close — for message-shaped peers
+    (e.g. WebSocket). ``CommWorker`` wraps it.
 
-Application code names connections by peer (e.g. ``Nova5Link``,
-``PlcLink``) and gives messages business meaning, while picking
-which protocol to use.
+  Register line (EVO-009): the declarative-comm engine. ``CommEngine`` runs
+    ``write`` / ``read`` / ``read_until`` over a ``RegisterIO`` transport, per
+    a ``CommContract``. This is the line the PLC uses — register-level
+    handshakes are declared as actions, not coded as a protocol state machine.
 """
 
 from .base import CommBase
-from .modbus import ModbusProtocol
+from .modbus_primitive import (
+    ActionStepError,
+    BlockSpec,
+    Clock,
+    CommActionError,
+    CommContract,
+    CommEngine,
+    ReadUntilTimeout,
+    RegisterIO,
+)
 from .worker import CommWorker
 
 try:
@@ -43,7 +52,16 @@ except ModuleNotFoundError as exc:
 __all__ = [
     "CommBase",
     "CommWorker",
-    "ModbusProtocol",
+    # Register line (EVO-009)
+    "CommEngine",
+    "CommContract",
+    "RegisterIO",
+    "BlockSpec",
+    "Clock",
+    "CommActionError",
+    "ReadUntilTimeout",
+    "ActionStepError",
+    # Message line
     "WebSocketProtocol",
     "WSServerProtocol",
 ]

@@ -3,8 +3,8 @@
 from .camera import CameraBase, CameraConfig, DahengCamera, MockCamera
 from .comm import (
     CommBase,
+    CommEngine,
     CommWorker,
-    ModbusProtocol,
     WebSocketProtocol,
     WSServerProtocol,
 )
@@ -76,7 +76,7 @@ __all__ = [
     # Comm
     "CommBase",
     "CommWorker",
-    "ModbusProtocol",
+    "CommEngine",
     "WebSocketProtocol",
     "WSServerProtocol",
     # Pipeline
