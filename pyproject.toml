@@ -20,7 +20,9 @@ dependencies = [
 
 [project.optional-dependencies]
 yolo = ["ultralytics>=8.0"]
-daheng = ["iai-gxipy>=2.0.2407.9061"]
+# Pin exactly: 2.0.2412.9191 imports numpy.compat.long (removed in numpy 2.0)
+# and fails to import. 2.0.2407.9061 is the version proven on the capture rig.
+daheng = ["iai-gxipy==2.0.2407.9061"]
 websocket = ["websockets>=12"]
 
 [tool.hatch.build.targets.wheel]
