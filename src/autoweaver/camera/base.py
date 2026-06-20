@@ -21,6 +21,13 @@ class CameraConfig:
         exposure_time: Manual exposure time in microseconds.
         gain: Manual gain value.
         white_balance_mode: White balance mode ("auto", "once", "off").
+        trigger_mode: Acquisition mode. False (default) = continuous free-run —
+            the camera streams at its frame rate and ``snapshot()`` returns the
+            next buffered frame (which can be stale if the consumer lags the
+            frame rate). True = software trigger (capture-on-demand): the camera
+            produces a frame only when ``snapshot()`` fires the trigger, so every
+            grab is freshly acquired. Prefer trigger mode for move-then-capture
+            workflows (e.g. calibration).
     """
     device_index: int = 1
     device_sn: Optional[str] = None
@@ -29,6 +36,7 @@ class CameraConfig:
     exposure_time: Optional[float] = None
     gain: Optional[float] = None
     white_balance_mode: str = "once"
+    trigger_mode: bool = False
 
 
 class CameraBase(Sensor):

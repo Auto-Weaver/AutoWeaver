@@ -84,6 +84,30 @@ class DahengCamera(CameraBase):
         # White balance
         self._configure_white_balance()
 
+        # Acquisition mode (continuous free-run vs software trigger)
+        self._configure_trigger()
+
+    def _configure_trigger(self) -> None:
+        """Set continuous free-run (default) or software-trigger acquisition.
+
+        Software trigger makes the camera produce a frame only on demand, so each
+        ``snapshot()`` returns a freshly-acquired frame instead of the next one
+        buffered off the continuous stream — no stale frames when the consumer
+        lags the frame rate. Configured here (stream still off); ``snapshot()``
+        fires the trigger per grab."""
+        gx = self._gx
+        cam = self._cam
+        try:
+            if self.config.trigger_mode:
+                cam.TriggerMode.set(gx.GxSwitchEntry.ON)
+                cam.TriggerSource.set(gx.GxTriggerSourceEntry.SOFTWARE)
+                logger.info("Acquisition mode: software trigger (capture-on-demand)")
+            else:
+                cam.TriggerMode.set(gx.GxSwitchEntry.OFF)
+                logger.debug("Acquisition mode: continuous (free-run)")
+        except Exception as e:
+            logger.warning(f"Failed to set trigger mode: {e}")
+
     def _configure_white_balance(self) -> None:
         """Configure white balance."""
         gx = self._gx
@@ -120,8 +144,12 @@ class DahengCamera(CameraBase):
         """Capture a single frame in BGR format."""
         if not self._is_opened:
             raise RuntimeError("Camera not opened")
-        
+
         gx = self._gx
+        # In software-trigger mode, fire one trigger so the camera acquires a
+        # fresh frame now (continuous mode just reads the next streamed frame).
+        if self.config.trigger_mode:
+            self._cam.TriggerSoftware.send_command()
         raw_image = self._cam.data_stream[0].get_image()
         
         if raw_image is None:
