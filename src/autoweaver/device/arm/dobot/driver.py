@@ -299,31 +299,12 @@ class Dobot:
         except Exception:  # noqa: BLE001
             logger.exception("%s: DisableRobot failed during release_control", self.name)
 
-    # --- controller mode (read-only telemetry; no control needed) ---
-
-    def robot_mode(self) -> int:
-        """Current controller RobotMode (``states.ROBOT_MODE_*``), read live from
-        the feedback stream. Works after :meth:`start` with NO control acquired —
-        pure telemetry. Returns ``ROBOT_MODE_NO_CONTROLLER`` if no frame yet."""
-        return self._read_mode()
-
-    def robot_mode_name(self) -> str:
-        """Human-readable name of the current :meth:`robot_mode` (UI / logs)."""
-        return robot_mode_name(self._read_mode())
-
-    def is_tcp_ready(self) -> bool:
-        """True when the controller is in TCP control, enabled and idle (``ENABLE``)
-        — the state in which the feedback pose is the live ACTUAL flange pose. In
-        ``JOG`` (pendant / "online" teach mode) the SDK pose feedback can lag the
-        real arm, so a caller needing a correct one-shot pose read (e.g. manual
-        hand-eye capture) should gate on this and ask the operator to flip the
-        pendant to TCP mode first."""
-        return self._read_mode() == ROBOT_MODE_ENABLE
-
     def _read_mode(self) -> int:
         """Pull one feedback frame and extract RobotMode.
 
-        Returns ROBOT_MODE_NO_CONTROLLER if no frame is available.
+        Used only inside acquire_control() — controller mode is a
+        driver-internal handshake concern (NEXT-009). Returns
+        ROBOT_MODE_NO_CONTROLLER if no frame is available.
         """
         try:
             frame = self._pull_frame()
