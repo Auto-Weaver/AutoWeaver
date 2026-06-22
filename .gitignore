@@ -6,6 +6,10 @@ motion-runtime/target/
 
 # Runtime data
 .omx/
+trajectories/
+
+# Codegraph symbol/edge index (rebuilt locally; not source)
+.codegraph/
 
 # Vendor reference docs (keep local, do not commit)
 files/
