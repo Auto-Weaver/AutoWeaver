@@ -232,22 +232,36 @@ class CommEngine:
         _results: dict[str, Any],
     ) -> None:
         """write: registers / blocks / flags. Fire and return — no read, no
-        wait, no judgement."""
+        wait, no judgement.
+
+        A pose block accepts ONE pose (a field->value Mapping) or a PATH of poses
+        (a sequence of such Mappings). The path form writes the points
+        consecutively from the block start — e.g. a multi-waypoint trajectory
+        sent in one transaction. It is still the `write` primitive: fire every
+        point and return; no read, no branch."""
         if "block" in spec:
             block = self._c.block(spec["block"])
             values = self._resolve(spec["values"], params)
-            if not isinstance(values, Mapping):
+            points = list(values) if isinstance(values, (list, tuple)) else [values]
+            if not points:
                 raise ActionStepError(
-                    f"write block {spec['block']!r} needs a field->value mapping, "
-                    f"got {type(values).__name__}"
+                    f"write block {spec['block']!r} got an empty path (no points)"
                 )
-            ordered = _reorder_pose(values, block.order)
-            if len(ordered) != block.count:
-                raise ActionStepError(
-                    f"block {spec['block']!r} expects {block.count} values, "
-                    f"got {len(ordered)}"
-                )
-            self._io.write_real32_block(block.start, ordered)
+            flat: list[float] = []
+            for i, point in enumerate(points):
+                if not isinstance(point, Mapping):
+                    raise ActionStepError(
+                        f"write block {spec['block']!r} needs a field->value mapping "
+                        f"(or a list of them); point {i} is {type(point).__name__}"
+                    )
+                ordered = _reorder_pose(point, block.order)
+                if len(ordered) != block.count:
+                    raise ActionStepError(
+                        f"block {spec['block']!r} expects {block.count} values per "
+                        f"point, got {len(ordered)}"
+                    )
+                flat.extend(ordered)
+            self._io.write_real32_block(block.start, flat)
             return
 
         if "flags" in spec:

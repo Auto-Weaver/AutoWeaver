@@ -141,6 +141,54 @@ def test_write_block_rejects_incomplete_pose(contract, io):
 
 
 # --------------------------------------------------------------------------- #
+# write — path (multi-waypoint) form: values is a list of poses
+# --------------------------------------------------------------------------- #
+def test_write_block_path_writes_points_consecutively(contract, io):
+    eng = make_engine(contract, io)
+    p1 = {"x": 1.0, "y": 2.0, "z": 3.0, "rx": 4.0, "ry": 5.0, "rz": 6.0}
+    p2 = {"x": 7.0, "y": 8.0, "z": 9.0, "rx": 10.0, "ry": 11.0, "rz": 12.0}
+    eng.run_action(
+        [{"write": {"block": "cmd_pose", "values": "$path"}}],
+        params={"path": [p1, p2]},
+    )
+    # each point reordered to wire order (x, y, z, rz, ry, rx), laid end to end
+    assert io.blocks[41183] == [
+        1.0, 2.0, 3.0, 6.0, 5.0, 4.0,
+        7.0, 8.0, 9.0, 12.0, 11.0, 10.0,
+    ]
+
+
+def test_write_block_single_pose_unchanged(contract, io):
+    # backward compat: a lone Mapping still writes exactly one point.
+    eng = make_engine(contract, io)
+    pose = {"x": 1.0, "y": 2.0, "z": 3.0, "rx": 4.0, "ry": 5.0, "rz": 6.0}
+    eng.run_action(
+        [{"write": {"block": "cmd_pose", "values": "$pose"}}],
+        params={"pose": pose},
+    )
+    assert io.blocks[41183] == [1.0, 2.0, 3.0, 6.0, 5.0, 4.0]
+
+
+def test_write_block_empty_path_raises(contract, io):
+    eng = make_engine(contract, io)
+    with pytest.raises(ActionStepError):
+        eng.run_action(
+            [{"write": {"block": "cmd_pose", "values": "$path"}}],
+            params={"path": []},
+        )
+
+
+def test_write_block_path_rejects_incomplete_point(contract, io):
+    eng = make_engine(contract, io)
+    good = {"x": 1.0, "y": 2.0, "z": 3.0, "rx": 4.0, "ry": 5.0, "rz": 6.0}
+    with pytest.raises(ActionStepError):
+        eng.run_action(
+            [{"write": {"block": "cmd_pose", "values": "$path"}}],
+            params={"path": [good, {"x": 1.0}]},
+        )
+
+
+# --------------------------------------------------------------------------- #
 # read
 # --------------------------------------------------------------------------- #
 def test_read_register_returns_value(contract, io):
