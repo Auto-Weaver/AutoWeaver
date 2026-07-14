@@ -1,9 +1,16 @@
 """Vision module data types."""
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
 import numpy as np
+
+# Payload type carried by a pipeline run. The container makes **no**
+# assumptions about it — steps that need to look inside a payload declare
+# the shape they require via a Protocol next to themselves (see
+# ``steps/postprocess.py``'s ``BoxLike``). ``Detection`` /
+# ``RegionDetection`` below are convenience payloads, not a mandated floor.
+D = TypeVar("D")
 
 
 @dataclass
@@ -101,8 +108,48 @@ class Detection:
         )
 
 
+@dataclass(kw_only=True)
+class RegionDetection(Detection):
+    """A :class:`Detection` that also carries a pixel mask for its region.
+
+    Convenience payload for segmentation-style results. Like
+    :class:`Detection`, it is an optional helper — the pipeline container
+    does not require it — but it exactly satisfies the ``BoxLike`` contract
+    consumed by the postprocess steps, so it drops into NMS / Filter / Sort
+    unchanged.
+
+    The mask is stored in **bbox-local** coordinates: a ``(h, w)`` array
+    sized to the bounding box, **not** the full frame. A full-frame mask on
+    a 4000×3000 image is ~12 MB each — unacceptable to keep per detection.
+    Reconstruct a full-frame mask by pasting ``mask`` at ``(bbox.x1, bbox.y1)``.
+
+    ``kw_only=True`` is required: the base class has a trailing field with a
+    default (``detection_id``), and these two fields have none — without
+    ``kw_only`` the dataclass would raise "non-default argument follows
+    default argument".
+
+    Attributes:
+        mask: Bbox-local binary mask, uint8, values 0 or 255, shape (h, w).
+        area_px: Cached count of non-zero (foreground) pixels in the mask.
+    """
+
+    mask: np.ndarray
+    area_px: int
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary (raw mask excluded for serialization)."""
+        d = super().to_dict()
+        d.update(
+            {
+                "mask_shape": list(self.mask.shape),
+                "area_px": self.area_px,
+            }
+        )
+        return d
+
+
 @dataclass
-class PipelineContext:
+class PipelineContext(Generic[D]):
     """Context passed between pipeline steps.
 
     This object carries the image and accumulated results through
@@ -112,12 +159,14 @@ class PipelineContext:
     Attributes:
         original_image: The original input image (set by CaptureStep).
         processed_image: The current processed image (may be modified by steps).
-        detections: List of detection results.
+        detections: List of payloads accumulated by steps. The container is
+            payload-agnostic (``PipelineContext[D]``); ``PipelineContext()``
+            with no type argument keeps the old, untyped behaviour.
         metadata: Additional metadata from processing steps.
     """
     original_image: Optional[np.ndarray] = None
     processed_image: Optional[np.ndarray] = None
-    detections: List[Detection] = field(default_factory=list)
+    detections: List[D] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
@@ -127,7 +176,7 @@ class PipelineContext:
 
 
 @dataclass
-class PipelineResult:
+class PipelineResult(Generic[D]):
     """Final result from vision pipeline.
 
     Contains all detections and processing information after
@@ -140,7 +189,7 @@ class PipelineResult:
         original_image: The original input image (set by CaptureStep).
         processed_image: The final processed image after all steps.
     """
-    detections: List[Detection]
+    detections: List[D]
     processing_time_ms: float
     metadata: Dict[str, Any]
     original_image: Optional[np.ndarray] = None
@@ -151,9 +200,13 @@ class PipelineResult:
         """Number of detections."""
         return len(self.detections)
 
-    def get_detections_by_type(self, object_type: str) -> List[Detection]:
-        """Get detections filtered by type."""
-        return [d for d in self.detections if d.object_type == object_type]
+    def get_detections_by_type(self, object_type: str) -> List[D]:
+        """Get detections filtered by ``object_type``.
+
+        Convenience for payloads that expose an ``object_type`` attribute
+        (e.g. :class:`Detection`); not meaningful for payloads that don't.
+        """
+        return [d for d in self.detections if getattr(d, "object_type", None) == object_type]
 
     def to_dict(self) -> dict:
         """Convert to dictionary for serialization."""

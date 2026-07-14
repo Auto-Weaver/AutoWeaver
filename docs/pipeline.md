@@ -37,6 +37,36 @@ It carries:
 - `detections`
 - `metadata`
 
+`PipelineContext` is **payload-agnostic**. It is generic over the payload
+type — `PipelineContext[D]` — and makes no assumption about what a
+"detection" is: `detections` is simply `list[D]`. Using it without a type
+argument (`PipelineContext()`) keeps the untyped behaviour. `ProcessStep` is
+generic the same way; `class MyStep(ProcessStep)` with no type argument is
+still valid.
+
+There is deliberately **no framework-level floor** — the container never
+requires a payload to expose any particular field. A step that needs to look
+inside a payload declares the shape it requires *next to itself*, as a
+`typing.Protocol`. The built-in postprocess steps do exactly this with
+`BoxLike` (see below).
+
+### Payloads: `Detection`, `RegionDetection`, `BoxLike`
+
+`Detection` and `RegionDetection` are **convenience payload implementations**,
+not mandatory base classes. Projects may use them, subclass them, or ignore
+them and carry their own payload type.
+
+- `Detection` — a box, an `object_type` label, and a `confidence`. Exactly
+  satisfies `BoxLike`.
+- `RegionDetection(Detection)` — adds a **bbox-local** mask (`(h, w)` uint8
+  0/255, sized to the bounding box, *not* full-frame — a full-frame mask is
+  ~12 MB per detection on a 4000×3000 image) plus `area_px`. Reconstruct a
+  full-frame mask by pasting the local mask at `(bbox.x1, bbox.y1)`.
+- `BoxLike` — a `@runtime_checkable` `Protocol` defined in
+  `steps/postprocess.py` declaring the `bbox` / `object_type` / `confidence`
+  attributes the NMS, Filter, and Sort steps consume. Any object exposing
+  those three qualifies structurally; nothing is forced to.
+
 ### `PipelineResult`
 
 `PipelineResult` is the final returned object from `VisionPipeline.run()`.
@@ -67,7 +97,11 @@ The core package currently includes built-in steps for:
 - sharpness checking
 - tiling and tile merging
 - YOLO detection
-- postprocessing such as filtering, sorting, and NMS
+- YOLO instance segmentation (`YOLOSegStep`) — appends `SegmentDetection`
+  (a `RegionDetection` with a bbox-local mask) to `ctx.detections`;
+  `ctx.metadata["segments"]` is kept as a transitional alias
+- mask application (`MaskApplyStep`)
+- postprocessing such as filtering, sorting, and NMS (consume `BoxLike`)
 
 Registry-backed config construction is available for pure-config steps. `CaptureStep` is assembled in code because it needs a live camera instance.
 

@@ -17,12 +17,13 @@ from .pipeline import (
     BoundingBox,
     CaptureStep,
     Detection,
+    RegionDetection,
     PipelineContext,
     PipelineResult,
     ProcessStep,
     MaskApplyStep,
     SaveStep,
-    SegmentResult,
+    SegmentDetection,
     SharpnessCheckStep,
     VisionPipeline,
     YOLOSegStep,
@@ -45,7 +46,7 @@ from .worker import (
 )
 from .tasks import Task, TaskBase
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 __all__ = [
     # Worker framework
@@ -83,12 +84,13 @@ __all__ = [
     "BoundingBox",
     "CaptureStep",
     "Detection",
+    "RegionDetection",
     "PipelineContext",
     "PipelineResult",
     "ProcessStep",
     "MaskApplyStep",
     "SaveStep",
-    "SegmentResult",
+    "SegmentDetection",
     "SharpnessCheckStep",
     "VisionPipeline",
     "YOLOSegStep",

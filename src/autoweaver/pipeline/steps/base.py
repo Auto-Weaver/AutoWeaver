@@ -1,20 +1,25 @@
 """Base class for pipeline processing steps."""
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from typing import Any, Dict, Generic
 
-from ..types import PipelineContext
+from ..types import D, PipelineContext
 
 
-class ProcessStep(ABC):
+class ProcessStep(ABC, Generic[D]):
     """Abstract base class for pipeline processing steps.
-    
+
     Each step receives a PipelineContext, performs some processing,
     and returns the updated context. Steps can:
     - Modify the processed_image
     - Add detections to the detections list
     - Add metadata to the metadata dict
-    
+
+    Generic over the payload type ``D``. Subclassing without a type
+    argument (``class MyStep(ProcessStep)``) keeps the old behaviour;
+    a step that operates on a specific payload can pin it
+    (``class MyStep(ProcessStep[BoxLike])``).
+
     Example:
         >>> class MyStep(ProcessStep):
         ...     def process(self, ctx: PipelineContext) -> PipelineContext:
@@ -50,7 +55,7 @@ class ProcessStep(ABC):
         return self._params
 
     @abstractmethod
-    def process(self, ctx: PipelineContext) -> PipelineContext:
+    def process(self, ctx: PipelineContext[D]) -> PipelineContext[D]:
         """Process the context and return updated context.
         
         Args:

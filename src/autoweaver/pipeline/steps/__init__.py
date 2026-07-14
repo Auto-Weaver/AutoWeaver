@@ -3,7 +3,7 @@ from .capture import CaptureStep
 from .sharpness import SharpnessCheckStep
 from .tiling import TileStep, MergeTilesStep
 from .yolo_detect import YOLODetectStep
-from .yolo_seg import YOLOSegStep, SegmentResult
+from .yolo_seg import YOLOSegStep, SegmentDetection
 from .mask_apply import MaskApplyStep
 from .save import SaveStep
 from .postprocess import NMSStep, FilterStep, SortStep
@@ -101,7 +101,7 @@ __all__ = [
     "YOLODetectStep",
     # Segmentation
     "YOLOSegStep",
-    "SegmentResult",
+    "SegmentDetection",
     "MaskApplyStep",
     "SaveStep",
     # Postprocessing

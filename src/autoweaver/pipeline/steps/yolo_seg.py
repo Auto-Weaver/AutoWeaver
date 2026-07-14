@@ -1,57 +1,41 @@
 """YOLO instance segmentation step for vision pipeline."""
 
 import logging
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
 
-from ..types import BoundingBox, PipelineContext
+from ..types import BoundingBox, PipelineContext, RegionDetection
 from .base import ProcessStep
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class SegmentResult:
-    """Single instance segmentation result.
+@dataclass(kw_only=True)
+class SegmentDetection(RegionDetection):
+    """A :class:`RegionDetection` produced by :class:`YOLOSegStep`.
+
+    Adds the numeric class index on top of the generic region payload.
+    The model's class name is carried in the inherited ``object_type``
+    field; the mask is bbox-local (see :class:`RegionDetection`).
 
     Attributes:
-        mask: Binary mask (H, W) in original image coordinates. uint8, 0 or 255.
-        bbox: Bounding box of the mask region.
-        confidence: Detection confidence score (0-1).
-        class_id: Numeric class index from model.
-        class_name: Class name from model labels.
+        class_id: Numeric class index from the model.
     """
 
-    mask: np.ndarray
-    bbox: BoundingBox
-    confidence: float
     class_id: int
-    class_name: str
-
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert to dictionary (mask excluded for serialization)."""
-        return {
-            "bbox": self.bbox.to_dict(),
-            "confidence": self.confidence,
-            "class_id": self.class_id,
-            "class_name": self.class_name,
-            "mask_shape": list(self.mask.shape),
-            "mask_area": int(np.count_nonzero(self.mask)),
-        }
 
 
-class YOLOSegStep(ProcessStep):
+class YOLOSegStep(ProcessStep[SegmentDetection]):
     """YOLO instance segmentation step.
 
     Uses Ultralytics YOLO in segment mode to produce per-instance
-    binary masks. Output goes to ``ctx.metadata["segments"]`` as a
-    list of :class:`SegmentResult`.
-
-    Does **not** modify ``ctx.detections`` — segmentation results
-    live in their own channel so they don't interfere with detection
-    steps.
+    binary masks. Each instance is appended to ``ctx.detections`` as a
+    :class:`SegmentDetection` (a :class:`RegionDetection` carrying a
+    bbox-local mask). ``ctx.metadata["segments"]`` is kept as a transitional
+    alias pointing at the same list, and ``ctx.metadata["segment_count"]``
+    records the count.
 
     Parameters:
         model: Path to YOLO seg model file (.pt or .onnx).
@@ -122,7 +106,7 @@ class YOLOSegStep(ProcessStep):
 
         return self._model
 
-    def process(self, ctx: PipelineContext) -> PipelineContext:
+    def process(self, ctx: PipelineContext[SegmentDetection]) -> PipelineContext[SegmentDetection]:
         """Run YOLO instance segmentation on the processed image."""
         image = ctx.processed_image
         if image is None:
@@ -141,7 +125,7 @@ class YOLOSegStep(ProcessStep):
             verbose=False,
         )
 
-        segments: List[SegmentResult] = []
+        segments: List[SegmentDetection] = []
 
         for result in results:
             if result.masks is None:
@@ -160,24 +144,31 @@ class YOLOSegStep(ProcessStep):
                 mask_tensor = masks.data[i].cpu().numpy()
                 mask_resized = self._resize_mask(mask_tensor, img_w, img_h)
 
-                # Bounding box from mask
+                # Bounding box from mask (full-frame coordinates)
                 bbox = self._mask_to_bbox(mask_resized)
                 if bbox is None:
                     continue
 
+                # Crop the mask to bbox-local coordinates — a per-detection
+                # full-frame mask would be ~12 MB on a 4000x3000 image.
+                mask_local = self._crop_mask_to_bbox(mask_resized, bbox)
+
                 segments.append(
-                    SegmentResult(
-                        mask=mask_resized,
+                    SegmentDetection(
                         bbox=bbox,
+                        object_type=cls_name,
                         confidence=conf,
+                        mask=mask_local,
+                        area_px=int(np.count_nonzero(mask_local)),
                         class_id=cls_id,
-                        class_name=cls_name,
                     )
                 )
 
         # Sort by confidence descending
         segments.sort(key=lambda s: s.confidence, reverse=True)
 
+        ctx.detections.extend(segments)
+        # Transitional alias for consumers that still read the old channel.
         ctx.metadata["segments"] = segments
         ctx.metadata["segment_count"] = len(segments)
 
@@ -209,3 +200,15 @@ class YOLOSegStep(ProcessStep):
             x2=float(xs.max()),
             y2=float(ys.max()),
         )
+
+    @staticmethod
+    def _crop_mask_to_bbox(mask: np.ndarray, bbox: BoundingBox) -> np.ndarray:
+        """Crop a full-frame mask down to its bbox-local window.
+
+        ``_mask_to_bbox`` returns inclusive max coordinates, so the local
+        window is ``[y1..y2], [x1..x2]`` inclusive. Paste ``mask_local`` back
+        at ``(bbox.x1, bbox.y1)`` to reconstruct the full-frame mask.
+        """
+        x1, y1 = int(bbox.x1), int(bbox.y1)
+        x2, y2 = int(bbox.x2), int(bbox.y2)
+        return np.ascontiguousarray(mask[y1 : y2 + 1, x1 : x2 + 1])

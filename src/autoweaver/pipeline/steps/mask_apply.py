@@ -16,9 +16,10 @@ class MaskApplyStep(ProcessStep):
     """Apply a segmentation mask to the processed image.
 
     Reads ``ctx.metadata["segments"]`` (produced by YOLOSegStep or any
-    source that writes :class:`SegmentResult` objects), selects one
-    segment, fills pixels outside the mask, and crops to the mask's
-    bounding box.
+    source that writes :class:`~autoweaver.pipeline.types.RegionDetection`
+    objects), selects one segment, fills pixels outside the mask, and crops
+    to the mask's bounding box. Segment masks are bbox-local; this step
+    pastes them back into a full-frame canvas before applying.
 
     When ``auto_rotate`` is enabled, the mask's minimum-area rotated
     rectangle is used to find the edge closest to vertical (the y-axis).
@@ -71,7 +72,9 @@ class MaskApplyStep(ProcessStep):
         if segment is None:
             raise ValueError("No valid segment found")
 
-        mask = segment.mask
+        # Segment masks are bbox-local; rebuild a full-frame mask so the
+        # fill + crop + rotation logic below can work in image coordinates.
+        mask = self._full_frame_mask(segment, image.shape[:2])
         rotation_angle = 0.0
 
         if self.auto_rotate:
@@ -106,17 +109,17 @@ class MaskApplyStep(ProcessStep):
         ctx.processed_image = masked[y1:y2, x1:x2].copy()
 
         ctx.metadata["mask_apply"] = {
-            "selected_class": segment.class_name,
+            "selected_class": segment.object_type,
             "selected_confidence": segment.confidence,
             "bbox": segment.bbox.to_dict(),
             "cropped_shape": list(ctx.processed_image.shape[:2]),
-            "mask_area": int(np.count_nonzero(segment.mask)),
+            "mask_area": int(segment.area_px),
             "rotation_angle": rotation_angle,
         }
 
         logger.debug(
             "MaskApply: selected %s (conf=%.2f, rot=%.1f°) -> %dx%d",
-            segment.class_name,
+            segment.object_type,
             segment.confidence,
             rotation_angle,
             ctx.processed_image.shape[1],
@@ -148,7 +151,25 @@ class MaskApplyStep(ProcessStep):
             )
 
         # Default: area
-        return max(segments, key=lambda s: np.count_nonzero(s.mask))
+        return max(segments, key=lambda s: s.area_px)
+
+    @staticmethod
+    def _full_frame_mask(segment, image_shape) -> np.ndarray:
+        """Paste a segment's bbox-local mask into a full-frame canvas.
+
+        The segment mask is sized to its bounding box; reconstruct the
+        image-coordinate mask by placing it at ``(bbox.x1, bbox.y1)``.
+        """
+        h, w = image_shape
+        canvas = np.zeros((h, w), dtype=np.uint8)
+        x1, y1 = int(segment.bbox.x1), int(segment.bbox.y1)
+        local = segment.mask
+        lh, lw = local.shape[:2]
+        # Clip to the frame in case a bbox edge rounds past the border.
+        y2 = min(y1 + lh, h)
+        x2 = min(x1 + lw, w)
+        canvas[y1:y2, x1:x2] = local[: y2 - y1, : x2 - x1]
+        return canvas
 
     @staticmethod
     def _compute_vertical_angle(mask: np.ndarray) -> Optional[float]:

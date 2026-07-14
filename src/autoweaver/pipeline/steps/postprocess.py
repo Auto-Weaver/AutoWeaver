@@ -1,15 +1,39 @@
 """Postprocessing steps for vision pipeline."""
 
 import logging
-from typing import List
+from typing import List, Protocol, runtime_checkable
 
-from ..types import Detection, PipelineContext
+from ..types import BoundingBox, PipelineContext
 from .base import ProcessStep
 
 logger = logging.getLogger(__name__)
 
 
-class NMSStep(ProcessStep):
+@runtime_checkable
+class BoxLike(Protocol):
+    """Structural contract these postprocess steps require of a payload.
+
+    NMS / Filter / Sort only ever touch a box, a class label, and a
+    confidence — so that is all they demand, declared right where they are
+    consumed. Any object exposing these three attributes qualifies
+    (``isinstance(x, BoxLike)`` works because this is ``runtime_checkable``);
+    :class:`~autoweaver.pipeline.types.Detection` and
+    :class:`~autoweaver.pipeline.types.RegionDetection` both satisfy it, but
+    nothing forces a pipeline payload to. There is deliberately no
+    framework-wide "every detection must have field X" floor.
+
+    Attributes:
+        bbox: A bounding box exposing ``.area`` and ``.center``.
+        object_type: Class label used for per-class grouping / filtering.
+        confidence: Score used for thresholding and sorting.
+    """
+
+    bbox: BoundingBox
+    object_type: str
+    confidence: float
+
+
+class NMSStep(ProcessStep[BoxLike]):
     """Apply Non-Maximum Suppression to filter detections.
     
     This step removes overlapping detections, keeping only the
@@ -31,7 +55,7 @@ class NMSStep(ProcessStep):
     def name(self) -> str:
         return "nms"
 
-    def process(self, ctx: PipelineContext) -> PipelineContext:
+    def process(self, ctx: PipelineContext[BoxLike]) -> PipelineContext[BoxLike]:
         """Apply NMS to detections."""
         if not ctx.detections:
             return ctx
@@ -65,7 +89,7 @@ class NMSStep(ProcessStep):
         
         return ctx
 
-    def _nms(self, detections: List[Detection]) -> List[Detection]:
+    def _nms(self, detections: List[BoxLike]) -> List[BoxLike]:
         """Apply NMS to a list of detections."""
         if not detections:
             return []
@@ -101,7 +125,7 @@ class NMSStep(ProcessStep):
         
         return keep
 
-    def _iou(self, det1: Detection, det2: Detection) -> float:
+    def _iou(self, det1: BoxLike, det2: BoxLike) -> float:
         """Calculate IoU between two detections."""
         box1 = det1.bbox
         box2 = det2.bbox
@@ -128,7 +152,7 @@ class NMSStep(ProcessStep):
         return intersection / union
 
 
-class FilterStep(ProcessStep):
+class FilterStep(ProcessStep[BoxLike]):
     """Filter detections by various criteria.
     
     Parameters:
@@ -151,7 +175,7 @@ class FilterStep(ProcessStep):
     def name(self) -> str:
         return "filter"
 
-    def process(self, ctx: PipelineContext) -> PipelineContext:
+    def process(self, ctx: PipelineContext[BoxLike]) -> PipelineContext[BoxLike]:
         """Filter detections by criteria."""
         original_count = len(ctx.detections)
         
@@ -168,7 +192,7 @@ class FilterStep(ProcessStep):
             
             # Class filter
             if self.classes is not None:
-                if det.object_type.value not in self.classes:
+                if det.object_type not in self.classes:
                     continue
             
             filtered.append(det)
@@ -185,7 +209,7 @@ class FilterStep(ProcessStep):
         return ctx
 
 
-class SortStep(ProcessStep):
+class SortStep(ProcessStep[BoxLike]):
     """Sort detections by specified criteria.
     
     Parameters:
@@ -202,7 +226,7 @@ class SortStep(ProcessStep):
     def name(self) -> str:
         return "sort"
 
-    def process(self, ctx: PipelineContext) -> PipelineContext:
+    def process(self, ctx: PipelineContext[BoxLike]) -> PipelineContext[BoxLike]:
         """Sort detections."""
         if not ctx.detections:
             return ctx
