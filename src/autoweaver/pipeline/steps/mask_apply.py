@@ -6,20 +6,20 @@ from typing import Optional
 import cv2
 import numpy as np
 
-from ..types import PipelineContext
+from ..types import PipelineContext, RegionDetection
 from .base import ProcessStep
 
 logger = logging.getLogger(__name__)
 
 
-class MaskApplyStep(ProcessStep):
+class MaskApplyStep(ProcessStep[RegionDetection]):
     """Apply a segmentation mask to the processed image.
 
-    Reads ``ctx.metadata["segments"]`` (produced by YOLOSegStep or any
-    source that writes :class:`~autoweaver.pipeline.types.RegionDetection`
-    objects), selects one segment, fills pixels outside the mask, and crops
-    to the mask's bounding box. Segment masks are bbox-local; this step
-    pastes them back into a full-frame canvas before applying.
+    Consumes the :class:`~autoweaver.pipeline.types.RegionDetection`
+    payloads in ``ctx.detections`` (produced by YOLOSegStep or any source
+    that appends region payloads), selects one, fills pixels outside its
+    mask, and crops to the mask's bounding box. Region masks are bbox-local;
+    this step pastes them back into a full-frame canvas before applying.
 
     When ``auto_rotate`` is enabled, the mask's minimum-area rotated
     rectangle is used to find the edge closest to vertical (the y-axis).
@@ -56,12 +56,12 @@ class MaskApplyStep(ProcessStep):
     def name(self) -> str:
         return self._custom_name or "mask_apply"
 
-    def process(self, ctx: PipelineContext) -> PipelineContext:
-        segments = ctx.metadata.get("segments")
+    def process(self, ctx: PipelineContext[RegionDetection]) -> PipelineContext[RegionDetection]:
+        segments = [d for d in ctx.detections if isinstance(d, RegionDetection)]
         if not segments:
             raise ValueError(
-                "MaskApplyStep requires ctx.metadata['segments'] "
-                "(produced by YOLOSegStep)"
+                "MaskApplyStep requires RegionDetection payloads in "
+                "ctx.detections (produced by YOLOSegStep)"
             )
 
         image = ctx.processed_image

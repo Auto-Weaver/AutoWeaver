@@ -292,10 +292,9 @@ def test_yolo_seg_emits_region_detections(monkeypatch):
     assert top.mask.shape == (exp_h, exp_w)
     assert top.mask.shape != img.shape[:2]
     assert top.area_px == int(np.count_nonzero(top.mask))
-    # Transitional alias still present and consistent with ctx.detections
+    # ctx.detections is the only output channel — no side-channel alias.
     assert out.metadata["segment_count"] == 2
-    assert len(out.metadata["segments"]) == 2
-    assert all(isinstance(s, SegmentDetection) for s in out.metadata["segments"])
+    assert "segments" not in out.metadata
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +319,6 @@ def test_mask_apply_with_bbox_local_mask():
     ctx.original_image = img
     ctx.processed_image = img
     ctx.detections = [seg]
-    ctx.metadata["segments"] = [seg]
 
     out = MaskApplyStep().process(ctx)
 

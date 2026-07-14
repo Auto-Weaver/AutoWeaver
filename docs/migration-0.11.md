@@ -8,7 +8,7 @@
 
 - **容器零地板**——框架层不再规定"所有检测都必须有的字段"
 - **直接 break，不留兼容期**——和历次一致，不留 deprecation 别名
-- 唯一的行为搬家（`YOLOSegStep` 输出位置）留一个**过渡别名** `ctx.metadata["segments"]`，指向同一批对象，方便旧消费者平滑过渡
+- `YOLOSegStep` 输出位置搬家到 `ctx.detections`，`ctx.metadata["segments"]` **直接删除，无过渡期**（无外部消费者）
 
 ## Break 总表（速查）
 
@@ -17,7 +17,7 @@
 | `PipelineContext`（`detections: List[Detection]`） | `PipelineContext[D]`（`detections: List[D]`，载荷泛型） |
 | `ProcessStep`（不带类型参数） | `ProcessStep[D]`（泛型，不带参数仍可用） |
 | NMS/Filter/Sort 依赖 `Detection` 具体类 | 依赖 `BoxLike` 结构协议（`@runtime_checkable`） |
-| `YOLOSegStep` 写 `ctx.metadata["segments"]`（`SegmentResult`，全幅 mask） | 写 `ctx.detections`（`SegmentDetection`，**bbox 局部** mask）；`metadata["segments"]` 降级为过渡别名 |
+| `YOLOSegStep` 写 `ctx.metadata["segments"]`（`SegmentResult`，全幅 mask） | 写 `ctx.detections`（`SegmentDetection`，**bbox 局部** mask）；`metadata["segments"]` 删除 |
 | `SegmentResult` | 删除，替换为 `SegmentDetection(RegionDetection)` |
 | `FilterStep` 配 `classes` 即 `AttributeError` | 修复（把 `object_type` 当 str 用） |
 
@@ -83,13 +83,13 @@ for d in segments:
     mask = d.mask                            # bbox 局部 (h, w)
     name = d.object_type                     # 原 class_name
     cid = d.class_id                         # 保留的额外字段
-# ctx.metadata["segments"] 仍指向同一批对象（过渡别名），可继续读，
-# 但请尽快迁到 ctx.detections。
+# ctx.detections 是唯一输出通道；ctx.metadata["segments"] 已删除。
+# ctx.metadata["segment_count"] 仍记录本步产出的段数。
 ```
 
 字段对照：`SegmentResult.class_name` → `SegmentDetection.object_type`；`SegmentResult.mask`（全幅）→ `SegmentDetection.mask`（bbox 局部）；`class_id` 保留。
 
-`MaskApplyStep` 已同步更新：它从段对象读 bbox 局部 mask，内部贴回全幅后再做填充+裁剪，行为对使用方不变。
+`MaskApplyStep` 已同步更新：它从 `ctx.detections` 里筛出 `RegionDetection` 载荷，读其 bbox 局部 mask，内部贴回全幅后再做填充+裁剪，行为对使用方不变。
 
 ### FilterStep `classes` 修复
 

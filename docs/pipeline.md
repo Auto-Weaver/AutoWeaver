@@ -98,9 +98,9 @@ The core package currently includes built-in steps for:
 - tiling and tile merging
 - YOLO detection
 - YOLO instance segmentation (`YOLOSegStep`) — appends `SegmentDetection`
-  (a `RegionDetection` with a bbox-local mask) to `ctx.detections`;
-  `ctx.metadata["segments"]` is kept as a transitional alias
-- mask application (`MaskApplyStep`)
+  (a `RegionDetection` with a bbox-local mask) to `ctx.detections`
+- mask application (`MaskApplyStep`) — consumes the `RegionDetection`
+  payloads in `ctx.detections`
 - postprocessing such as filtering, sorting, and NMS (consume `BoxLike`)
 
 Registry-backed config construction is available for pure-config steps. `CaptureStep` is assembled in code because it needs a live camera instance.

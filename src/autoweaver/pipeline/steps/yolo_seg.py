@@ -33,9 +33,8 @@ class YOLOSegStep(ProcessStep[SegmentDetection]):
     Uses Ultralytics YOLO in segment mode to produce per-instance
     binary masks. Each instance is appended to ``ctx.detections`` as a
     :class:`SegmentDetection` (a :class:`RegionDetection` carrying a
-    bbox-local mask). ``ctx.metadata["segments"]`` is kept as a transitional
-    alias pointing at the same list, and ``ctx.metadata["segment_count"]``
-    records the count.
+    bbox-local mask); ``ctx.metadata["segment_count"]`` records how many
+    this step produced.
 
     Parameters:
         model: Path to YOLO seg model file (.pt or .onnx).
@@ -168,8 +167,6 @@ class YOLOSegStep(ProcessStep[SegmentDetection]):
         segments.sort(key=lambda s: s.confidence, reverse=True)
 
         ctx.detections.extend(segments)
-        # Transitional alias for consumers that still read the old channel.
-        ctx.metadata["segments"] = segments
         ctx.metadata["segment_count"] = len(segments)
 
         logger.debug("YOLO seg produced %d segments", len(segments))
