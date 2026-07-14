@@ -79,8 +79,9 @@ def test_on_done_runs_on_the_drain_caller_thread():
         registry.shutdown()
 
 
-def test_fn_exception_suppresses_on_done():
-    """If the worker fn raises, on_done must not run, and the pool keeps working."""
+def test_fn_exception_without_on_error_skips_callbacks():
+    """If fn raises and no on_error is given, on_done must not run, and the
+    pool keeps working. (No callback queued for the failed job.)"""
     registry = AsyncPoolRegistry(shared_workers=1)
     try:
         pool = registry.make_pool(AsyncPoolConfig())
@@ -95,6 +96,54 @@ def test_fn_exception_suppresses_on_done():
         _wait_for(lambda: pool._pending.qsize() == 1)
         pool.drain_main_thread_callbacks()
         assert results == ["ok"]
+    finally:
+        registry.shutdown()
+
+
+def test_fn_exception_routes_to_on_error():
+    """If fn raises and on_error is given, on_error receives the exception
+    (drained on the main thread) and on_done does NOT run."""
+    registry = AsyncPoolRegistry(shared_workers=1)
+    try:
+        pool = registry.make_pool(AsyncPoolConfig())
+        done_results: list = []
+        errors: list[BaseException] = []
+
+        boom = RuntimeError("boom")
+
+        def bad():
+            raise boom
+
+        pool.submit(bad, on_done=done_results.append, on_error=errors.append)
+        # Callback is queued but not yet fired (drain runs on this thread).
+        _wait_for(lambda: not pool._pending.empty())
+        assert errors == []
+        pool.drain_main_thread_callbacks()
+        assert done_results == []
+        assert errors == [boom]
+        assert isinstance(errors[0], RuntimeError)
+    finally:
+        registry.shutdown()
+
+
+def test_on_error_runs_on_the_drain_caller_thread():
+    """on_error, like on_done, fires on the thread that calls drain."""
+    registry = AsyncPoolRegistry(shared_workers=1)
+    try:
+        pool = registry.make_pool(AsyncPoolConfig())
+        observed_thread: list[int] = []
+
+        def bad():
+            raise RuntimeError("boom")
+
+        pool.submit(
+            bad,
+            on_error=lambda _: observed_thread.append(threading.get_ident()),
+        )
+        _wait_for(lambda: not pool._pending.empty())
+        my_tid = threading.get_ident()
+        pool.drain_main_thread_callbacks()
+        assert observed_thread == [my_tid]
     finally:
         registry.shutdown()
 

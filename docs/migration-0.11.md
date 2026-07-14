@@ -100,3 +100,47 @@ for d in segments:
 - 抓取语义（`pick_point` / `eligible` 等）不进 autoweaver——那是项目侧的事
 - 不做 YAML 字段 schema
 - 不动 BT / Worker / comm
+
+---
+
+# 0.11.0 → 0.11.1：`run_async` 异常不再吞掉 on_done
+
+## 病因
+
+0.11.0 及之前，`Worker.run_async(fn, on_done)` 的后台 job 一旦抛异常，`AsyncPool.submit` 会 catch `BaseException`、打一行 `"on_done suppressed"` 日志，然后**永不排任何回调**。后果：靠 `on_done` 写 `last_completed_id` 完成 BT 请求的 Worker（典型是 `MotionWorker` 派生类），在 job 失败时请求**永远挂着**——`NotifyAndWait` 死等一个永不到来的完成，整棵 BT hang。这直接违反 EVO-007 的公理"错误也必须完成请求以防 BT hang"（见 `note_error` 语义）。历史上消费方（hub 的 `PlcArmWorker`）被迫自己写一层 `_run_async_guarded` 哨兵包装来补这个洞。
+
+## 新语义（行为变化）
+
+`run_async` / `AsyncPool.submit` 新增可选 `on_error` 回调：
+
+```python
+self.run_async(fn, on_done, on_error)      # on_error: Callable[[BaseException], None]
+```
+
+- **每个 job 恰好排一个回调**：`fn` 正常返回 → `on_done(result)`；`fn` 抛异常 → `on_error(exc)`。
+- 两条路径都在**下一 tick 主线程**的 `drain_main_thread_callbacks` 里触发，所以 `on_error` 里做完成记账（写 `last_error` / `last_completed_id`、改 self）依旧是 tick-safe 的。
+- **异常不再被静默吞掉**：若 `fn` 抛异常且没给 `on_error`，打印完整 traceback、不排回调（不再有 `"suppressed"` 措辞）。
+- **正常路径完全不变**：`on_done` 签名、时序、只在成功时收到 result——一字未改。老代码（只传 `on_done`）继续按原样编译运行。
+
+## 迁移步骤
+
+凡是用 `run_async` 的 `on_done` 驱动 BT 请求完成的 Worker，把失败兜底交给框架的 `on_error`，删掉自建哨兵：
+
+```python
+# 旧（0.11.0，消费方自己补洞）
+def _run_async_guarded(self, job, done, on_error):
+    _SENTINEL = object()
+    def wrapped_job():
+        try: return job()
+        except BaseException as exc: return (_SENTINEL, exc)
+    def wrapped_done(result):
+        if isinstance(result, tuple) and result[0] is _SENTINEL:
+            on_error(result[1]); return
+        done(result)
+    self.run_async(wrapped_job, wrapped_done)
+
+# 新（0.11.1）
+self.run_async(job, done, on_error)
+```
+
+纯 perception / fire-and-forget 用法（不传 `on_error`、不靠 `on_done` 记完成）无需改动。

@@ -22,10 +22,16 @@ T = TypeVar("T")
 
 @dataclass
 class _PendingCallback:
-    """A finished worker task, awaiting main-thread invocation."""
+    """A finished worker task, awaiting main-thread invocation.
 
-    on_done: Callable[[Any], None]
-    result: Any
+    Carries the callback to run next tick and the single argument to
+    pass it. Success queues ``(on_done, result)``; failure queues
+    ``(on_error, exception)`` — both are one-arg callables drained the
+    same way, so the main-thread machinery stays uniform.
+    """
+
+    callback: Callable[[Any], None]
+    arg: Any
     worker_name: str
 
 
@@ -33,10 +39,11 @@ class AsyncPool:
     """Worker-facing facade over a thread pool + main-thread callback queue.
 
     Each Worker holds an ``AsyncPool`` (shared or dedicated). Work
-    submitted via ``submit(fn, on_done)`` runs in a worker thread; on
-    completion the framework appends ``(on_done, result)`` to
-    ``_pending``. BTClock drains ``_pending`` at the start of each
-    tick — invoking each callback on the main thread.
+    submitted via ``submit(fn, on_done, on_error=...)`` runs in a worker
+    thread; on completion the framework appends one callback (``on_done``
+    with the result, or ``on_error`` with the exception) to ``_pending``.
+    BTClock drains ``_pending`` at the start of each tick — invoking each
+    callback on the main thread.
 
     The two phases (worker run, main-thread callback) are decoupled so
     that workers can do GPU/IO work without blocking ticks, while still
@@ -56,35 +63,63 @@ class AsyncPool:
         fn: Callable[[], T],
         on_done: Callable[[T], None] | None = None,
         name: str = "",
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
-        """Run ``fn`` in a worker thread; queue ``on_done(result)`` for next tick."""
+        """Run ``fn`` in a worker thread; queue a completion callback for next tick.
+
+        Exactly one callback is queued per submitted job (never both,
+        never neither-when-one-was-given):
+
+          - ``fn`` returns → ``on_done(result)`` is queued.
+          - ``fn`` raises  → ``on_error(exception)`` is queued.
+
+        Both fire on the main tick thread in ``drain_main_thread_callbacks``,
+        so a Worker's completion bookkeeping (writing ``last_completed_id`` /
+        ``last_error``, mutating self) stays tick-safe on either path.
+
+        The exception is **never swallowed**: if ``fn`` raises and no
+        ``on_error`` was provided, the traceback is logged and no callback
+        runs. A Worker that drives BT completion off ``on_done`` MUST pass
+        ``on_error`` so a failed job still completes the request (otherwise
+        a NotifyAndWait on it hangs forever — EVO-007's core invariant).
+        """
         if self._closed:
             raise RuntimeError("AsyncPool is closed")
 
         def runner() -> None:
             try:
                 result = fn()
-            except BaseException:
-                logger.exception(
-                    "worker '%s' run_async fn raised; on_done suppressed",
-                    name,
-                )
+            except BaseException as exc:
+                if on_error is not None:
+                    self._pending.put(
+                        _PendingCallback(
+                            callback=on_error, arg=exc, worker_name=name,
+                        )
+                    )
+                else:
+                    logger.exception(
+                        "worker '%s' run_async fn raised and no on_error "
+                        "callback was given; nothing to complete",
+                        name,
+                    )
                 return
             if on_done is not None:
                 self._pending.put(
                     _PendingCallback(
-                        on_done=on_done, result=result, worker_name=name,
+                        callback=on_done, arg=result, worker_name=name,
                     )
                 )
 
         self._executor.submit(runner)
 
     def drain_main_thread_callbacks(self) -> None:
-        """Invoke all queued on_done callbacks on the calling thread.
+        """Invoke all queued completion callbacks on the calling thread.
 
-        Called by BTClock at the start of every tick. Any callback that
-        raises is logged and skipped — one bad on_done cannot starve the
-        rest, and cannot crash the tick loop.
+        Called by BTClock at the start of every tick. Each queued item is
+        either an ``on_done`` (success) or an ``on_error`` (the job
+        raised). Any callback that itself raises is logged and skipped —
+        one bad callback cannot starve the rest, and cannot crash the
+        tick loop.
         """
         while True:
             try:
@@ -92,10 +127,10 @@ class AsyncPool:
             except queue.Empty:
                 return
             try:
-                pending.on_done(pending.result)
+                pending.callback(pending.arg)
             except BaseException:
                 logger.exception(
-                    "worker '%s' on_done callback raised; ignored",
+                    "worker '%s' completion callback raised; ignored",
                     pending.worker_name,
                 )
 

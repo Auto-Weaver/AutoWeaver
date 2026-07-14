@@ -237,19 +237,25 @@ class Worker(ABC):
         self,
         fn: Callable[[], T],
         on_done: Callable[[T], None] | None = None,
+        on_error: Callable[[BaseException], None] | None = None,
     ) -> None:
         """Submit a slow task to the worker pool.
 
-        ``fn`` runs in a worker thread. When it completes, ``on_done`` is
-        invoked on the **main tick thread** at the start of the next tick.
-        This guarantees that anything ``on_done`` does (writing state,
+        ``fn`` runs in a worker thread. When it finishes, exactly one
+        completion callback is invoked on the **main tick thread** at the
+        start of the next tick — ``on_done(result)`` if ``fn`` returned,
+        or ``on_error(exception)`` if it raised. Running on the tick
+        thread guarantees that anything the callback does (writing state,
         reading state, mutating self) is free of concurrency concerns.
 
-        If ``fn`` raises, the exception is logged. ``on_done`` only
-        receives successful results. To handle errors, wrap ``fn``.
+        Pass ``on_error`` whenever the Worker completes a BT request from
+        ``on_done`` (e.g. writing ``last_completed_id``): a raised job then
+        routes to ``on_error``, which can still complete the request so a
+        ``NotifyAndWait`` on it never hangs. If ``on_error`` is omitted and
+        ``fn`` raises, the traceback is logged and no callback fires.
         """
         assert self._async_pool is not None
-        self._async_pool.submit(fn, on_done, name=self.name)
+        self._async_pool.submit(fn, on_done, name=self.name, on_error=on_error)
 
     def run_background(
         self,
