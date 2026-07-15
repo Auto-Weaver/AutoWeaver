@@ -512,7 +512,7 @@ action.run()
 
 以下主题的状态：
 
-- **ForEach 组合子**——延后到有实际挑毛场景时设计
+- **ForEach 组合子**——延后到有实际挑毛场景时设计。（→ 已落地：见 [EVO-010: Loop Combinators](010-loop-combinators.md)，0.12.0 随 ForEach / RepeatUntil / Chalk 一并交付）
 - **具体叶子节点实现**——属于应用层，不属于框架
 - **gRPC proto 详细定义**——见 EVO-002、EVO-003
 - **坐标变换**（相机坐标系 → 机器人坐标系）——后续 EVO
