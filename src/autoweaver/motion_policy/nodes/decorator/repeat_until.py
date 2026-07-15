@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Callable
 
+from autoweaver.motion_policy.blackboard import BoardView
 from autoweaver.motion_policy.nodes.decorator.base import DecoratorNode
 from autoweaver.motion_policy.nodes.node import Status, TreeNode
 
@@ -21,25 +22,28 @@ if TYPE_CHECKING:
 
 
 class RepeatUntil(DecoratorNode):
-    """Run ``child`` repeatedly until ``cond(snapshot)`` holds (do-while).
+    """Run ``child`` repeatedly until ``cond(snapshot, board)`` holds (do-while).
 
     Semantics:
 
     - Tick the child.
     - child FAILURE → FAILURE.
     - child RUNNING → RUNNING (``cond`` is not evaluated).
-    - child SUCCESS → evaluate ``cond(self.snapshot)``: True → SUCCESS,
-      False → RUNNING (child re-runs next tick via its own auto-reset).
+    - child SUCCESS → evaluate ``cond(self.snapshot, board)``: True →
+      SUCCESS, False → RUNNING (child re-runs next tick via its own
+      auto-reset).
 
-    ``cond`` is read-only over the snapshot; it is never handed the
-    blackboard, so it cannot write. A ``cond`` that raises propagates to
-    the base ``tick`` exception guard (node.py) and becomes FAILURE — no
-    extra wrapping here.
+    ``cond`` receives the tick snapshot **and** a read-only ``BoardView`` —
+    loop counters (``flow.*`` keys and friends) live on the blackboard, not
+    the snapshot, so the exit test needs to see them. The view exposes only
+    ``read``: cond sees the blackboard but cannot write it, now enforced by
+    the type. A ``cond`` that raises propagates to the base ``tick``
+    exception guard (node.py) and becomes FAILURE — no extra wrapping here.
     """
 
     def __init__(
         self,
-        cond: Callable[[Snapshot], bool],
+        cond: Callable[["Snapshot", BoardView], bool],
         child: TreeNode,
         name: str = "",
     ):
@@ -59,6 +63,6 @@ class RepeatUntil(DecoratorNode):
         if status == Status.RUNNING:
             return Status.RUNNING
         # child SUCCESS — one pass complete, test the exit condition.
-        if self._cond(self.snapshot):
+        if self._cond(self.snapshot, BoardView(self._blackboard)):
             return Status.SUCCESS
         return Status.RUNNING

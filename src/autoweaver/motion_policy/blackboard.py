@@ -3,6 +3,23 @@ from __future__ import annotations
 from typing import Any
 
 
+class BoardView:
+    """Read-only view over a Blackboard.
+
+    Handed to predicates (e.g. ``RepeatUntil``'s ``cond``) that need to see
+    blackboard state — loop counters live here — but must not write it. The
+    "sees the blackboard, cannot write it" rule is now enforced by the type:
+    only ``read`` is exposed; there is no ``write`` / ``set_initial`` /
+    ``register_key``.
+    """
+
+    def __init__(self, blackboard: "Blackboard"):
+        self._blackboard = blackboard
+
+    def read(self, key: str, default: Any = None) -> Any:
+        return self._blackboard.read(key, default)
+
+
 class Blackboard:
     """Shared key-value store for BT nodes.
 

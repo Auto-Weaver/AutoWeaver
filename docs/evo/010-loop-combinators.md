@@ -31,7 +31,7 @@ EVO-004 在"本文档不覆盖的内容"里留了一条 TODO（004-bt-engine.md:
 | 组合子 | 类型 | 语义 | 每 tick 节奏 | 终态传播 |
 |---|---|---|---|---|
 | `ForEach(key, items, child)` | Decorator | 把 `items` 逐项写进黑板 `key`，每项让 child 跑到终态 | 最多推进一项：child SUCCESS → 写下一项、返回 RUNNING | 空 items → 立即 SUCCESS；最后一项 SUCCESS → SUCCESS；child FAILURE → FAILURE（中止遍历） |
-| `RepeatUntil(cond, child)` | Decorator | do-while：反复跑 child，每轮 SUCCESS 后测 `cond(snapshot)` | 最多完成一轮：child SUCCESS 且 cond 假 → RUNNING，下个 tick 重跑 | cond 真 → SUCCESS；child FAILURE → FAILURE；child RUNNING → RUNNING（**不测 cond**） |
+| `RepeatUntil(cond, child)` | Decorator | do-while：反复跑 child，每轮 SUCCESS 后测 `cond(snapshot, board)`（board=只读 `BoardView`） | 最多完成一轮：child SUCCESS 且 cond 假 → RUNNING，下个 tick 重跑 | cond 真 → SUCCESS；child FAILURE → FAILURE；child RUNNING → RUNNING（**不测 cond**） |
 | `Chalk(key, fn)` | Leaf | 单 tick 记账：`fn(snapshot, current) -> new`，唯一副作用是写黑板 | 永远单 tick | 恒 SUCCESS，永不 RUNNING；写保护违规 → 基类异常兜底 FAILURE |
 
 ### halt / reset 契约
@@ -52,7 +52,9 @@ EVO-004 在"本文档不覆盖的内容"里留了一条 TODO（004-bt-engine.md:
 - **幂等性**：`register_key`（blackboard.py:18-26）**本来就对同一写者幂等**——只有当 key 已被**别的**写者占用时才抛 `ValueError`。所以多个 `Chalk`（或多个 `ForEach`）实例注册同一 key 不冲突（同写者），而任何非 `chalk` / 非 `foreach` 的写者想写这些 key，会在 `write()` 时被 `PermissionError` 拦下。**本次没有修改 `register_key`**，直接采信它现成的幂等语义。
 - **写值**：走 `blackboard.write(key, value, WRITER)`，绝不用 `set_initial`（那是给"树外来的初值"用的后门，绕过一切检查）。
 
-`RepeatUntil` 的 `cond` **只读 snapshot**，不给它黑板句柄，从结构上杜绝"退出条件顺手改状态"。cond 抛异常按 node.py 既有兜底转 FAILURE，不额外包装。
+`RepeatUntil` 的 `cond` 签名是 `cond(snapshot, board)`（0.12.1 起）——第二参是**只读黑板视图** `BoardView`（blackboard.py），只暴露 `read`，没有 `write` / `set_initial` / `register_key`。**动机**：挑毛点位循环的退出条件通常挂在黑板的循环计数器上（`flow.zero_streak` / `flow.region_pokes` 这类 key，计数器的家在黑板），而这些 key snapshot 里看不见；cond 必须读得到它们。原则不变——**cond 看得见黑板、写不了黑板**，但保证从"口头约定"升级成**类型强制**：给的是 `BoardView` 而不是 `Blackboard`，结构上就没有写的口子。cond 抛异常按 node.py 既有兜底转 FAILURE，不额外包装。
+
+> 0.12.0 首版 cond 只收 snapshot；0.12.1 在零消费者时破坏性改签名为 `(snapshot, board)`，补上"退出条件依赖黑板计数器"这个空隙。
 
 ## Chalk 命名由来
 
@@ -69,3 +71,5 @@ EVO-004 在"本文档不覆盖的内容"里留了一条 TODO（004-bt-engine.md:
 ## 版本
 
 随 0.12.0 发布。新增文件：`nodes/decorator/foreach.py`、`nodes/decorator/repeat_until.py`、`nodes/leaf/chalk.py`，及对应 `tests/motion_policy/test_foreach.py` / `test_repeat_until.py` / `test_chalk.py`。三者已导出到 `nodes/__init__.py`、`nodes/decorator/__init__.py`、`nodes/leaf/__init__.py`。
+
+**0.12.1**：`RepeatUntil` 的 `cond` 签名改为 `cond(snapshot, board)`，第二参为只读 `BoardView`（`blackboard.py`），让退出条件能读黑板上的循环计数器。零消费者时的破坏性小改。
