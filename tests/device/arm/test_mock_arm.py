@@ -67,6 +67,26 @@ def test_get_flange_pose_reflects_set_pose():
     assert np.allclose(m[:3, :3], np.eye(3))
 
 
+def test_get_flange_pose_decodes_rpy_physically_not_positional_mangle():
+    """The mock must be convention-faithful: RoboCal / pluck round-trip poses
+    through it, so a parity flip here would leak downstream. A set_pose with
+    three distinct angles (rx,ry,rz) must decode to physical extrinsic-xyz
+    R = Rz(rz)·Ry(ry)·Rx(rx), NOT the old positional-"ZYX" mangle (P·Rᵀ·P).
+    """
+    from scipy.spatial.transform import Rotation
+
+    rx, ry, rz = 12.0, -25.0, 48.0
+    arm = _new_arm(name="m1")
+    arm.set_pose((0, 0, 0, rx, ry, rz))
+    m = arm.get_flange_pose()
+
+    physical = Rotation.from_euler("xyz", [rx, ry, rz], degrees=True).as_matrix()
+    mangled = Rotation.from_euler("ZYX", [rx, ry, rz], degrees=True).as_matrix()
+    assert not np.allclose(physical, mangled)  # distinct angles → real test
+    assert np.allclose(m[:3, :3], physical, atol=1e-12)
+    assert not np.allclose(m[:3, :3], mangled, atol=1e-6)
+
+
 def test_move_l_completes_immediately_when_duration_zero():
     arm = _new_arm(name="m1", move_duration=0.0)
     arm.move_l((1.0, 2.0, 3.0, 0.0, 0.0, 0.0))

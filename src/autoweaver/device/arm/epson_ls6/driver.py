@@ -10,9 +10,13 @@ from autoweaver.motion_policy.runtime_client import RuntimeClient
 
 
 # SCARA pose convention: (x, y, z, u) where u is yaw about the world Z axis.
-# Encoded as ZYX-intrinsic Euler with rx=ry=0 so leaves see the same 4×4
-# matrix shape as Dobot / MockArm — only the rotation axis content differs.
-_POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
+# Encoded as fixed-axis RPY (extrinsic "xyz") with rx=ry=0 and rz=u so leaves
+# see the same 4×4 matrix shape as Dobot / MockArm — only the rotation axis
+# content differs. Matches the arm-wide convention fix: the old
+# "zyx_intrinsic" spelling consumed the array positionally (element[0]→Z),
+# which is the parity-flip trap documented in the Dobot driver; here yaw must
+# be carried in the rz slot (element[2]), not element[0].
+_POSE_RPY_CONVENTION = "xyz_extrinsic_deg"
 
 
 class EpsonLS6:
@@ -144,13 +148,13 @@ def _scara_status_to_matrix(status) -> np.ndarray:
     """Build a 4×4 matrix from a ScaraStatusResponse.
 
     SCARA pose is (x, y, z, u) where u is yaw — rotation about the world
-    Z axis. The convention ``zyx_intrinsic_deg`` applies the first array
-    element to Z, so yaw-only encodes as ``[u, 0, 0]``. The resulting
-    matrix has the same 4×4 shape as 6-DOF arms' pose so leaves read it
-    uniformly regardless of arm dof.
+    Z axis. The convention ``xyz_extrinsic_deg`` reads the array as
+    ``[rx, ry, rz]`` fixed-axis RPY, so yaw-only encodes as ``[0, 0, u]``
+    (rz = u). The resulting matrix has the same 4×4 shape as 6-DOF arms'
+    pose so leaves read it uniformly regardless of arm dof.
     """
     return transforms.euler_to_matrix(
         np.array([status.current_x, status.current_y, status.current_z], dtype=np.float64),
-        [status.current_u, 0.0, 0.0],
+        [0.0, 0.0, status.current_u],
         _POSE_RPY_CONVENTION,
     )

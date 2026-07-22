@@ -44,9 +44,10 @@ from autoweaver.worker.motion import MotionWorker
 logger = logging.getLogger(__name__)
 
 
-# Convention matches Dobot SDK: ToolVectorActual is (x, y, z, rx, ry, rz)
-# ZYX-intrinsic in degrees. See driver.py for the rationale.
-_POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
+# Convention matches Dobot SDK: ToolVectorActual is (x, y, z, rx, ry, rz),
+# fixed-axis roll-pitch-yaw = extrinsic "xyz" on [rx, ry, rz]. See driver.py
+# for why the "ZYX"-positional spelling is the parity-flip trap we avoid.
+_POSE_RPY_CONVENTION = "xyz_extrinsic_deg"
 
 
 class DobotWorker(MotionWorker):

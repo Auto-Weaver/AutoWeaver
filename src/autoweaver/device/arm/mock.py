@@ -19,7 +19,11 @@ _HOME_JOINT: tuple[float, ...] = (0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
 # MockArm mirrors Dobot's pose convention so leaves see the same matrix
 # shape whether they're talking to a mock or real hardware. See NEXT-008.
-_POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
+# Pose angles are (rx, ry, rz) fixed-axis RPY = extrinsic "xyz"; this must
+# stay convention-faithful because RoboCal / pluck tests round-trip poses
+# through the mock and would silently inherit any parity flip. See the
+# Dobot driver comment for the positional-euler trap this spelling avoids.
+_POSE_RPY_CONVENTION = "xyz_extrinsic_deg"
 
 
 class MockArm:

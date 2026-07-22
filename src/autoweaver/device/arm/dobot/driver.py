@@ -37,11 +37,21 @@ FEEDBACK_PORT = 30004
 COORD_POSE = 0   # Cartesian (X, Y, Z, Rx, Ry, Rz)
 COORD_JOINT = 1  # Joint angles (J1, J2, J3, J4, J5, J6)
 
-# Dobot's ToolVectorActual returns (x, y, z, rx, ry, rz) where the angles
-# are ZYX intrinsic (RPY) in degrees. Everything else in autoweaver works
-# in matrix form — translation in mm — so the driver translates once at
-# the SDK boundary and leaves the rest of the stack convention-free.
-_POSE_RPY_CONVENTION = "zyx_intrinsic_deg"
+# Dobot's ToolVectorActual returns (x, y, z, rx, ry, rz): translation in mm
+# and a fixed-axis roll-pitch-yaw triplet in degrees — rx about world X,
+# ry about world Y, rz about world Z, composed R = Rz(rz)·Ry(ry)·Rx(rx).
+# That is scipy's *extrinsic* "xyz" applied to [rx, ry, rz] in that order.
+#
+# It is NOT "ZYX" intrinsic fed [rx, ry, rz]: scipy assigns angles to the
+# sequence letters *positionally*, so from_euler("ZYX", [rx, ry, rz]) would
+# put rx on the Z slot and rz on the X slot, building the parity-flipped
+# Rz(rx)·Ry(ry)·Rx(rz) = P·Rᵀ·P (P = the x↔z axis swap). That positional
+# trap silently corrupted every reported orientation for months (a 37°
+# hand-eye residual downstream) until it was tracked here. The two spellings
+# only coincide for pure-single-axis poses; they diverge the moment two of
+# the three angles are nonzero. Use the extrinsic "xyz" spelling, which
+# consumes [rx, ry, rz] in natural order and needs no reversal.
+_POSE_RPY_CONVENTION = "xyz_extrinsic_deg"
 
 
 class Dobot:
