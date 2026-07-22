@@ -22,6 +22,7 @@ from .modbus_primitive import (
     ReadUntilTimeout,
     RegisterIO,
 )
+from .modbus_protocol import ModbusProtocol
 from .worker import CommWorker
 
 try:
@@ -56,6 +57,7 @@ __all__ = [
     "CommEngine",
     "CommContract",
     "RegisterIO",
+    "ModbusProtocol",
     "BlockSpec",
     "Clock",
     "CommActionError",
