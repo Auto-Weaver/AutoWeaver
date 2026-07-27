@@ -17,6 +17,10 @@ Design law (EVO-009):
     read once) — they share the poll loop but stay two named operators because
     "fetch a value" and "block until a condition" read very differently in a
     declared action.
+  - Whether a wait is bounded is *declared data*, not engine policy:
+    ``read_until``'s ``timeout_s`` is a number (bounded, raises on expiry) or
+    an explicit ``null`` (this step has no timeout semantics). Omitting it is
+    a schema error — see ``_do_read_until``.
 """
 
 from __future__ import annotations
@@ -299,18 +303,44 @@ class CommEngine:
         _params: Mapping[str, Any],
         _results: dict[str, Any],
     ) -> None:
-        """read_until: poll a register until it equals the expected value, or
-        time out. The predicate is data (``equals: <const>``), not code."""
+        """read_until: poll a register until it equals the expected value.
+        The predicate is data (``equals: <const>``), not code.
+
+        ``timeout_s`` is mandatory and takes one of two declared shapes:
+
+        - a **number** — bound the wait; on expiry raise ``ReadUntilTimeout``
+          and let the BT decide (retry / give up / alarm). Unchanged semantics.
+        - an explicit **null** (``timeout_s: null``) — this step has *no
+          timeout semantics*: wait as long as it takes. For a PC waiting on a
+          PLC request, waiting is the PC's job; a slow PLC (loading, washing,
+          manual intervention, single-stepping) is normal operation, not a
+          fault, and the BT would have nothing to decide anyway.
+
+        **Explicit null is a declaration; a missing key is an oversight** —
+        the two must never look alike. A forgotten field that silently waits
+        forever is the hardest class of bug to find, so an absent ``timeout_s``
+        is a schema error, not a default. Note this is not a mode switch on the
+        primitive: the behaviour is fully determined by the declared data, and
+        no fourth operator is introduced (EVO-009 §铁律 1, §read_until).
+        """
         register = self._c.reg(spec["register"])
         expected = self._c.const(spec["equals"])
-        timeout_s = float(spec["timeout_s"])
-        deadline = self._clock.monotonic() + timeout_s
+        if "timeout_s" not in spec:
+            raise ActionStepError(
+                f"read_until on register {spec['register']!r} must declare "
+                f"timeout_s: a number to bound the wait, or an explicit null to "
+                f"declare the step has no timeout semantics. Omitting it is "
+                f"treated as an oversight, never as 'wait forever'."
+            )
+        raw_timeout = spec["timeout_s"]
+        timeout_s = None if raw_timeout is None else float(raw_timeout)
+        deadline = None if timeout_s is None else self._clock.monotonic() + timeout_s
         last = None
         while True:
             last = self._io.read_u16(register)
             if last == expected:
                 return
-            if self._clock.monotonic() >= deadline:
+            if deadline is not None and self._clock.monotonic() >= deadline:
                 raise ReadUntilTimeout(register, expected, last, timeout_s)
             self._clock.sleep(self._poll_interval_s)
 

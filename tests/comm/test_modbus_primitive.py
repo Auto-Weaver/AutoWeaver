@@ -247,6 +247,46 @@ def test_read_until_times_out(contract, io):
         )
     assert exc.value.register == 41068
     assert exc.value.last_seen == 1
+    assert exc.value.timeout_s == 3.0  # declared number is honoured verbatim
+
+
+# --- timeout_s declaration: number bounds the wait, explicit null does not --- #
+def test_read_until_null_timeout_waits_far_past_any_deadline(contract, io):
+    # Satisfied only on the 201st read. With poll_interval 1.0s the fake clock
+    # reaches t=200s — a numeric timeout of 3s (see the test above) would have
+    # raised long before. Declared null => no timeout semantics, keep waiting.
+    io.script_reads(41068, [1] * 200 + [0])
+    clock = FakeClock()
+    eng = make_engine(contract, io, clock.as_clock())
+    eng.run_action(
+        [{"read_until": {"register": "plc_send", "equals": "CLEAR", "timeout_s": None}}]
+    )
+    assert clock.sleeps == 200
+    assert clock.t == 200.0  # blew past any timeout a caller might have set
+
+
+def test_read_until_null_timeout_returns_immediately_when_satisfied(contract, io):
+    # "Wait forever" must not mean "wait at all" — the predicate still wins.
+    io.regs[41068] = 0
+    clock = FakeClock()
+    eng = make_engine(contract, io, clock.as_clock())
+    eng.run_action(
+        [{"read_until": {"register": "plc_send", "equals": "CLEAR", "timeout_s": None}}]
+    )
+    assert clock.sleeps == 0
+
+
+def test_read_until_missing_timeout_is_a_schema_error_not_forever(contract, io):
+    # Explicit null is a declaration; an absent key is an oversight. They must
+    # not behave alike — a forgotten field silently waiting forever is the
+    # hardest bug to find. Register never satisfies, so a hang would show as one.
+    io.regs[41068] = 1
+    clock = FakeClock()
+    eng = make_engine(contract, io, clock.as_clock())
+    with pytest.raises(ActionStepError) as exc:
+        eng.run_action([{"read_until": {"register": "plc_send", "equals": "CLEAR"}}])
+    assert "timeout_s" in str(exc.value)
+    assert clock.sleeps == 0  # rejected up front, never entered the poll loop
 
 
 # --------------------------------------------------------------------------- #
