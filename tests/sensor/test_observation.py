@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-from autoweaver.camera.observation import CameraObservation
+from autoweaver.sensor.camera.observation import CameraObservation
 from autoweaver.sensor.observation import Derivation, Observation, PixelTransform
 
 

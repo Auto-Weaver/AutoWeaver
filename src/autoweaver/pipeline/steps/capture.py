@@ -3,7 +3,7 @@
 import logging
 from typing import Any, Dict, Optional
 
-from ...camera.base import CameraBase
+from ...sensor.camera.base import CameraBase
 from ..types import PipelineContext
 from .base import ProcessStep
 

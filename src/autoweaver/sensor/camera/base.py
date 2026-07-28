@@ -6,7 +6,7 @@ from typing import Any, Mapping, Optional, Tuple
 
 import numpy as np
 
-from autoweaver.camera.observation import CameraObservation
+from autoweaver.sensor.camera.observation import CameraObservation
 from autoweaver.sensor.base import Sensor
 
 
