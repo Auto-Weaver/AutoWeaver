@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from autoweaver.motion_policy.world_board import WorldBoard
-from autoweaver.telemetry.trajectory import (
+from autoweaver.logbook.trajectory import (
     SCHEMA_ID,
     TrajectoryRecorder,
     _to_jsonable,

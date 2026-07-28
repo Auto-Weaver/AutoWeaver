@@ -136,7 +136,7 @@ class Observation:
             detection threshold".
         projection: **Reference** to this source's optical / calibration model.
             Deliberately opaque here — interpretation belongs to the business
-            layer, exactly as ``telemetry`` treats board values.
+            layer, exactly as ``logbook`` treats board values.
         derived_from: Lineage. ``None`` on a root observation.
 
     Not in here, on purpose:

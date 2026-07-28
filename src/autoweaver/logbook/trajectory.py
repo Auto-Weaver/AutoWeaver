@@ -14,6 +14,22 @@ snapshots the requested namespaces and appends one JSONL line per arm,
 stamped with both wall-clock and monotonic time so the trace lines up with
 camera frames and logs after the fact.
 
+One ready-made among several, not *the* answer
+----------------------------------------------
+This recorder samples **on the tick**, and that is one rhythm out of several
+legitimate ones. The framework deliberately does not choose: ``Logbook`` and
+``Scribe`` provide *writing*, and *when to write* stays with the business.
+Somebody who wants 20 Hz regardless of the clock, or a sample per completed
+move, opens a thread (or reuses one they already have) and calls
+``scribe.write(...)`` on their own schedule — that is not a lesser path, it is
+the same path with a different trigger.
+
+Tick sampling has a real drawback worth knowing before picking it: the trace
+then shares fate with the clock it is meant to diagnose. If the tick stalls,
+the trace thins out at exactly the moment it would have explained why. A
+recorder on its own thread keeps sampling through the stall. Choose with that
+in mind rather than by which one the framework happened to ship.
+
 Design choices (deliberate):
 
 * **Arm-agnostic.** A *track* is just a namespace string. The recorder
@@ -50,35 +66,25 @@ import time
 from pathlib import Path
 from typing import IO, Any, Sequence
 
-import numpy as np
-
+from autoweaver.logbook.root import expand_user_path
+from autoweaver.logbook.serialize import to_jsonable
 from autoweaver.worker.base import TickContext
 from autoweaver.worker.perception import PerceptionWorker
 
 logger = logging.getLogger(__name__)
 
+#: Deliberately still spells ``telemetry`` after the package was renamed to
+#: ``logbook``. A schema id names a **file format**, not a module path, and this
+#: format did not change: bumping it would make already-written traces and
+#: newly-written ones advertise different schemas while being byte-identical in
+#: shape — exactly the confusion a schema id exists to prevent. It changes when
+#: the shape of a line changes, and not before.
 SCHEMA_ID = "autoweaver.telemetry.trajectory/v1"
 
-
-def _to_jsonable(value: Any) -> Any:
-    """Best-effort, lossless-where-possible conversion of a board value to JSON.
-
-    numpy arrays become nested lists (a 4x4 pose round-trips exactly), numpy
-    scalars become Python scalars, tuples/lists are converted element-wise.
-    Anything we don't recognise falls back to ``repr`` so a surprising value
-    type can never crash the recorder mid-run.
-    """
-    if value is None or isinstance(value, (bool, int, float, str)):
-        return value
-    if isinstance(value, np.ndarray):
-        return value.tolist()
-    if isinstance(value, np.generic):  # np.float64, np.int64, ...
-        return value.item()
-    if isinstance(value, (tuple, list)):
-        return [_to_jsonable(v) for v in value]
-    if isinstance(value, dict):
-        return {str(k): _to_jsonable(v) for k, v in value.items()}
-    return repr(value)
+#: The package-wide coercion, aliased under this module's historical name so
+#: existing importers keep working. Behaviour is unchanged except that
+#: dataclasses now become dicts instead of falling through to ``repr``.
+_to_jsonable = to_jsonable
 
 
 class TrajectoryRecorder(PerceptionWorker):
@@ -120,9 +126,15 @@ class TrajectoryRecorder(PerceptionWorker):
             raise ValueError("TrajectoryRecorder needs at least one track namespace")
         # Resolve to an absolute path now: a relative out_dir would otherwise
         # land "wherever the process was launched", which is hostile to
-        # after-the-fact analysis. ~ is expanded; resolution is lexical so a
-        # not-yet-existing directory is fine.
-        self._out_dir = Path(out_dir).expanduser().resolve()
+        # after-the-fact analysis. Resolution is lexical, so a not-yet-existing
+        # directory is fine.
+        #
+        # ``expand_user_path`` rather than ``Path.expanduser``: this is a
+        # configured path (``out_dir`` is a ``from_config`` key), so a user may
+        # well write ``~/traces`` — and ``Path.expanduser`` *raises* when the home
+        # directory cannot be determined, which would take start-up down over a
+        # trace path. See that function for the whole trap.
+        self._out_dir = expand_user_path(out_dir, what="out_dir").resolve()
         if max_bytes <= 0:
             raise ValueError(f"max_bytes must be positive, got {max_bytes}")
         self._max_bytes = max_bytes

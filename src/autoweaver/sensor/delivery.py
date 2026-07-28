@@ -59,12 +59,20 @@ import threading
 import time
 from collections import deque
 from enum import Enum
-from typing import Optional
+from typing import Generic, Optional, TypeVar
 
 from autoweaver.sensor.observation import Observation
 from autoweaver.sensor.observer import Observer
 
 logger = logging.getLogger(__name__)
+
+#: What a queue carries. Observations are the reason this module exists and the
+#: only thing ``QueuedDelivery`` accepts, but the queue itself never inspects its
+#: items — the bounding and the drop policy are about *how many*, not *what*. It
+#: is parameterised so other producers of expensive-to-handle work (the logbook's
+#: attachment writer, whose items are file-write jobs) can reuse this policy
+#: rather than growing a second, subtly different copy of it.
+T = TypeVar("T")
 
 
 class DropPolicy(Enum):
@@ -89,11 +97,16 @@ class DropPolicy(Enum):
     DROP_OLDEST = "drop_oldest"
 
 
-class ObservationQueue:
+class ObservationQueue(Generic[T]):
     """A bounded queue of observations with an explicit full-queue policy.
 
     ``offer`` **never blocks and never raises** — that is the contract that keeps
     the producer free. It returns whether the observation was accepted.
+
+    Generic in what it carries (see :data:`T`): the bounding and the drop policy
+    never look inside an item, so this is reusable by anything that has a fast
+    producer, a slow consumer and a business opinion about which item to lose.
+    Unparameterised, it means ``ObservationQueue[Observation]``.
     """
 
     def __init__(self, *, capacity: int, policy: DropPolicy) -> None:
@@ -111,7 +124,7 @@ class ObservationQueue:
             raise ValueError(f"capacity must be >= 1, got {capacity}")
         self._policy = policy
         self._capacity = 1 if policy is DropPolicy.LATEST_ONLY else capacity
-        self._items: deque = deque()
+        self._items: deque[T] = deque()
         self._cv = threading.Condition()
         self._dropped = 0
         self._closed = False
@@ -134,7 +147,7 @@ class ObservationQueue:
 
     # -- producer side ------------------------------------------------------ #
 
-    def offer(self, observation: Observation) -> bool:
+    def offer(self, observation: T) -> bool:
         """Enqueue one observation. Returns ``False`` if it was dropped.
 
         Never blocks, never raises. A ``False`` here is the *only* moment the
@@ -171,7 +184,7 @@ class ObservationQueue:
 
     # -- consumer side ------------------------------------------------------ #
 
-    def take(self, timeout: Optional[float] = None) -> Optional[Observation]:
+    def take(self, timeout: Optional[float] = None) -> Optional[T]:
         """Pop the oldest observation, waiting up to ``timeout``.
 
         Returns ``None`` on timeout or once the queue is closed and drained.
