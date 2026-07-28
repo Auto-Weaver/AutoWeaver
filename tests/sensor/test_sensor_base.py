@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 
-from autoweaver.camera.base import CameraBase, CameraConfig
-from autoweaver.camera.mock import MockCamera
+from autoweaver.sensor.camera.base import CameraBase, CameraConfig
+from autoweaver.sensor.camera.mock import MockCamera
 from autoweaver.sensor.base import Sensor
 
 

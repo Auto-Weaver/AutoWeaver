@@ -14,9 +14,9 @@ from typing import List
 import numpy as np
 import pytest
 
-from autoweaver.camera.base import CameraConfig
-from autoweaver.camera.mock import MockCamera
-from autoweaver.camera.observation import CameraObservation
+from autoweaver.sensor.camera.base import CameraConfig
+from autoweaver.sensor.camera.mock import MockCamera
+from autoweaver.sensor.camera.observation import CameraObservation
 from autoweaver.sensor.base import Sensor
 from autoweaver.sensor.observation import Observation
 from autoweaver.sensor.observer import Observer, ObserverSpeed

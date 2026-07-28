@@ -226,7 +226,14 @@ dobot1.stop()
 ## 落地清单
 
 - [ ] 新建 `src/autoweaver/device/` 目录
-- [ ] 把 `src/autoweaver/sensor/` 搬到 `src/autoweaver/device/sensor/`
+- [x] ~~把 `src/autoweaver/sensor/` 搬到 `src/autoweaver/device/sensor/`~~ —— **已否决（2026-07-28），方向搬反了**。
+      这条只执行了一半就停了，留下 `device/sensor/__init__.py` 这个 0 字节空包与 `autoweaver/sensor/`
+      并存（EVO-011 §1.6 把它记为"漂着的化石"之一）。**最终决定是相反方向**：`camera/` 挪进
+      `sensor/camera/`，空包删除。理由是 `device/` 这层装的是**厂商驱动**（`device/arm/dobot`、
+      `epson_ls6`），而 `sensor/camera/base.py` 里装的是 `CameraConfig`、投影模型、
+      `_build_observation` 这类**框架契约**，不是驱动。真正的对称是
+      `sensor/camera/daheng.py` ↔ `device/arm/dobot/`，不是造一个 `device/sensor/` 镜像。
+      **别照着这条再搬回去。**
 - [ ] 写 `device/arm/base.py`（ArmBase Protocol）
 - [ ] 写 `device/arm/dobot.py`（Dobot 主类，按上面的骨架）
 - [ ] 写 `device/arm/mock.py`（MockArm 用于测试）
