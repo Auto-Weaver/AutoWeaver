@@ -1,6 +1,12 @@
 """AutoWeaver — A framework for industrial vision inspection systems."""
 
-from .camera import CameraBase, CameraConfig, DahengCamera, MockCamera
+from .camera import (
+    CameraBase,
+    CameraConfig,
+    CameraObservation,
+    DahengCamera,
+    MockCamera,
+)
 from .comm import (
     CommBase,
     CommEngine,
@@ -32,7 +38,14 @@ from .pipeline import (
     register_step,
 )
 from .reactive import EventBus, EventHandler, StateMachine, Transition
-from .sensor import Sensor
+from .sensor import (
+    Derivation,
+    Observation,
+    Observer,
+    ObserverSpeed,
+    PixelTransform,
+    Sensor,
+)
 from .worker import (
     AsyncPool,
     AsyncPoolConfig,
@@ -67,11 +80,17 @@ __all__ = [
     "Snapshot",
     "WaitFor",
     "WorldBoard",
-    # Sensor
+    # Sensor / Observation (EVO-011)
+    "Derivation",
+    "Observation",
+    "Observer",
+    "ObserverSpeed",
+    "PixelTransform",
     "Sensor",
     # Camera
     "CameraBase",
     "CameraConfig",
+    "CameraObservation",
     "DahengCamera",
     "MockCamera",
     # Comm

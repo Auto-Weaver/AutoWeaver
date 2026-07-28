@@ -35,6 +35,56 @@ This contract exists so the rest of the system can remain camera-agnostic.
 - `MockCamera`
 - `DahengCamera`
 
+### `observe()` — the reading with its identity attached (EVO-011)
+
+`snapshot()` returns a bare array: no idea who took it, when, or under what
+exposure. `observe()` returns a `CameraObservation` instead — the same pixels
+plus the identity only the device can supply:
+
+```python
+camera.role = "nest"              # the device's position in the system
+observation = camera.observe()
+observation.id                     # monotonic per role — usable as a freshness gate
+observation.source                 # "nest", not "DahengCamera"
+observation.captured_at            # monotonic clock at acquisition
+observation.conditions             # exposure / gain / white balance / trigger mode
+observation.crop(x, y, w, h)       # a view, with lineage: .to_root(u, v) maps back
+```
+
+`observe()` raises if no `role` has been assigned. Falling back to the class name
+would put two Daheng cameras back to both being `"DahengCamera"`, which is the
+defect this exists to remove.
+
+Reads are serialised per instance — **a lock, not a thread**; `Sensor` still has
+no heartbeat of its own. That is what makes a hand-written `ThreadSafe*` wrapper
+unnecessary.
+
+`snapshot()` / `capture()` / `is_opened()` are unchanged and keep working.
+
+> **Subclassing note.** `capture()` delegates *to* `snapshot()`. A subclass that
+> customises acquisition must override **`snapshot()`**; overriding only
+> `capture()` leaves `observe()` bypassing the customisation, with no error.
+
+### Observers
+
+A Sensor pushes each observation to whatever registered for it — preview, video
+recording, archiving, logging, detection are all just observers. Adding a second
+camera therefore stops being a change to every consumer.
+
+```python
+camera.set_slow_dispatcher(worker.run_async)   # required before any SLOW observer
+camera.add_observer(preview)                   # FAST: runs inline on the tick thread
+camera.add_observer(recorder)                  # SLOW: handed to the dispatcher
+```
+
+Every observer declares `speed`. There is no default, because the safe-looking
+one (`FAST`) is precisely the wrong guess for a video encoder — and the symptom,
+"the whole BT went choppy", is nearly impossible to pin on a single observer.
+Registering a `SLOW` observer with no dispatcher raises immediately.
+
+The drive chain is `BT → Sensor → Observer`. Acquisition *modes* (live, on
+demand, burst) are BT-side orchestration; the Sensor holds no scheduler.
+
 ## Camera Ownership
 
 Camera lifecycle should normally belong to a Subsystem.

@@ -2,10 +2,11 @@
 
 from abc import abstractmethod
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Any, Mapping, Optional, Tuple
 
 import numpy as np
 
+from autoweaver.camera.observation import CameraObservation
 from autoweaver.sensor.base import Sensor
 
 
@@ -47,14 +48,69 @@ class CameraBase(Sensor):
       - ``snapshot()`` returns ``np.ndarray`` (BGR)
       - ``configure(**kwargs)`` for runtime parameters
 
+    ``observe()`` (EVO-011) wraps that frame in a :class:`CameraObservation`,
+    stamped with the identity, capture instant and imaging conditions the device
+    alone knows. It requires :attr:`Sensor.role` to be set.
+
     A ``capture()`` alias is provided for backward compatibility with
     code from before 0.5.0; new code should use ``snapshot()``.
+
+    .. warning::
+       ``capture()`` delegates **to** ``snapshot()``. A subclass that customises
+       acquisition must therefore override ``snapshot()``; overriding only
+       ``capture()`` leaves ``observe()`` — and anything else on the Sensor
+       contract — bypassing the customisation without any error.
     """
+
+    #: Fields of ``CameraConfig`` that describe how the frame was acquired.
+    #: These travel with every observation because nothing downstream can
+    #: recover them, yet detection thresholds are calibrated against them.
+    _CONDITION_FIELDS = (
+        "exposure_time",
+        "exposure_auto",
+        "gain",
+        "gain_auto",
+        "white_balance_mode",
+        "trigger_mode",
+    )
 
     @property
     def name(self) -> str:
         """Default name; subclasses can override."""
         return self.__class__.__name__
+
+    # -- observation ------------------------------------------------------- #
+
+    def _observation_conditions(self) -> Mapping[str, Any]:
+        """Imaging conditions read off this camera's config.
+
+        Returns an empty mapping when the subclass keeps no ``config`` — the
+        contract is "report what the device knows", not "invent defaults".
+        """
+        config = getattr(self, "config", None)
+        if config is None:
+            return {}
+        conditions = {}
+        for field_name in self._CONDITION_FIELDS:
+            if hasattr(config, field_name):
+                conditions[field_name] = getattr(config, field_name)
+        return conditions
+
+    def _build_observation(
+        self, *, observation_id: int, source: str, captured_at: float, payload: Any
+    ) -> CameraObservation:
+        return CameraObservation(
+            id=observation_id,
+            source=source,
+            captured_at=captured_at,
+            data=payload,
+            conditions=self._observation_conditions(),
+            projection=self.projection,
+        )
+
+    def observe(self) -> CameraObservation:
+        """One frame, wrapped as a :class:`CameraObservation`. See :meth:`Sensor.observe`."""
+        return super().observe()  # type: ignore[return-value]
 
     @abstractmethod
     def open(self) -> bool:  # type: ignore[override]
