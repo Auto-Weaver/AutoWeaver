@@ -66,6 +66,7 @@ import time
 from pathlib import Path
 from typing import IO, Any, Sequence
 
+from autoweaver.logbook.root import expand_user_path
 from autoweaver.logbook.serialize import to_jsonable
 from autoweaver.worker.base import TickContext
 from autoweaver.worker.perception import PerceptionWorker
@@ -125,9 +126,15 @@ class TrajectoryRecorder(PerceptionWorker):
             raise ValueError("TrajectoryRecorder needs at least one track namespace")
         # Resolve to an absolute path now: a relative out_dir would otherwise
         # land "wherever the process was launched", which is hostile to
-        # after-the-fact analysis. ~ is expanded; resolution is lexical so a
-        # not-yet-existing directory is fine.
-        self._out_dir = Path(out_dir).expanduser().resolve()
+        # after-the-fact analysis. Resolution is lexical, so a not-yet-existing
+        # directory is fine.
+        #
+        # ``expand_user_path`` rather than ``Path.expanduser``: this is a
+        # configured path (``out_dir`` is a ``from_config`` key), so a user may
+        # well write ``~/traces`` — and ``Path.expanduser`` *raises* when the home
+        # directory cannot be determined, which would take start-up down over a
+        # trace path. See that function for the whole trap.
+        self._out_dir = expand_user_path(out_dir, what="out_dir").resolve()
         if max_bytes <= 0:
             raise ValueError(f"max_bytes must be positive, got {max_bytes}")
         self._max_bytes = max_bytes

@@ -27,6 +27,7 @@ from autoweaver.logbook.identity import (
 )
 from autoweaver.logbook.root import (
     RUN_STAMP_FORMAT,
+    expand_user_path,
     parse_run_stamp,
     prune_old_runs,
     resolve_root,
@@ -43,6 +44,7 @@ __all__ = [
     "Scribe",
     "TrajectoryRecorder",
     "config_fingerprint",
+    "expand_user_path",
     "git_sha_dirty",
     "parse_run_stamp",
     "prune_old_runs",

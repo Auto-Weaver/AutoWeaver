@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 RUN_STAMP_FORMAT = "%Y%m%d_%H%M%S"
 
 
-def resolve_root(raw: str | Path) -> Path:
-    """Expand ``~`` in a configured root and return it as a :class:`Path`.
+def expand_user_path(raw: str | Path, *, what: str = "path") -> Path:
+    """Expand ``~`` in a configured path. **Every** configured path goes through here.
 
     This function exists because of one specific, silent, expensive mistake.
 
@@ -34,26 +34,39 @@ def resolve_root(raw: str | Path) -> Path:
     expand anything: it cheerfully creates a directory *named* ``~`` under the
     current working directory — which, for a process started from the source tree,
     is the source tree. The data then lands in exactly the place that configuring a
-    root was meant to move it out of, and nothing complains. It is usually found
+    path was meant to move it out of, and nothing complains. It is usually found
     weeks later, by ``git status``.
 
     ``os.path.expanduser`` is used rather than :meth:`Path.expanduser` on purpose:
     the latter **raises** ``RuntimeError`` when the home directory cannot be
-    determined. Start-up must not die over a log path. With ``$HOME`` unset,
+    determined. Start-up must not die over a recording path — nothing in this
+    package is worth taking production down for. With ``$HOME`` unset,
     ``os.path.expanduser`` falls back to the ``pwd`` entry, and if even that fails
     it returns the string unchanged — which is the one case worth shouting about,
     because the run would then write into a literal ``~`` folder after all.
+
+    ``what`` only names the thing in the warning, so an operator reading the log
+    knows *which* configured path could not be expanded.
     """
     text = str(raw)
     expanded = os.path.expanduser(text)
     if expanded.startswith("~"):
         logger.warning(
-            "logbook: could not expand '~' in root %r (no HOME and no pwd entry) — "
+            "logbook: could not expand '~' in %s %r (no HOME and no pwd entry) — "
             "data would land in a directory literally named '~' under %s. "
             "Configure an absolute path.",
-            text, os.getcwd(),
+            what, text, os.getcwd(),
         )
     return Path(expanded)
+
+
+def resolve_root(raw: str | Path) -> Path:
+    """The data root, ``~`` expanded — see :func:`expand_user_path` for the trap.
+
+    A naming layer over the expansion, nothing more: the root is the one path the
+    whole package agrees on, so it is worth having a word for it.
+    """
+    return expand_user_path(raw, what="root")
 
 
 def parse_run_stamp(name: str) -> Optional[datetime]:
@@ -169,6 +182,7 @@ def prune_old_runs(
 
 __all__ = [
     "RUN_STAMP_FORMAT",
+    "expand_user_path",
     "parse_run_stamp",
     "prune_old_runs",
     "resolve_root",

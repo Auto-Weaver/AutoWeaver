@@ -14,6 +14,7 @@ import pytest
 
 from autoweaver.logbook.root import (
     RUN_STAMP_FORMAT,
+    expand_user_path,
     parse_run_stamp,
     prune_old_runs,
     resolve_root,
@@ -62,6 +63,39 @@ def test_expansion_failure_warns_loudly_but_does_not_raise(monkeypatch, caplog):
 
 def test_an_absolute_root_is_left_alone(tmp_path):
     assert resolve_root(tmp_path / "data") == tmp_path / "data"
+
+
+def test_root_and_the_general_helper_agree(monkeypatch, tmp_path):
+    """``resolve_root`` is only a naming layer over ``expand_user_path``. If the
+    two ever diverge, the package has two answers to one question — which is how
+    the wrong one survived in ``trajectory.py`` until it was found by hand."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    assert resolve_root("~/data") == expand_user_path("~/data") == tmp_path / "data"
+
+
+def _raising_expanduser(self):
+    raise RuntimeError("Could not determine home directory")
+
+
+def test_trajectory_out_dir_survives_an_unresolvable_home(monkeypatch, tmp_path):
+    """``out_dir`` is a ``from_config`` key, so a user may well write ``~/traces``.
+
+    ``Path.expanduser`` **raises** when the home directory cannot be determined,
+    which would take start-up down over a trace path. Nothing in this package is
+    worth that. The monkeypatched ``Path.expanduser`` makes the wrong call fail
+    loudly rather than silently passing on a machine that happens to have a HOME.
+    """
+    from pathlib import Path
+
+    from autoweaver.logbook import TrajectoryRecorder
+
+    monkeypatch.delenv("HOME", raising=False)
+    monkeypatch.delenv("USERPROFILE", raising=False)
+    monkeypatch.setattr(Path, "expanduser", _raising_expanduser)
+    monkeypatch.setattr(os.path, "expanduser", lambda p: p)
+
+    recorder = TrajectoryRecorder("arm", out_dir="~/traces")  # must not raise
+    assert "traces" in str(recorder._out_dir)
 
 
 # ─── parsing a run stamp ────────────────────────────────────────────────────
