@@ -1,9 +1,47 @@
 """Observer — the side a Sensor drives when it has observed something.
 
 See EVO-011 §2.2 / §2.3. The drive chain is **BT -> Sensor -> Observer**: the BT
-tree remains the system's only active scheduler, so the Sensor stays passive with
-respect to the clock (no internal heartbeat, no thread) while being *active*
-towards its observers — when it produces an observation, it pushes.
+tree remains the system's only active **control** scheduler, and the Sensor is
+*active* towards its observers — having produced an observation, it pushes.
+
+RETRACTED 2026-07-27 — "no internal heartbeat, no thread"
+---------------------------------------------------------
+This paragraph originally continued: "...so the Sensor stays passive with respect
+to the clock (*no internal heartbeat, no thread*)". **That clause no longer
+holds.** It is kept here and marked rather than deleted: the argument was right
+about Workers and wrong about devices, and that distinction is the whole point.
+
+Why it fell: ``observe()`` is **pull**. The caller asks, one reading comes back,
+so the rhythm is capture -> consume -> capture -> consume and the *acquisition
+rate is bound by the consumer*. Handing SLOW observers off (see below) does not
+fix it — a FAST observer's cost, plus whatever the caller itself does with the
+frame, still sits in front of the next ``observe()``. A camera is natively
+**push**: it emits at its own frame rate. Decoupling acquisition from consumption
+therefore requires the Sensor to own an acquisition rhythm, i.e. a thread.
+
+Measured, in pluck's burst path (``backend/src/workers/drill_vision.py:78-95``):
+PNG encode ~247 ms against ``capture()`` ~31 ms — the consumer was **8x** the
+producer, so the loop served 288 ms/frame into a 0.05-0.30 s motion window and
+caught 1-3 frames per lift. That file's own conclusion: "调 lift_move_step_mm
+**毫无用处**" — the trigger gate was never the limit, service time was. pluck
+then grew a ``drill-lift-stream`` thread plus async writeback to get out of it,
+so an acquisition thread is not new work: it is **moving a thread that already
+exists in the business layer down to where it belongs**.
+
+Where this docstring went wrong: it generalised ``architecture.md``'s "**no
+Worker** may keep its own heartbeat" to the device layer. A Worker participates
+in control — it takes notes, writes state, the BT reads criteria off it. A Sensor
+does not. The load-bearing rule is narrower and survives intact: **an acquisition
+thread writes no control state, sends no notes, and participates in no criteria**;
+it only puts observations in the ring. The BT stays the sole *control* scheduler.
+
+Consequences (designed in EVO-012, not here): both modes must exist — **on
+demand** (pull, what ``observe()`` does today: stop, flush, hand back the
+freshest frame) and **continuous** (push, acquisition at its own rhythm, slow
+consumers dropping frames instead of throttling the device). Clock
+synchronisation becomes a hard Sensor responsibility: acquisition threads run
+independently, but ``captured_at`` must come from one clock or multi-camera
+observations will not line up with the arm trajectory.
 
 Preview, video recording, sample archiving, run logging, detection: **all of them
 are Observers**. That is what decouples them from the number of devices. Adding a
@@ -34,6 +72,11 @@ needs; in this cut the payload lives as long as the reference does. When bounded
 storage lands (EVO-011 §5.4) expiry must have an **explicit outcome** — the
 consumer either gets the data or is told plainly that it is gone. Never a stale
 read.
+
+That ring is no longer a later storage optimisation. Once acquisition runs on its
+own thread (see the retraction above) the ring is **where produced observations
+go**, so bounded storage becomes a prerequisite for continuous mode rather than a
+memory tidy-up. Sizing, drop policy and expiry semantics: EVO-012.
 """
 
 from __future__ import annotations

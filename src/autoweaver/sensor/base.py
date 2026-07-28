@@ -6,10 +6,30 @@ See EVO-007 for the Worker model and EVO-011 for the observation model.
 
 Drive chain: **BT -> Sensor -> Observer**
 -----------------------------------------
-The BT tree is still the system's only active scheduler. The Sensor is passive
-towards the clock — *no internal heartbeat, no thread* (other than what the
-device SDK requires) — and active towards its observers: having produced an
-observation, it pushes it to whoever subscribed.
+The BT tree is still the system's only active **control** scheduler, and the
+Sensor is active towards its observers: having produced an observation, it pushes
+it to whoever subscribed.
+
+.. warning:: RETRACTED 2026-07-27 — pending EVO-012
+
+   This paragraph used to read "The Sensor is passive towards the clock — *no
+   internal heartbeat, no thread* (other than what the device SDK requires)".
+   **The no-thread clause is retracted**; it is kept, marked, because the
+   reasoning was correct about Workers and wrong about devices.
+
+   ``observe()`` is **pull**, so the acquisition rate is bound by the consumer
+   (capture -> consume -> capture). A camera is natively push. Continuous
+   acquisition therefore needs the Sensor to own an acquisition rhythm — a
+   thread. The error was generalising ``architecture.md``'s "no **Worker** may
+   keep its own heartbeat" to the device layer: Workers participate in control,
+   Sensors do not. What survives, and binds: **an acquisition thread writes no
+   control state, sends no notes, participates in no criteria.** The BT remains
+   the only *control* scheduler. Full argument and the measured evidence from
+   pluck's burst path: ``sensor/observer.py`` module docstring.
+
+   Everything below in this class is **unchanged and still correct** — it is the
+   pull path, which EVO-012 keeps as the "on demand" mode alongside a new
+   continuous mode.
 
 The three acquisition modes are **BT-side orchestration**, not machinery in here:
 
@@ -19,6 +39,21 @@ The three acquisition modes are **BT-side orchestration**, not machinery in here
 
 There is deliberately no scheduler, no mode enum and no polling loop in this
 class. A Sensor that grew one would be a second heartbeat.
+
+.. warning:: PARTLY RETRACTED 2026-07-27 — pending EVO-012
+
+   **"burst -> a ``RepeatUntil`` loop"** does not work, and neither does "a
+   Sensor that grew a loop would be a second heartbeat". A BT loop cannot fix
+   burst: the BT ticks at 50 Hz, whereas burst acquisition has to track the
+   camera's frame rate and a displacement gate, and — the actual defect — a pull
+   loop still serialises capture behind consumption whichever thread drives it.
+   pluck measured 288 ms/frame service time against a 0.05-0.30 s window, and
+   its own note records that tightening the gate ("调 lift_move_step_mm") changed
+   nothing. See ``sensor/observer.py`` for the numbers.
+
+   **live** and **on demand** remain BT-side orchestration exactly as described.
+   Continuous acquisition (which subsumes burst) moves into the Sensor in
+   EVO-012, with an acquisition thread that participates in no control.
 
 Sensor is the only door
 -----------------------
@@ -200,8 +235,13 @@ class Sensor(ABC):
     def set_slow_dispatcher(self, dispatcher: Optional[SlowDispatcher]) -> None:
         """Supply the hand-off used for ``SLOW`` observers.
 
-        The Sensor never creates a thread of its own; it delegates. Assembly
-        wires in ``run_async`` / ``run_background``.
+        On this (pull) path the Sensor creates no thread of its own; it delegates.
+        Assembly wires in ``run_async`` / ``run_background``.
+
+        The broader claim "a Sensor never creates a thread" was retracted
+        2026-07-27 (see the module docstring): EVO-012's continuous mode gives the
+        Sensor an acquisition thread. Hand-off for SLOW observers stays as it is
+        either way — a slow consumer must never sit on the device read.
         """
         self._slow_dispatcher_fn = dispatcher
 
