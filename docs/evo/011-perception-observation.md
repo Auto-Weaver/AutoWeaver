@@ -82,7 +82,7 @@ hairs                RelabelStep      runner
 
 ### 1.5 多相机在框架里连"哪台是哪台"都表达不了
 
-`Sensor.name` 的默认实现是 `self.__class__.__name__`（`sensor/base.py:37`，`camera/base.py:55` 同）。**两台大恒都叫 `"DahengCamera"`。**
+`Sensor.name` 的默认实现是 `self.__class__.__name__`（`sensor/base.py:37`，`sensor/camera/base.py:55` 同）。**两台大恒都叫 `"DahengCamera"`。**
 
 于是 pluck 自己发明了一整套（`backend/src/camera.py`）：
 - `build_camera(cfg, role)`（`:104`）——role 概念（`nest` / `drill`）
@@ -93,8 +93,11 @@ hairs                RelabelStep      runner
 
 ### 1.6 这一层还漂着两代未清的化石
 
-- `src/autoweaver/device/sensor/__init__.py` 是个 **0 字节的空文件**，和真正的 `autoweaver/sensor/` 并存。
-- `CameraBase` 至今挂着 0.5.0 之前的 back-compat alias：`capture()` / `is_opened()`（`camera/base.py:104-116`）。
+- ~~`src/autoweaver/device/sensor/__init__.py` 是个 **0 字节的空文件**，和真正的 `autoweaver/sensor/` 并存。~~
+  **已清（2026-07-28）**：空包删除，`camera/` 挪进 `sensor/camera/`。依据是依赖方向——camera 单向依赖
+  sensor（`CameraBase(Sensor)`、`CameraObservation(Observation)`），sensor 侧零引用 camera，原先目录
+  却是平级的。那个空包的来历是 `docs/next/006-dobot-arm-mainline.md` 里一条**方向搬反的待办**，已同步标注否决。
+- `CameraBase` 至今挂着 0.5.0 之前的 back-compat alias：`capture()` / `is_opened()`（`sensor/camera/base.py:104-116`）。
 - `docs/camera-and-comm.md` 通篇还在讲 `Subsystem`——0.6.0 就改叫 Worker 了。
 
 ---
@@ -322,7 +325,7 @@ board 上的位姿陈旧了，`Transcript` 就如实记下那个陈旧值——*
 
 pluck 今天在生产路径上取帧，走的**全是 `capture()`**（`backend/src/camera.py:81` 的 `ThreadSafeCamera` 包装、`backend/src/workers/drill_vision.py:206`、`backend/src/workers/vision.py:421` 等）。核对确认：**pluck 一次都没调用过 `snapshot()`。**
 
-这有个不太舒服的含义值得写下来：**§1.6 里被记为"0.5.0 之前的化石"的那个 back-compat alias（`camera/base.py:104-116` 的 `capture()`），正是 pluck 生产路径唯一站着的地方。** 化石承重。
+这有个不太舒服的含义值得写下来：**§1.6 里被记为"0.5.0 之前的化石"的那个 back-compat alias（`sensor/camera/base.py:104-116` 的 `capture()`），正是 pluck 生产路径唯一站着的地方。** 化石承重。
 
 因此本轮：
 
@@ -356,7 +359,7 @@ pluck 侧的反向证据也很硬：挑毛是纯视觉任务（现场确认无�
 
 ### 5.3 `trigger_mode` 待真机验证 —— **且事实与先前认知不符**
 
-BT 按需驱动要求 Sensor 每次都给**新鲜**帧。`CameraConfig.trigger_mode`（`camera/base.py:24`、`:39`）承诺了 capture-on-demand，且 `DahengCamera` **确实完整实现了它**（`camera/daheng.py:88-109` 的 `_configure_trigger`，`:149-151` 每次 grab 前 fire 一次 trigger）。
+BT 按需驱动要求 Sensor 每次都给**新鲜**帧。`CameraConfig.trigger_mode`（`sensor/camera/base.py:24`、`:39`）承诺了 capture-on-demand，且 `DahengCamera` **确实完整实现了它**（`sensor/camera/daheng.py:88-109` 的 `_configure_trigger`，`:149-151` 每次 grab 前 fire 一次 trigger）。
 
 **核对后更正一处认知**：先前以为"pluck 写了 `FreshFrameDahengCamera` 说明 `trigger_mode` 没按承诺工作"。**不对。** pluck **从未设置过 `trigger_mode`**——`backend/src/camera.py` 和 `backend/config/pluck.yaml` 里都搜不到它，一直用默认的 `False`（连续自由流），然后靠 `flush_queue()` 绕开陈旧帧。
 

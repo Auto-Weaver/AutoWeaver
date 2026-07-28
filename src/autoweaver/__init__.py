@@ -1,6 +1,6 @@
 """AutoWeaver — A framework for industrial vision inspection systems."""
 
-from .camera import (
+from .sensor.camera import (
     CameraBase,
     CameraConfig,
     CameraObservation,
