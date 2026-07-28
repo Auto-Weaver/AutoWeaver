@@ -10,7 +10,7 @@ The BT tree is still the system's only active **control** scheduler, and the
 Sensor is active towards its observers: having produced an observation, it pushes
 it to whoever subscribed.
 
-.. warning:: RETRACTED 2026-07-27 — pending EVO-012
+.. warning:: RETRACTED 2026-07-27 — superseded by EVO-012 (implemented below)
 
    This paragraph used to read "The Sensor is passive towards the clock — *no
    internal heartbeat, no thread* (other than what the device SDK requires)".
@@ -27,9 +27,27 @@ it to whoever subscribed.
    the only *control* scheduler. Full argument and the measured evidence from
    pluck's burst path: ``sensor/observer.py`` module docstring.
 
-   Everything below in this class is **unchanged and still correct** — it is the
-   pull path, which EVO-012 keeps as the "on demand" mode alongside a new
-   continuous mode.
+   ``observe()`` is **unchanged and still correct** — it is the pull path, kept
+   as the "on demand" mode alongside the continuous mode below.
+
+Two modes, both real
+--------------------
+**On demand** (``observe()``) — the caller asks, one observation comes back.
+Right when the world is standing still and the question is "what does it look
+like *now*": the arm has settled at a scan pose and the answer wanted is a
+freshly acquired frame at a known moment.
+
+**Continuous** (``start_streaming()`` / ``stop_streaming()``) — an acquisition
+thread reads at the device's own rhythm and pushes to subscribers. Right when the
+world is moving and the consumers cannot all keep up: a burst during a lift, a
+live preview, video recording. Nothing downstream can slow acquisition here; a
+consumer that falls behind drops observations and says so.
+
+Which mode is in force, and when to switch, is **the caller's** decision — this
+class has no scheduler, no mode enum and no policy about it. ``start_streaming``
+and ``stop_streaming`` are the whole API surface, and ``observe()`` keeps working
+either way (both take the same device lock, so a pull during a stream simply
+queues behind the acquisition thread's current read).
 
 The three acquisition modes are **BT-side orchestration**, not machinery in here:
 
@@ -40,7 +58,7 @@ The three acquisition modes are **BT-side orchestration**, not machinery in here
 There is deliberately no scheduler, no mode enum and no polling loop in this
 class. A Sensor that grew one would be a second heartbeat.
 
-.. warning:: PARTLY RETRACTED 2026-07-27 — pending EVO-012
+.. warning:: PARTLY RETRACTED 2026-07-27 — resolved by EVO-012 (implemented below)
 
    **"burst -> a ``RepeatUntil`` loop"** does not work, and neither does "a
    Sensor that grew a loop would be a second heartbeat". A BT loop cannot fix
@@ -52,8 +70,8 @@ class. A Sensor that grew one would be a second heartbeat.
    nothing. See ``sensor/observer.py`` for the numbers.
 
    **live** and **on demand** remain BT-side orchestration exactly as described.
-   Continuous acquisition (which subsumes burst) moves into the Sensor in
-   EVO-012, with an acquisition thread that participates in no control.
+   Continuous acquisition (which subsumes burst) is now :meth:`Sensor.start_streaming`,
+   with an acquisition thread that participates in no control.
 
 Sensor is the only door
 -----------------------
@@ -82,8 +100,9 @@ import logging
 import threading
 import time
 from abc import ABC, abstractmethod
-from typing import Any, Callable, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
+from autoweaver.sensor.delivery import DropPolicy, QueuedDelivery
 from autoweaver.sensor.observation import Observation
 from autoweaver.sensor.observer import Observer, ObserverSpeed
 
@@ -192,45 +211,131 @@ class Sensor(ABC):
     # -- observers --------------------------------------------------------- #
 
     def add_observer(
-        self, observer: Observer, *, speed: Optional[ObserverSpeed] = None
+        self,
+        observer: Observer,
+        *,
+        speed: Optional[ObserverSpeed] = None,
+        capacity: Optional[int] = None,
+        policy: Optional[DropPolicy] = None,
     ) -> None:
         """Subscribe ``observer`` to this sensor's observations.
 
         ``speed`` defaults to the observer's own declaration; passing it here
         overrides for this subscription. Registering a ``SLOW`` observer without
         a dispatcher raises **now**, rather than stalling the tick later.
+
+        **Bounded delivery** (EVO-012) — pass ``capacity`` *and* ``policy`` to give
+        this consumer its own bounded queue and delivery thread instead of the
+        shared dispatcher. That is what makes it safe under continuous
+        acquisition: the producer's cost becomes one non-blocking ``offer``, and a
+        consumer that falls behind drops observations under **its own** policy
+        rather than throttling the device or growing the heap without limit.
+
+        Both arguments are required together and neither has a default. A
+        capacity guessed by the framework would be wrong by construction — one
+        frame is 9.4 MB on one of pluck's cameras and 35 MB on the other — and a
+        default policy would silently pick which observations a consumer loses,
+        which is a business decision (see :class:`DropPolicy`).
+
+        Omit both and the behaviour is exactly as before: ``FAST`` inline on the
+        caller's thread, ``SLOW`` through the dispatcher.
         """
         resolved = speed if speed is not None else observer.speed
         if not isinstance(resolved, ObserverSpeed):
             raise TypeError(
                 f"observer {observer!r} must declare an ObserverSpeed, got {resolved!r}"
             )
-        if resolved is ObserverSpeed.SLOW and self._slow_dispatcher is None:
+        queued = capacity is not None or policy is not None
+        if queued and (capacity is None or policy is None):
+            raise ValueError(
+                "bounded delivery needs both capacity and policy; passing one "
+                "without the other would let the framework invent the half you "
+                "left out, and both halves are yours to decide"
+            )
+        if not queued and resolved is ObserverSpeed.SLOW and self._slow_dispatcher is None:
             raise RuntimeError(
                 f"observer '{getattr(observer, 'name', observer)}' is SLOW but sensor "
                 f"'{self.name}' has no slow dispatcher; call set_slow_dispatcher() "
-                "first (run_async / run_background) — a slow observer must never run "
-                "on the tick thread"
+                "first (run_async / run_background), or register it with "
+                "capacity=/policy= for its own bounded queue — a slow observer "
+                "must never run on the tick thread"
             )
+        delivery = (
+            QueuedDelivery(
+                observer,
+                capacity=capacity,  # type: ignore[arg-type]
+                policy=policy,  # type: ignore[arg-type]
+                name=f"{self.name}-{getattr(observer, 'name', 'observer')}",
+            )
+            if queued
+            else None
+        )
         entries = self._observer_entries()
         with self._registry_lock:
-            if any(existing is observer for existing, _ in entries):
+            if any(existing is observer for existing, _, _ in entries):
                 return
-            entries.append((observer, resolved))
+            entries.append((observer, resolved, delivery))
 
     def remove_observer(self, observer: Observer) -> None:
-        """Unsubscribe ``observer``. Silently ignores one that is not subscribed."""
+        """Unsubscribe ``observer``. Silently ignores one that is not subscribed.
+
+        A queued observer's delivery thread is drained and stopped here, so
+        whatever it had already accepted still reaches it.
+        """
         entries = self._observer_entries()
+        delivery = None
         with self._registry_lock:
-            for index, (existing, _) in enumerate(entries):
+            for index, (existing, _, existing_delivery) in enumerate(entries):
                 if existing is observer:
+                    delivery = existing_delivery
                     del entries[index]
-                    return
+                    break
+        if delivery is not None:
+            delivery.close()
 
     @property
     def observers(self) -> Tuple[Observer, ...]:
         """Currently subscribed observers, in registration order."""
-        return tuple(observer for observer, _ in self._observer_entries())
+        return tuple(observer for observer, _, _ in self._observer_entries())
+
+    def take_dropped(self) -> Tuple[int, Dict[str, int]]:
+        """Return ``(total, {observer_name: count})`` of dropped observations,
+        **zeroing the tally as it reads**.
+
+        Pulled, not pushed. The owner calls this at a moment of its own choosing
+        — typically a task boundary, on its own thread — and writes one log line.
+        A per-drop callback would fire hardest exactly when the system is already
+        struggling, on the producer's thread.
+
+        Calling it is not optional in spirit: a bounded queue that drops without
+        anyone reading the tally fails **invisibly**, which is worse than an
+        unbounded one that fails loudly. Observations lost silently are only
+        discovered offline, when the run cannot be repeated.
+        """
+        total = 0
+        by_observer: Dict[str, int] = {}
+        for observer, _, delivery in list(self._observer_entries()):
+            if delivery is None:
+                continue
+            n = delivery.take_dropped()
+            if n:
+                name = getattr(observer, "name", observer.__class__.__name__)
+                by_observer[name] = by_observer.get(name, 0) + n
+                total += n
+        return total, by_observer
+
+    def close_observers(self, timeout: float = 2.0) -> bool:
+        """Drain and stop every queued delivery. Returns ``False`` if any timed out.
+
+        **Call this during teardown.** Anything a delivery thread still had
+        queued disappears with the process otherwise — a real loss, unrecorded.
+        Observers without their own queue need nothing here.
+        """
+        drained = True
+        for _, _, delivery in list(self._observer_entries()):
+            if delivery is not None and not delivery.close(timeout):
+                drained = False
+        return drained
 
     def set_slow_dispatcher(self, dispatcher: Optional[SlowDispatcher]) -> None:
         """Supply the hand-off used for ``SLOW`` observers.
@@ -264,25 +369,134 @@ class Sensor(ABC):
         ``observe()`` calls, delivery order is not guaranteed. Under the BT —
         the only driver — that does not arise.
         """
-        role = self.role
-        if not role:
+        if not self.role:
             raise ValueError(
                 f"sensor '{self.name}' has no role; assign one before observe() "
                 "(e.g. sensor.role = 'nest'). The role is the device's position "
                 "in the system, and observations are identified by it"
             )
+        observation = self._acquire_one()
+        self._publish(observation)
+        return observation
+
+    # -- continuous acquisition (EVO-012) ---------------------------------- #
+
+    def start_streaming(self, *, min_interval: Optional[float] = None) -> None:
+        """Start an acquisition thread that reads and publishes continuously.
+
+        This is the mode that decouples acquisition from consumption: the thread
+        reads at whatever rate the device sustains, and consumers keep up or drop
+        under their own policy. Nothing downstream can slow it down — which is
+        the entire point, and measurably so: with consumption in the loop pluck's
+        burst path served 288 ms/frame against a 0.05-0.30 s motion window and
+        caught 1-3 frames per lift; with it out, 41 ms/frame.
+
+        What this thread is **not** allowed to do, and does not do — the rule that
+        keeps ``architecture.md``'s single-scheduler invariant intact: **it writes
+        no control state, sends no notes, and participates in no criteria.** It
+        only produces observations and hands them to subscribers. The BT remains
+        the sole *control* scheduler; that rule binds Workers, and a Sensor is not
+        one.
+
+        ``min_interval`` is an optional floor between reads, for devices whose
+        read returns instantly and would otherwise spin a core (a mock, a cached
+        continuous sensor). Leave it ``None`` for a camera: the blocking grab is
+        the pacing. It is a throttle, **not** a schedule — there is no catch-up,
+        no drift correction and no timer.
+
+        Idempotent: calling it while already streaming does nothing.
+        """
+        if min_interval is not None and min_interval < 0:
+            raise ValueError("min_interval must be >= 0")
+        role = self.role
+        if not role:
+            raise ValueError(
+                f"sensor '{self.name}' has no role; assign one before streaming "
+                "(e.g. sensor.role = 'nest')"
+            )
+        with self._stream_lock:
+            thread = getattr(self, "_stream_thread", None)
+            if thread is not None and thread.is_alive():
+                return
+            stop = threading.Event()
+            self._stream_stop = stop
+            thread = threading.Thread(
+                target=self._stream_loop,
+                args=(stop, min_interval),
+                daemon=True,
+                name=f"acquire-{role}",
+            )
+            self._stream_thread = thread
+            thread.start()
+
+    def stop_streaming(self, *, timeout: float = 2.0) -> bool:
+        """Stop the acquisition thread and wait for it to finish.
+
+        Returns ``False`` if it was still running when ``timeout`` elapsed —
+        which means a device read is wedged, worth surfacing rather than
+        pretending the stop succeeded. Idempotent.
+        """
+        with self._stream_lock:
+            thread = getattr(self, "_stream_thread", None)
+            stop = getattr(self, "_stream_stop", None)
+            self._stream_thread = None
+            self._stream_stop = None
+        if stop is not None:
+            stop.set()
+        if thread is None:
+            return True
+        thread.join(timeout=timeout)
+        if thread.is_alive():
+            logger.warning(
+                "sensor '%s': acquisition thread still running %.1fs after stop "
+                "(a device read is likely blocked)", self.name, timeout,
+            )
+            return False
+        return True
+
+    @property
+    def is_streaming(self) -> bool:
+        """Whether an acquisition thread is currently running."""
+        thread = getattr(self, "_stream_thread", None)
+        return thread is not None and thread.is_alive()
+
+    def _stream_loop(self, stop: threading.Event, min_interval: Optional[float]) -> None:
+        """Read -> mint -> publish, until stopped.
+
+        A failing read is logged and retried rather than ending the stream: a
+        single dropped USB packet should not silently end acquisition halfway
+        through a motion, leaving the caller to wonder why the frames stopped.
+        """
+        while not stop.is_set():
+            started = time.monotonic()
+            try:
+                observation = self._acquire_one()
+            except Exception:  # noqa: BLE001 - a bad read must not end the stream
+                logger.exception(
+                    "sensor '%s': acquisition read failed; continuing", self.name
+                )
+                observation = None
+            if observation is not None:
+                self._publish(observation)
+            if min_interval:
+                remaining = min_interval - (time.monotonic() - started)
+                if remaining > 0:
+                    stop.wait(remaining)
+
+    def _acquire_one(self) -> Observation:
+        """One read + mint, under the device lock. Shared by both modes."""
+        role = self.role
+        if not role:
+            raise ValueError(f"sensor '{self.name}' has no role")
         with self._observe_lock:
             payload = self._read_payload()
             captured_at = time.monotonic()
-            observation_id = self._next_observation_id()
-            observation = self._build_observation(
-                observation_id=observation_id,
+            return self._build_observation(
+                observation_id=self._next_observation_id(),
                 source=role,
                 captured_at=captured_at,
                 payload=payload,
             )
-        self._publish(observation)
-        return observation
 
     # -- extension points -------------------------------------------------- #
 
@@ -336,7 +550,16 @@ class Sensor(ABC):
         subscribing never has to wait behind a slow device read."""
         return self._lazy_lock("_registry_lock_obj")
 
-    def _observer_entries(self) -> List[Tuple[Observer, ObserverSpeed]]:
+    @property
+    def _stream_lock(self) -> threading.Lock:
+        """Guards acquisition-thread start/stop. Separate from
+        :attr:`_observe_lock` so stopping a stream never has to wait behind the
+        very read it is trying to stop."""
+        return self._lazy_lock("_stream_lock_obj")
+
+    def _observer_entries(
+        self,
+    ) -> List[Tuple[Observer, ObserverSpeed, Optional[QueuedDelivery]]]:
         entries = getattr(self, "_observer_list", None)
         if entries is None:
             with _INIT_LOCK:
@@ -356,8 +579,18 @@ class Sensor(ABC):
     def _publish(self, observation: Observation) -> None:
         """Fan out to observers. One observer raising does not stop the others,
         and never propagates into the device read (``architecture.md``'s fault
-        isolation) — but it is logged, not swallowed."""
-        for observer, speed in list(self._observer_entries()):
+        isolation) — but it is logged, not swallowed.
+
+        A consumer registered with a bounded queue is fed by a non-blocking
+        ``offer`` — the producer's whole cost for it. Whether the offer was
+        accepted is deliberately **not** acted on here: the drop is already on
+        that delivery's tally, and the acquisition thread is the last place that
+        should be branching on a consumer's backlog.
+        """
+        for observer, speed, delivery in list(self._observer_entries()):
+            if delivery is not None:
+                delivery.offer(observation)
+                continue
             if speed is ObserverSpeed.SLOW:
                 dispatcher = self._slow_dispatcher
                 if dispatcher is None:  # pragma: no cover - blocked at registration
