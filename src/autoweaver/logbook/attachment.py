@@ -96,6 +96,7 @@ class AttachmentWriter:
         self._idle = threading.Event()
         self._idle.set()
         self._written = 0
+        self._abandoned: list[Path] = []
 
     # -- producer side ------------------------------------------------------ #
 
@@ -107,7 +108,11 @@ class AttachmentWriter:
         return accepted
 
     def take_dropped(self) -> int:
-        """Drop tally, zeroed as it is read."""
+        """Drop tally, zeroed as it is read.
+
+        Includes anything abandoned by :meth:`close`, so calling this *after*
+        closing is what collects the full loss for a run.
+        """
         return self._queue.take_dropped()
 
     @property
@@ -117,6 +122,19 @@ class AttachmentWriter:
     @property
     def written(self) -> int:
         return self._written
+
+    @property
+    def depth(self) -> int:
+        """Attachments queued but not yet on disk.
+
+        The backlog is how you tell "the writer is keeping up" from "the writer
+        is falling behind but has not started losing anything **yet**". The drop
+        tally only moves once the queue is already full, which is too late to be
+        a warning — by then the loss has happened. A burst that ends with a
+        non-trivial depth is the signal that capacity or write speed needs
+        attention before the next one overflows.
+        """
+        return self._queue.depth
 
     # -- writer thread ------------------------------------------------------ #
 
@@ -166,24 +184,50 @@ class AttachmentWriter:
             self._idle.wait(0.02)
         return self._queue.depth == 0 and self._idle.is_set()
 
+    @property
+    def abandoned(self) -> tuple[Path, ...]:
+        """Paths of attachments dropped at :meth:`close`, in queue order.
+
+        Kept — rather than only counted — because a number is not actionable.
+        Attachments are usually filed per unit of work (``lift_move/pt3_poke1/``),
+        so "3 lost" leaves you unable to say *whose* data is now incomplete,
+        while the paths say it directly. Empty until ``close`` has run.
+        """
+        with self._lock:
+            return tuple(self._abandoned)
+
     def close(self, timeout: float = 5.0) -> bool:
         """Drain, then stop. Anything still queued after ``timeout`` is abandoned.
 
         Abandoning rather than waiting forever is deliberate: this runs during
-        teardown, where an unbounded wait turns Ctrl+C into a hang. Whatever was
-        abandoned still shows up in the tally, so the loss is on record.
+        teardown, where an unbounded wait turns Ctrl+C into a hang.
+
+        Whatever was abandoned **is charged to the drop tally** (so
+        :meth:`take_dropped` after close reports the whole run's loss) and its
+        paths are kept on :attr:`abandoned` (so the loss can be attributed, not
+        merely counted). Rule 7 has no shutdown exemption: a frame lost here is
+        exactly as gone as one refused at the door, and the shutdown path must
+        not be the one place where data disappears quietly.
         """
         drained = self.drain(timeout)
-        remaining = self._queue.depth
         self._stop.set()
         self._queue.close()
+        # Charge and record the leftovers before joining, so the tally is
+        # complete by the time close() returns and a caller can report it.
+        lost = self._queue.abandon()
+        if lost:
+            with self._lock:
+                self._abandoned.extend(job.path for job in lost)
         with self._lock:
             thread, self._thread = self._thread, None
         if thread is not None:
             thread.join(timeout=timeout)
-        if remaining:
+        if lost:
             logger.warning(
-                "logbook: abandoned %d unwritten attachment(s) at close", remaining
+                "logbook: abandoned %d unwritten attachment(s) at close: %s",
+                len(lost),
+                ", ".join(str(job.path) for job in lost[:5])
+                + (" ..." if len(lost) > 5 else ""),
             )
         return drained
 

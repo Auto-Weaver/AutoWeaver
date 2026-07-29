@@ -69,9 +69,18 @@ def config_fingerprint(config: Any, *, jsonable=None) -> str:
     dataclass leaves cannot raise. Twelve hex digits: enough to group runs,
     short enough to eyeball in a filename or a log line.
 
+    ``jsonable`` defaults to the package's own coercion. It used to default to
+    the identity function, which made the fingerprint depend on whether the
+    caller remembered to pass one: a config carrying a ``Path`` or a numpy
+    scalar hashed fine with a coercer and silently became ``"unknown"``
+    without — the same settings yielding two different answers, and the failure
+    invisible until someone tried to group runs by it.
+
     Returns ``"unknown"`` if the config cannot be serialised at all.
     """
-    coerce = jsonable or (lambda v: v)
+    if jsonable is None:
+        from autoweaver.logbook.serialize import to_jsonable as jsonable
+    coerce = jsonable
     try:
         blob = json.dumps(coerce(config), sort_keys=True, ensure_ascii=False)
     except Exception as exc:  # noqa: BLE001

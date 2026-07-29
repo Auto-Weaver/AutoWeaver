@@ -216,6 +216,29 @@ class ObservationQueue(Generic[T]):
             n, self._dropped = self._dropped, 0
             return n
 
+    def abandon(self) -> list[T]:
+        """Discard everything still queued, **counting it as dropped**.
+
+        For teardown, where waiting forever is not an option and the items left
+        behind are a real loss. Charging them to the same tally as an offer-time
+        drop is the point: rule 7 says a drop is recorded, and an item lost at
+        close is no less lost than one refused at the door. Logging it and
+        leaving the tally alone would make the shutdown path the one place where
+        data goes missing quietly — the exact failure this module exists to
+        prevent.
+
+        Returns the abandoned items, so the owner can say **which** ones were
+        lost and not merely how many. A count alone is not actionable: "3 frames
+        lost" out of a burst spread over several attempts leaves you unable to
+        tell which attempt's data is now incomplete.
+        """
+        with self._cv:
+            lost = list(self._items)
+            if lost:
+                self._items.clear()
+                self._dropped += len(lost)
+            return lost
+
     @property
     def dropped(self) -> int:
         """Current tally without clearing it — for assertions and diagnostics."""
@@ -350,21 +373,24 @@ class QueuedDelivery:
 
         Anything still queued after ``timeout`` is abandoned rather than waited
         on: this runs during teardown, where blocking forever turns Ctrl+C into a
-        hang. Whatever was abandoned is still on the drop tally.
+        hang. Whatever was abandoned **is charged to the drop tally**, so a
+        caller that reads ``take_dropped`` after closing sees the shutdown loss
+        alongside the running one.
         """
         drained = self.drain(timeout)
-        remaining = self._queue.depth
         self._stop.set()
         self._queue.close()
+        # Charge the leftovers before joining: rule 7 has no shutdown exemption.
+        abandoned = self._queue.abandon()
         with self._lock:
             thread = self._thread
             self._thread = None
         if thread is not None:
             thread.join(timeout=timeout)
-        if remaining:
+        if abandoned:
             logger.warning(
                 "delivery '%s': abandoned %d undelivered observation(s) at close",
-                self._name, remaining,
+                self._name, len(abandoned),
             )
         return drained
 

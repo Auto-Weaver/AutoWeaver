@@ -155,6 +155,14 @@ class Scribe:
             self._seq += 1
             seq = self._seq
 
+        # ``kind`` is a dict key in the summary tally, so a caller that passes a
+        # list or a dict here used to lose the entire row to a TypeError raised
+        # *after* the row had been built. Coercing costs nothing and keeps the
+        # data; rule 5 is about not costing the caller anything, and losing a row
+        # over the shape of one argument is a cost.
+        if not isinstance(kind, str):
+            kind = str(kind)
+
         stamp = self._logbook.at(at) if at is not None else self._logbook.now()
         row: dict[str, Any] = {"seq": seq, **stamp, "kind": kind}
         # Widest scope first, narrowest last, so the more specific value wins:

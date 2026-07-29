@@ -123,6 +123,7 @@ class Logbook:
         self._lock = threading.Lock()
         self._scribes: dict[str, Scribe] = {}
         self._counts: dict[str, dict[str, int]] = {}
+        self._summary: dict[str, Any] = {}
         self._closed = False
 
         self._attachment_capacity = attachment_capacity
@@ -307,6 +308,19 @@ class Logbook:
     def row_tags(self) -> dict:
         return dict(self._row_tags)
 
+    @property
+    def identity(self) -> dict:
+        """A snapshot of what went into ``meta.json``.
+
+        Copied, so a caller cannot reshape this run's recorded identity after
+        the fact. Exposed because the business usually needs a field or two back
+        out — the batch number to label an export, the config hash to compare
+        against a previous run — and re-deriving them (or fishing them out of
+        ``row_tags``, which deliberately carries only a subset) means two places
+        that can disagree about the same run.
+        """
+        return dict(self._identity)
+
     # -- mutable context ---------------------------------------------------- #
 
     def set_context(self, **pairs: Any) -> None:
@@ -407,6 +421,38 @@ class Logbook:
             per_ledger = self._counts.setdefault(ledger, {})
             per_ledger[kind] = per_ledger.get(kind, 0) + 1
 
+    #: Keys ``_write_summary`` owns. The business cannot use these — see
+    #: :meth:`summarise`.
+    _RESERVED_SUMMARY_KEYS = frozenset({
+        "duration_s", "rows", "kinds", "attachments",
+    })
+
+    def summarise(self, **fields: Any) -> None:
+        """Contribute fields to ``summary.json``. Merged, last write wins.
+
+        The framework can only count what it can see — rows per ledger, bytes
+        that failed to land. "How many hairs came out of this run" is a fact only
+        the business holds, and without a way to hand it over the business is
+        left reading ``summary.json`` back, merging, and rewriting it: three
+        chances to lose the file and a window where it is half-written.
+
+        Call it whenever the number is known (as it changes, or once at the end);
+        the file is written at :meth:`close`.
+
+        Raises on a key this class owns (``duration_s``, ``rows``, ``kinds``,
+        ``attachments``). Silently letting one side clobber the other would make
+        ``summary.json`` mean different things depending on call order, and a
+        wrong summary is worse than a missing field.
+        """
+        clashes = self._RESERVED_SUMMARY_KEYS.intersection(fields)
+        if clashes:
+            raise ValueError(
+                f"summary key(s) {sorted(clashes)} are written by the logbook "
+                f"itself; pick another name"
+            )
+        with self._lock:
+            self._summary.update(fields)
+
     # -- shutdown ----------------------------------------------------------- #
 
     def close(self, *, attachment_timeout: float = 5.0) -> None:
@@ -443,19 +489,28 @@ class Logbook:
     def _write_summary(self, writer: Optional[AttachmentWriter], drained: bool) -> None:
         with self._lock:
             counts = {k: dict(v) for k, v in self._counts.items()}
-        summary: dict[str, Any] = {
+            contributed = dict(self._summary)
+        # Business fields first so the framework's own keys cannot be displaced
+        # by a late contribution; ``summarise`` already refuses the reserved
+        # names, this is the belt to that pair of braces.
+        summary: dict[str, Any] = dict(contributed)
+        summary.update({
             "duration_s": round(time.monotonic() - self._t0_mono, 3),
             "rows": {ledger: sum(kinds.values()) for ledger, kinds in counts.items()},
             "kinds": counts,
-        }
+        })
         if writer is not None:
             summary["attachments"] = {
                 "written": writer.written,
                 # Read the tally rather than take it: close() has already run, so
                 # zeroing here would leave nothing for a caller that wants to
-                # report the loss itself.
+                # report the loss itself. Includes anything abandoned at close.
                 "dropped": writer.dropped,
                 "drained": drained,
+                # Named, not just counted: which unit of work lost data is the
+                # part you need months later.
+                **({"abandoned": [p.name for p in writer.abandoned]}
+                   if writer.abandoned else {}),
             }
         try:
             (self.run_dir / "summary.json").write_text(
