@@ -22,6 +22,26 @@ class CameraConfig:
         exposure_time: Manual exposure time in microseconds.
         gain: Manual gain value.
         white_balance_mode: White balance mode ("auto", "once", "off").
+
+            .. warning::
+               In YAML, bare ``off`` parses as the boolean ``False``, not the
+               string ``"off"``. Quote it (``white_balance_mode: "off"``).
+        white_balance_red: Manual white-balance gain for the RED channel.
+        white_balance_green: Manual white-balance gain for the GREEN channel.
+        white_balance_blue: Manual white-balance gain for the BLUE channel.
+
+            The three ratios are ONE measurement, so they are given together or
+            not at all — a partial set is a configuration error, not something
+            to fill in with 1.0. They are written to the device after the mode,
+            and only mean anything under ``white_balance_mode="off"``: any
+            automatic mode ("auto"/"continuous", and "once" at open) computes
+            its own ratios and overwrites whatever was written here.
+
+            Why hard-code them at all: the ratios multiply straight into the
+            grayscale a detector thresholds against, so a re-converged auto
+            white balance silently shifts every absolute-gray gate, and a
+            two-frame differential judge sees a global residual that no physical
+            motion produced. Measure once on the rig, then freeze.
         trigger_mode: Acquisition mode. False (default) = continuous free-run —
             the camera streams at its frame rate and ``snapshot()`` returns the
             next buffered frame (which can be stale if the consumer lags the
@@ -37,6 +57,9 @@ class CameraConfig:
     exposure_time: Optional[float] = None
     gain: Optional[float] = None
     white_balance_mode: str = "once"
+    white_balance_red: Optional[float] = None
+    white_balance_green: Optional[float] = None
+    white_balance_blue: Optional[float] = None
     trigger_mode: bool = False
 
 
@@ -71,6 +94,9 @@ class CameraBase(Sensor):
         "gain",
         "gain_auto",
         "white_balance_mode",
+        "white_balance_red",
+        "white_balance_green",
+        "white_balance_blue",
         "trigger_mode",
     )
 
