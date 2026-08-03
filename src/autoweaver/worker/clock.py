@@ -120,7 +120,8 @@ class BTClock:
         Order:
           1. Reject unless the Batch is READY and no Batch is running.
           2. Inject ``frames=`` (if the clock has one) into both trees.
-          3. Broadcast ``on_batch_start`` to every RUNNING Worker.
+          3. Broadcast ``on_batch_start`` to every attached Worker except
+             FAULTED ones (PAUSED included — see ``_broadcast_batch_start``).
           4. Attach.
 
         Only **one** Batch may run at a time (EVO-014 §6) — a second

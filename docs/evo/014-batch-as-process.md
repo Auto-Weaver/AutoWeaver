@@ -2,9 +2,11 @@
 
 日期：2026-08-02
 
-状态：**设计已收敛（哲学层），实现细节待展开。** 本文是契约 / 哲学文档，不是实现规范——它记录一次长时间设计讨论的结论。
+状态：**已落地** —— 0.18.0，commit `2976894`。本文是契约 / 哲学文档，不是实现规范；落地后已按实现回填。
 
 > **修订 · 2026-08-03**：又聊了一轮，两处推翻、两处新增。**§7 的 `EXITING` 状态删掉**（四态改三态），改为**收尾树**；**§9 内存模型三分改四分**（漏了 Worker 私有状态，"跨批次泄漏物理上不可能"那句说早了），并新增 **§10 `on_batch_start` 钩子**、**§11 `TickContext` 传给树**。原 §10–§12 顺延为 §12–§14。
+
+> **落地 · 2026-08-03**：0.18.0（`2976894`）实现完毕，四处回填。**§5 的 `wait()` 删掉**——没有阻塞等待，"等结果"是轮询 `handle.result`（§7 的论证随之重述）；新增 **§5 的 kill tick 契约**（不继续 tick，收尾树一次都不跑）、**§7 的 `shutdown` 两条事实**与 **§7 的槽位自保**；**§10** 的广播范围按实现改为"跳过 FAULTED、包含 PAUSED"，**§12 的"出"** 补上 `BatchResult` 的实际形状。
 
 前置文档：
 - [EVO-007: BT + Worker + Task 三层模型](007-bt-worker-task.md) — tick 循环搬去 `BTClock`、"BT 只做决策、副作用下放 Worker"
@@ -124,11 +126,51 @@ MES / HMI 可以拥有编号——`logbook/identity.py:92` 的 `resolve_batch` �
 
 ```python
 # 示意，非签名
-batch  = Batch(build_tree, params={...}, export=["result.count"])
-handle = clock.submit(batch)
-result = handle.wait()      # 或轮询
-handle.kill()
+batch  = Batch(build_tree, params={...}, export=["result.count"],
+               build_teardown=build_park_tree)   # 创建
+handle = clock.submit(batch)                     # 提交
+
+while handle.result is None:                     # 等结果 = 轮询
+    clock.tick_once()                            #   时钟由业务自己驱动
+    time.sleep(period)
+    if should_stop():
+        clock.kill(handle)                       # 杀掉 —— 循环照转，见下
+result = handle.result
 ```
+
+### 「等结果」是轮询，不是阻塞的 `wait()`
+
+初稿这里写的是 `result = handle.wait()`。**实现里没有 `wait()`，是故意删掉的。**
+
+理由就是这一节自己那条规矩：**业务拥有 tick 循环。** 真实下游 pluck 的主循环就是它自己的 `while` + `clock.tick_once()`（`backend/main.py`）——每一拍要不要走、走之前先干什么（打活性点、看暂停位）都是业务的事。框架若提供一个阻塞的 `wait()`，它就必须**自己驱动时钟**才能等到结果，于是那个循环从业务手里被夺走了——和这一节"策略在用户态、机制在内核"直接冲突。
+
+所以"等结果"落地成**轮询**：
+
+- `handle.result` —— `BatchResult | None`，**未结束就是 `None`**；
+- `handle.state` —— `READY / RUNNING / EXITED`，要更细的进度时看它。
+
+不变量：**`result is not None` ⇔ `state is EXITED`。** 这一条是业务循环的退出条件，框架在所有路径上（包括 `shutdown`，见 §7）都守住它。
+
+### `kill` 之后必须继续 tick —— 否则收尾树一次都不会跑
+
+> **有收尾树时，`kill()` 只是开始退出，不是完成退出。** 框架没有自己的线程，收尾树是被**同一个业务循环** tick 出来的。
+
+```python
+clock.kill(handle)
+while handle.result is None:     # ← 必须，不是可选
+    clock.tick_once()
+    time.sleep(period)
+if not handle.result.teardown_ok:
+    ...                          # 收尾没跑完，别提交下一批
+```
+
+`kill()` 之后立刻 `break` 出循环，**收尾树一次都不会被 tick，而且是静默的**——没有异常、没有报错，看起来完全像成功了。
+
+这个失败恰恰咬在**最需要收尾的那条路径**上：异常停机、急停、操作工喊停——那正是业务代码最容易"直接跳出循环去做别的"的地方，也正是收尾树（抬起、松开、回安全位、等设备真的静止）唯一存在的理由（§7）。
+
+没有收尾树时 `kill()` 当场就 `EXITED`，这一段零成本；所以**照上面这么写永远不会错**。
+
+实现侧同一句话写在四处 docstring 里：`Batch` 类、`Batch.kill`、`BTClock.kill`、`BTClock.shutdown`。
 
 ### 调度**策略**是业务的
 
@@ -179,15 +221,15 @@ READY → RUNNING → EXITED
 
 **为什么没有 `FAULTED`**：`Worker` 有 `FAULTED`（`worker/base.py:62`）是因为 **Worker 不该死**——"坏了但还挂着"对它是真实状态；**`Batch` 本来就该死**，失败就是退出。这个对比顺带证明 Worker 和 Batch 确实是两种东西（驱动 vs 进程）。
 
-**为什么终态只有一个**：学 Unix，一个 `EXITED` + 一个退出结果。"为什么结束"（跑完 / 树 FAILURE / 被 kill / 抛异常）是**数据，不是状态**。现成的 `ActionResult`（`action.py:17`：`success` / `message` / `exception` / `failed_node` / `final_status`）基本就是这个形状。
+**为什么终态只有一个**：学 Unix，一个 `EXITED` + 一个退出结果。"为什么结束"（跑完 / 树 FAILURE / 被 kill / 抛异常）是**数据，不是状态**——落地成 `BatchResult.reason`，四个取值和这四条路 1:1（详见 §12 的"出"）。
 
 ### 为什么没有 `EXITING`
 
 初稿写的是四态 `READY → RUNNING → EXITING → EXITED`，还把 `EXITING` 称作"本设计唯一真正难的部分"。**这一整套结论推翻。**
 
-- **`EXITING` 没有消费方。** 业务循环在 `wait()`，它只关心"结束没有"；单 `Batch` 前提（第 6 节）下也没有别的调度者要看它。第 5 节引的 NEXT-009 那条规矩——"每一条都应该是具体的消费方需求驱动"——在这里同样适用：**没有消费方的东西不做。**
+- **`EXITING` 没有消费方。** 业务循环轮询的是 `handle.result`（第 5 节），它只问一个问题——"结束没有"。`result` 从 `None` 翻成非 `None` 就是这个问题的**全部**答案；循环拿到一个"正在退出"也只会继续 tick，行为一模一样。单 `Batch` 前提（第 6 节）下也没有别的调度者要看它。第 5 节引的 NEXT-009 那条规矩——"每一条都应该是具体的消费方需求驱动"——在这里同样适用：**没有消费方的东西不做。**
 - **收尾是退出路径上的代码，不是一个状态。** 进程跑 atexit / destructor / shutdown hook 的时候，它的状态还是 running。
-- Unix 的进程表里比我们多出来的只有 zombie，但那是"**已经死了**、等父进程收尸"，不是"正在死"。而我们的 `wait()` 就是收尸——同步拿走结果，连这个状态也不需要。
+- Unix 的进程表里比我们多出来的只有 zombie，但那是"**已经死了**、等父进程收尸"，不是"正在死"。**连 zombie 我们也不需要**：退出结果直接挂在 `handle.result` 上，业务下一次轮询读走它就是收尸——而它能被读到的时候 `Batch` 早已 `EXITED`，中间没有一个"死了但还等着被读"的状态可言。
 
 真正难的从来不是收尾，**是把收尾想成了一个 wait state**。`EXITING` 一删，原来挂在它上面那条"要不要超时"的未决问题也一起消失了：超时是收尾树上的一个装饰器（见下）。
 
@@ -234,6 +276,35 @@ READY → RUNNING → EXITED
 #### 这是同一条哲学的第二次应用
 
 **需要等待、需要判断的东西写进树里，不做成框架状态。** 第 8 节的"暂停归树"是同一条原则——那一次是入口，这一次是出口。
+
+### `shutdown` 不 tick，所以收尾树在这条路上不会跑
+
+两条事实，都要记住：
+
+**1. `shutdown()` 不 tick，收尾树不跑。** 它 halt 主树、打一条 WARNING，然后把 `Batch` 推到 `EXITED` 就完了。框架**不会**在 `shutdown` 里塞一个迷你 tick 循环——那等于框架接管一个属于业务的循环（第 5 节），而且立刻要回答"转多少拍"、"超时怎么办"这类只有业务知道答案的问题。需要收尾就自己排序：
+
+```python
+clock.kill(handle)
+while handle.result is None:
+    clock.tick_once()
+    time.sleep(period)
+clock.shutdown()          # 收尾已经跑完了，再关
+```
+
+**2. 但 `shutdown` 必定产生 result。** 它会把还没 `EXITED` 的 `Batch` 强推到 `EXITED`，`teardown_outcome = ABORTED`，`reason` **保持退出路径已经决定的那个**（在飞的 kill 仍然是 `KILLED`，不会被改写成别的）。
+
+**这里有 result 不代表收尾跑过了——恰恰相反：`ABORTED` 的字面意思就是"有收尾树，但它没跑完"。** 之所以还是要给出 result，是为了守住第 5 节那条不变量 **`result is not None` ⇔ 结束**：否则业务照第 5 节那段写的轮询循环会在 `shutdown` 之后**永远转下去**——偏偏是在停机路径上死循环。
+
+### 槽位自保：`Batch.tick` 抛异常时，框架强制它退出
+
+`Batch.tick` 逃出任何 `BaseException` 时，框架**不是记一条日志继续**，而是强行把该 `Batch` 推到 `EXITED`（`reason = ERRORED`，带上那个异常）并**释放槽位**。
+
+这和 Worker 的处置刻意不同（Worker 转 `FAULTED`、挂着、别人照跑），因为**代价的量级不同**：只允许一个 `Batch`（第 6 节）意味着一个卡住不退的 `Batch` 会把"一棵树坏了"放大成"**这台机器再也提交不了下一批**"。所以这条路上每一步都单独兜底——tracer 坏了、黑板坏了都不能拦住它到达 `EXITED`。
+
+两条附带规则：
+
+- **这条路上不跑收尾树。** 抛出来的那个东西可能就是收尾树本身，每 tick 重试只会再卡一次。两棵树都会 best-effort `halt()`（在飞的 goal 还能拿到 `on_halted`），但收尾**逻辑**不执行，`teardown_outcome` 记 `ABORTED`。
+- **`KeyboardInterrupt` / `SystemExit` 在槽位清干净之后重抛。** 它们不是错误，Python 把它们放在 `Exception` 之外就是为了让它们穿出去；框架先把槽位收拾好，再放它们走。（其余三处 `except BaseException` 目前仍然吞掉它们——见 [NEXT-015](../next/015-tick-once-ctrl-c-inconsistency.md)。）
 
 ---
 
@@ -325,7 +396,15 @@ PLC 是安全守门员、持"许可权"：
 
 ## 10. `on_batch_start`：框架给 Worker 的"新批次开始"信号
 
-**`Batch` 启动时，框架向所有 Worker 广播一次"新批次开始"。** Worker 可选地响应，默认 no-op——和 `on_tick`（`worker/base.py:182`）一样，绝大多数 Worker 什么都不用做。
+**`Batch` 启动时，框架向已 attach 的 Worker 广播一次"新批次开始"。** Worker 可选地响应，默认 no-op——和 `on_tick`（`worker/base.py:182`）一样，绝大多数 Worker 什么都不用做。
+
+### 广播范围：跳过 `FAULTED`，**包含 `PAUSED`**
+
+初稿写的是"所有已 attach 的 Worker"。落地时收窄了一格，两条边界都有理由：
+
+**包含 `PAUSED`，和 `on_tick` 不一样。** `on_tick` 跳过 `PAUSED` 是对的——暂停的字面意思就是"不要推进"。但 `on_batch_start` 是**通知，不是 tick**："新批次开始了，把你的脏状态清掉"这件事**跟这个 Worker 此刻暂不暂停毫无关系**。漏掉它的后果是它 resume 之后带着上一批的滤波器历史继续跑——正是这个钩子存在的唯一理由（§9）。
+
+**跳过 `FAULTED`。** "坏了但还挂着"对 Worker 是一个真实状态（§7），但一个坏掉的 Worker 没道理接新活；顺带也免掉一个现实麻烦——一个已经失败过一次的钩子若还被调，会让**之后每一次 `submit` 都失败**，把一个 Worker 的故障升级成整台机器再也开不了工。
 
 ### 为什么是框架广播，不是业务发 note
 
@@ -419,7 +498,7 @@ PLC 是安全守门员、持"许可权"：
 
 ### 一处不能一刀切
 
-**`action.py:88,92` 也读 `time.monotonic()`，那两行不要动。** 它测的是 tick 的**执行耗时**（slow tick 检测，`:95-102`）——**测量墙上耗时是正当用途**，和树的逻辑时间是两回事。
+**`action.py:88,92` 也读 `time.monotonic()`，那两行不要动。** 它测的是 tick 的**执行耗时**（slow tick 检测，`:95-102`）——**测量墙上耗时是正当用途**，和树的逻辑时间是两回事。（落地后这段搬到 `motion_policy/batch.py::Batch._tick_tree`，`time.monotonic()` 原样保留。）
 
 同理 `worker/clock.py:238`（tick 时间的源头，`TickContext` 就是从这里来的）和 `worker/clock.py:291-301`（`run()` 的 sleep 调度），**更不能动**。
 
@@ -439,12 +518,46 @@ EVO-010 管它叫"绕过一切检查的**后门**"（010-loop-combinators.md:53�
 
 ### 出
 
-退出结果 = **框架部分**（怎么结束的、哪个节点失败、异常）+ **业务声明要保留的黑板 key** 导出成一个 dict。**没声明的全丢。**
+退出结果 = **框架部分**（怎么结束的、收尾成没成、哪个节点失败、异常）+ **业务声明要保留的黑板 key** 导出成一个 dict。**没声明的全丢。**
+
+落地成 `BatchResult`，三个字段值得单说：
+
+#### `reason: ExitReason` —— "为什么结束"
+
+第 7 节说它"是数据不是状态"，实际取值就是那四条路，1:1 可分：
+
+| 值 | 什么时候 |
+|---|---|
+| `COMPLETED` | 主树返回 SUCCESS |
+| `FAILED` | 主树返回 FAILURE，路上没人抛 |
+| `ERRORED` | 有节点抛了（或 tick 本身抛了）——此时 `exception` 一定非 `None` |
+| `KILLED` | 被 `kill()` 停掉 |
+
+`success` 是派生属性，**只等价于 `COMPLETED`**。
+
+#### `teardown_outcome: TeardownOutcome` —— "收尾成没成"
+
+| 值 | 什么时候 |
+|---|---|
+| `NONE` | 压根没给收尾树，没什么可跑 |
+| `SUCCEEDED` | 收尾树 SUCCESS |
+| `FAILED` | 收尾树 FAILURE（典型就是超时了） |
+| `ABORTED` | 有收尾树，但没跑完——tick 抛了，或 `shutdown` 提前结束（§7） |
+
+派生属性 `teardown_ok` = 不是 `FAILED` 也不是 `ABORTED`。
+
+**它和 `reason` 正交，这是要点。** 收尾失败**不改写**"这批为什么结束"——一批正常跑完、收尾超时了，`reason` 还是 `COMPLETED`，`teardown_outcome` 是 `FAILED`。两个问题就是两个问题，混成一个字段必然要在"谁盖过谁"上做一次没有正确答案的选择。
+
+**为什么值得单列一个字段，而不是记条日志了事**：收尾树最典型的用途是 `WaitFor(设备静止).timeout(5.0)`。那个 timeout 触发的含义不是"清理没做干净"，是"**机械臂可能还在动**"——这是安全信息，业务必须能在代码里读到它并据此决定不提交下一批。躺在日志里的安全信息等于没有。
+
+#### `exported: dict` —— 业务声明要保留的黑板 key
 
 两条细节：
 
 1. **声明了但树没写 → 导出的 dict 里就没有这个 key，不填 `None`**（否则"没写"和"写了个 `None`"分不清）。
 2. **在提交时给 key 列表。**
+
+加一条初稿没说的**时机**：**导出是在收尾树跑完之后收集的**（`EXITED` 的那一刻）。所以**收尾树也可以往 `exported` 里贡献 key**——它和主树共用同一块黑板，本来就是同一个进程的同一片地址空间（§9）。收个尾顺手记下"最后停在哪个位姿"是完全正当的用法。
 
 ### 框架绝不自动串接
 
@@ -470,6 +583,8 @@ carry = result.exported
 | 框架内置 supervisor / 调度策略 | 第 5 节：策略在用户态。只有一个消费方时内置就是猜形状。 |
 | 多 `Batch` 并发（现在） | 没有业务需求。限制放在提交口的校验上，将来放开 = 删一个检查（第 6 节）。 |
 | `EXITING` 状态 | 第 7 节：没有消费方，且收尾是退出路径上的代码，不是一个状态。收尾树替代它。 |
+| 阻塞的 `handle.wait()` | 第 5 节：框架要阻塞就得自己驱动时钟，而 tick 循环是业务的。等结果 = 轮询 `handle.result`。 |
+| 在 `shutdown` 里 drain 收尾树 | 第 7 节：那是框架发明一个属于业务的 tick 循环，还要替业务回答"转多少拍"。需要收尾就先 `kill` 并 drain 干净再 `shutdown`。 |
 | `on_batch_end` | 第 10 节：被 kill 的 `Batch` 未必跑得到结束钩子；进门擦桌子比出门擦可靠。 |
 | 黑板 scope 概念 | 不需要——黑板已经随 `Batch` 生灭，天然就是那一趟的私有地址空间（第 9 节）。 |
 | 从 logbook 恢复状态 | logbook 目前**只写不读**，且 EVO-013 定了"框架不解释含义"（规则 3）。要当恢复源，得先长出读的那一半，并回答"物理世界才是权威"这个问题。 |
@@ -480,8 +595,10 @@ carry = result.exported
 
 1. **logbook 层级反转。** 现在 `batch` 是 run 的常量属性——`logbook/scribe.py:18` 的注释原话：*"``row_tags`` — **constant for the whole run** (batch, machine)"*，EVO-013 规则 2 特意把它盖在每一行上，好让"row stands alone, no join needed"。**OS 化后一个 run 里跑多个 `Batch`，这个常量假设会破。** 设计本身没错，错的是 batch 挂在 run 上。
 
-2. **EVO-010 已知问题第 3 条**：`BTClock.detach_tree`（`clock.py:98`）只调 `handle.action.tree.halt()`、**不调 `Action.halt()`**；`shutdown`（`clock.py:328`）走的也是 `detach_tree`。所以 `Action` 层的收尾（`action.py:115` 那段"halted" 结果 + `on_action_end`）在这条路径上**不会发生**。换成 `Batch` 时要一并处理——它属于第 7 节那条统一的退出路径（主树 halt → 收尾树 → `EXITED` + 退出结果）。
+2. **EVO-010 已知问题第 3 条：已解决（0.18.0）。** 原问题是 `BTClock.detach_tree` 只调 `tree.halt()`、不调 `Action.halt()`，而 `shutdown` 走的正是 `detach_tree`——于是 `Action` 层的收尾在这条路径上不会发生。现在 `detach_tree` 连同 `Action` 一起没有了：**所有退出都走同一条路径**（主树 halt → 收尾树 → `EXITED` + 退出结果），`shutdown` 也是调 `kill` 进这条路，在飞的 goal 一定拿得到 `on_halted`。唯一的例外已经在第 7 节写明并有 WARNING 兜底：`shutdown` 不 tick，所以那条路上收尾树跑不了，`teardown_outcome` 记 `ABORTED`。
 
 3. **`ActionLeaf` → `Action` 的改名机会**（`Action` 这个名字腾出来了）：**未决。** 本文不拍板。
 
 4. **命名消歧**见 [NEXT-014: Blackboard / WorldBoard 命名消歧](../next/014-board-naming-disambiguation.md)（已推后）。
+
+5. **`tick_once` 里 Ctrl+C 的处置不一致**（0.18.0 引入）：第 7 节那条"槽位清干净之后重抛 `KeyboardInterrupt`"只落在 Batch tick 那一处，`tick_once` 里另外三处 `except BaseException` 仍然吞掉它们。挂账见 [NEXT-015](../next/015-tick-once-ctrl-c-inconsistency.md)。

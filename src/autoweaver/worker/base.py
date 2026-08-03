@@ -194,8 +194,9 @@ class Worker(ABC):
     def on_batch_start(self, info: BatchInfo) -> None:
         """Default no-op. A new Batch is starting — reset per-batch state.
 
-        Broadcast by ``BTClock.submit`` to every RUNNING Worker before the
-        Batch is attached (EVO-014 §10). Blackboards die with their Batch,
+        Broadcast by ``BTClock.submit`` to every attached Worker except
+        FAULTED ones — **PAUSED Workers are included** — before the Batch
+        is attached (EVO-014 §10). Blackboards die with their Batch,
         so they never leak; **Workers do** — a filter's history, a
         tracker's state, a ``Task`` held inside this Worker. This is the
         hook that clears them, and it exists because the knowledge of
