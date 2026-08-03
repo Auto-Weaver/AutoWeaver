@@ -20,7 +20,7 @@ class Parallel(ControlNode):
         failure_count = 0
 
         for child in self.children:
-            status = child.tick(self._snapshot)
+            status = child.tick(self._snapshot, self._tick_ctx)
             if status == Status.SUCCESS:
                 success_count += 1
             elif status == Status.FAILURE:

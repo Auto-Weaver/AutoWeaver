@@ -11,6 +11,7 @@ if TYPE_CHECKING:
     from autoweaver.frames import Frames
     from autoweaver.motion_policy.blackboard import Blackboard
     from autoweaver.motion_policy.world_board import Snapshot
+    from autoweaver.worker.base import TickContext
 
 logger = logging.getLogger(__name__)
 
@@ -31,12 +32,19 @@ class TreeNode(ABC):
         self._blackboard: Blackboard
         self._key_mapping: dict[str, str] = {}
         self._snapshot: Snapshot | None = None
+        self._tick_ctx: TickContext | None = None
         self._frames: Frames | None = None
         self._exception: BaseException | None = None
 
-    def tick(self, snapshot: Snapshot | None = None) -> Status:
+    def tick(
+        self,
+        snapshot: Snapshot | None = None,
+        ctx: TickContext | None = None,
+    ) -> Status:
         if snapshot is not None:
             self._snapshot = snapshot
+        if ctx is not None:
+            self._tick_ctx = ctx
 
         try:
             if self.status == Status.IDLE:
@@ -62,6 +70,36 @@ class TreeNode(ABC):
                 "snapshot is only available during on_start / on_running"
             )
         return self._snapshot
+
+    @property
+    def tick_ctx(self) -> TickContext:
+        """The current tick's ``TickContext`` (tick_id / timestamp / dt).
+
+        Handed down from ``BTClock.tick_once`` through the whole tree, so
+        every node in one tick sees the *same* tick time — unlike
+        ``time.monotonic()``, which drifts with how deep in the tree a node
+        sits and how long the tick has been running.
+        """
+        if self._tick_ctx is None:
+            raise RuntimeError(
+                f"node '{self.name}' accessed tick_ctx outside of a tick — "
+                "the TickContext is only available during on_start / "
+                "on_running, and only when the tree was ticked with one"
+            )
+        return self._tick_ctx
+
+    @property
+    def now(self) -> float:
+        """Tick time in monotonic seconds — the tick's timestamp, not the
+        wall-clock moment this line runs. Convenience for
+        ``self.tick_ctx.timestamp``."""
+        if self._tick_ctx is None:
+            raise RuntimeError(
+                f"node '{self.name}' accessed now outside of a tick — "
+                "tick time is only available during on_start / on_running, "
+                "and only when the tree was ticked with a TickContext"
+            )
+        return self._tick_ctx.timestamp
 
     def set_frames(self, frames: Frames) -> None:
         """Inject the cell's coordinate-frame graph.
@@ -105,10 +143,12 @@ class TreeNode(ABC):
             self.on_halted()
             self.status = Status.IDLE
         self._snapshot = None
+        self._tick_ctx = None
 
     def reset(self) -> None:
         self.status = Status.IDLE
         self._snapshot = None
+        self._tick_ctx = None
 
     def set_blackboard(
         self,

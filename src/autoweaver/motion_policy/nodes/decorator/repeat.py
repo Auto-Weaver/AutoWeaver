@@ -18,7 +18,7 @@ class Repeat(DecoratorNode):
         return self._run()
 
     def _run(self) -> Status:
-        status = self.child.tick(self._snapshot)
+        status = self.child.tick(self._snapshot, self._tick_ctx)
         if status == Status.FAILURE:
             self._completed = 0
             return Status.FAILURE

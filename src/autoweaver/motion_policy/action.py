@@ -3,11 +3,15 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 from autoweaver.motion_policy.blackboard import Blackboard
 from autoweaver.motion_policy.nodes.node import Status, TreeNode
 from autoweaver.motion_policy.tracer import ActionTracer, NullTracer
 from autoweaver.motion_policy.world_board import Snapshot
+
+if TYPE_CHECKING:
+    from autoweaver.worker.base import TickContext
 
 
 logger = logging.getLogger(__name__)
@@ -69,8 +73,13 @@ class Action:
         """
         self.tree.set_frames(frames)
 
-    def tick(self, snapshot: Snapshot) -> Status:
+    def tick(self, snapshot: Snapshot, ctx: TickContext | None = None) -> Status:
         """Run one tree tick. Called by BTClock.
+
+        ``ctx`` is the tick's ``TickContext``; it is handed to the tree so
+        every node sees one consistent tick time (``self.now``). It is
+        optional so a bare ``action.tick(snapshot)`` still works, but nodes
+        that read ``self.now`` will raise without it.
 
         After the tree first returns a terminal status (SUCCESS/FAILURE),
         further calls are no-ops and return that status without touching
@@ -87,7 +96,7 @@ class Action:
         self._tracer.on_tick_start(self._tick_seq)
         t0 = time.monotonic()
 
-        status = self.tree.tick(snapshot)
+        status = self.tree.tick(snapshot, ctx)
 
         duration = time.monotonic() - t0
         self._tracer.on_tick_end(self._tick_seq, duration, status)

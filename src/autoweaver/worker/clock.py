@@ -264,7 +264,7 @@ class BTClock:
             trees = list(self._trees)
         for handle in trees:
             try:
-                handle.action.tick(self._board.snapshot())
+                handle.action.tick(self._board.snapshot(), ctx)
             except BaseException:
                 logger.exception(
                     "tree '%s' tick raised; continuing", handle.name

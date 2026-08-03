@@ -6,10 +6,10 @@ class ForceSuccess(DecoratorNode):
     """Always return SUCCESS. RUNNING passes through."""
 
     def on_start(self) -> Status:
-        return self._force(self.child.tick(self._snapshot))
+        return self._force(self.child.tick(self._snapshot, self._tick_ctx))
 
     def on_running(self) -> Status:
-        return self._force(self.child.tick(self._snapshot))
+        return self._force(self.child.tick(self._snapshot, self._tick_ctx))
 
     @staticmethod
     def _force(status: Status) -> Status:

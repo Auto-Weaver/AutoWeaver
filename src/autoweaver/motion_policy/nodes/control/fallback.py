@@ -18,7 +18,9 @@ class Fallback(ControlNode):
 
     def _tick_children(self) -> Status:
         while self._current_index < len(self.children):
-            status = self.children[self._current_index].tick(self._snapshot)
+            status = self.children[self._current_index].tick(
+                self._snapshot, self._tick_ctx
+            )
             if status == Status.SUCCESS:
                 self._halt_from(self._current_index + 1)
                 self._current_index = 0

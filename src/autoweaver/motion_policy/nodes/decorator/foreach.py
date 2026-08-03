@@ -64,10 +64,10 @@ class ForEach(DecoratorNode):
         if len(self._items) == 0:
             return Status.SUCCESS
         self._write_current()
-        return self._handle(self.child.tick(self._snapshot))
+        return self._handle(self.child.tick(self._snapshot, self._tick_ctx))
 
     def on_running(self) -> Status:
-        return self._handle(self.child.tick(self._snapshot))
+        return self._handle(self.child.tick(self._snapshot, self._tick_ctx))
 
     def _handle(self, status: Status) -> Status:
         if status == Status.FAILURE:
