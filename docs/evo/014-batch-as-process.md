@@ -4,6 +4,8 @@
 
 状态：**设计已收敛（哲学层），实现细节待展开。** 本文是契约 / 哲学文档，不是实现规范——它记录一次长时间设计讨论的结论。
 
+> **修订 · 2026-08-03**：又聊了一轮，两处推翻、两处新增。**§7 的 `EXITING` 状态删掉**（四态改三态），改为**收尾树**；**§9 内存模型三分改四分**（漏了 Worker 私有状态，"跨批次泄漏物理上不可能"那句说早了），并新增 **§10 `on_batch_start` 钩子**、**§11 `TickContext` 传给树**。原 §10–§12 顺延为 §12–§14。
+
 前置文档：
 - [EVO-007: BT + Worker + Task 三层模型](007-bt-worker-task.md) — tick 循环搬去 `BTClock`、"BT 只做决策、副作用下放 Worker"
 - [EVO-010: Loop Combinators](010-loop-combinators.md) — `set_initial` 那个"后门"、已知问题第 3 条
@@ -162,7 +164,7 @@ NEXT-009 立过同一条规矩：
 ## 7. 生命周期：一条直线
 
 ```
-READY → RUNNING → EXITING → EXITED
+READY → RUNNING → EXITED
 ```
 
 **无分支、无回头。**
@@ -170,8 +172,7 @@ READY → RUNNING → EXITING → EXITED
 | 状态 | 含义 |
 |---|---|
 | `READY` | 已提交、还没吃到第一个 tick |
-| `RUNNING` | 正在被 tick |
-| `EXITING` | 正在收尾 |
+| `RUNNING` | 正在被 tick（**包括跑收尾树的那一段**） |
 | `EXITED` | 结束，带一个退出结果 |
 
 **为什么没有 `PAUSED`**：第 3 节那条定位的直接结果。
@@ -180,18 +181,59 @@ READY → RUNNING → EXITING → EXITED
 
 **为什么终态只有一个**：学 Unix，一个 `EXITED` + 一个退出结果。"为什么结束"（跑完 / 树 FAILURE / 被 kill / 抛异常）是**数据，不是状态**。现成的 `ActionResult`（`action.py:17`：`success` / `message` / `exception` / `failed_node` / `final_status`）基本就是这个形状。
 
-**所有退出都经过 `EXITING`**，正常跑完也经过（那时可能只花零个 tick）。理由不是形式统一，而是——**`EXITING` 就是给业务挂收尾钩子的地方**：抬起、松开、回安全位。
+### 为什么没有 `EXITING`
 
-### `EXITING` 是本设计唯一真正难的部分
+初稿写的是四态 `READY → RUNNING → EXITING → EXITED`，还把 `EXITING` 称作"本设计唯一真正难的部分"。**这一整套结论推翻。**
 
-**`device.halt()` 返回 ≠ 机械臂停住。** 它的退出条件就是 NEXT-011 挂了很久的那个开放问题：
+- **`EXITING` 没有消费方。** 业务循环在 `wait()`，它只关心"结束没有"；单 `Batch` 前提（第 6 节）下也没有别的调度者要看它。第 5 节引的 NEXT-009 那条规矩——"每一条都应该是具体的消费方需求驱动"——在这里同样适用：**没有消费方的东西不做。**
+- **收尾是退出路径上的代码，不是一个状态。** 进程跑 atexit / destructor / shutdown hook 的时候，它的状态还是 running。
+- Unix 的进程表里比我们多出来的只有 zombie，但那是"**已经死了**、等父进程收尸"，不是"正在死"。而我们的 `wait()` 就是收尸——同步拿走结果，连这个状态也不需要。
 
-> **halt 完成判定**：leaf 怎么知道"halt 已经生效"——等 `done` 翻、等 `running` 翻 false、等专门的 `halted` 字段、还是 fire-and-forget
-> —— `docs/next/011-epson-ls6-halt-protocol.md:64`
+真正难的从来不是收尾，**是把收尾想成了一个 wait state**。`EXITING` 一删，原来挂在它上面那条"要不要超时"的未决问题也一起消失了：超时是收尾树上的一个装饰器（见下）。
 
-**`Batch` 的退出必须踩在它上面，躲不掉。**
+### 收尾树
 
-⚠️ **未决**：`EXITING` 要不要超时、超时之后怎么办。本文不拍板。
+替代 `EXITING` 的是**收尾树**。规则一句话：
+
+> **退出路径上（正常跑完 / 树 FAILURE / 被 kill），主树停下之后，把收尾树跑完，然后 `EXITED`。**
+
+收尾树跑的时候，`Batch` 状态**还是 `RUNNING`**——它还在被 tick，上面那条直线没有多出一节。
+
+**框架新增机制为零**，全部落回已有组合子：
+
+| 想干什么 | 怎么写 |
+|---|---|
+| 抬起、松开、回安全位 | 收尾树里就是普通 leaf |
+| 等设备真的静止 | 收尾树里放 `WaitFor("arm1.running", lambda v: v is False)`（`nodes/leaf/wait_for.py:15`，无状态、每 tick 从 snapshot 重读） |
+| 超时兜底 | 收尾树 `.timeout(5.0)`（已有装饰器，`nodes/node.py:174`） |
+| 什么都不做 | 不给收尾树，零 tick 通过 |
+
+`device.halt()` 返回 ≠ 机械臂停住——NEXT-011 那条开放问题（*"halt 完成判定：leaf 怎么知道 halt 已经生效"*，`docs/next/011-epson-ls6-halt-protocol.md:64`）仍然在那儿。但它现在是**树里的一个等待条件**，不是框架状态机的退出条件：谁知道该等什么，谁往收尾树里写那个 `WaitFor`。
+
+#### 为什么收尾树要单独交给框架
+
+正常跑完那条路上，收尾**确实可以直接写在主树末尾**，框架不用管。
+
+**收尾树单独存在的正当性只来自 kill 和 FAILURE 两条路**——那两条路上主树已经被 halt 了，写在主树末尾的收尾**永远跑不到**。
+
+#### 顺带补上一个现有缺口：树 FAILURE 退出时，在飞的 goal 没人管
+
+`TreeNode.tick` 拿到终态时调的是 `reset()`，**不是 `halt()`**（`nodes/node.py:52-53`）；而 `on_halted` 只在 `halt()` 里调（`:103-106`）。`ActionLeaf` 这两个方法的分工正好相反：
+
+- `on_halted` 会 `self.device.halt(self._goal_id)`（`nodes/leaf/action_leaf.py:47-50`）；
+- `reset` 只把 `_goal_id = None` 忘掉（`:52-54`）。
+
+所以一个 `ActionLeaf` 失败退出时，**设备上那个 goal 没有被 halt，只是框架不再记得它**。（`Sequence` 失败时调的 `_halt_from(self._current_index + 1)`（`nodes/control/sequence.py:23`）halt 的是失败节点**之后**的兄弟，那些还没启动过，是 no-op。）
+
+失败退出也走收尾路径，这个缺口正好被收尾树补上。
+
+#### 边角：跑收尾期间又被 kill 一次
+
+框架内部记一个标志让 `kill` 幂等即可。**那是实现细节，不升格成对外状态**——升格就等于把 `EXITING` 从后门放回来。
+
+#### 这是同一条哲学的第二次应用
+
+**需要等待、需要判断的东西写进树里，不做成框架状态。** 第 8 节的"暂停归树"是同一条原则——那一次是入口，这一次是出口。
 
 ---
 
@@ -205,7 +247,7 @@ READY → RUNNING → EXITING → EXITED
 |---|---|---|---|---|
 | 停在**工件**边界 | 树里一个 `WaitFor(许可键)` | 一件的时间（秒） | 许可回来自动继续 | **零** |
 | 停在**批次**边界 | 业务循环看许可，不提交下一个 `Batch` | 一批的时间 | 提交下一个 | **零** |
-| **立刻停** | `kill` → `EXITING` 收尾 → `EXITED` | 一个 tick + 收尾时间 | 重新 `submit` 一个 | **`kill`** |
+| **立刻停** | `kill` → 跑收尾树 → `EXITED` | 一个 tick + 收尾时间 | 重新 `submit` 一个 | **`kill`** |
 
 **第一层是主力**：
 
@@ -248,23 +290,144 @@ PLC 是安全守门员、持"许可权"：
 
 ---
 
-## 9. 内存模型：三分
+## 9. 内存模型：四分
 
 | | 装什么 | 谁写 | 生命周期 |
 |---|---|---|---|
 | **`Blackboard`** | 这一趟的工作内存 | **只有 BT 节点** | **随 `Batch` 生灭** |
 | **`WorldBoard`** | 世界现在什么样（设备 / cell 状态） | **只有 Worker**（namespace 独占，`world_board.py:132`；BT 在 tick 里拿到的是只读 `Snapshot`，**写不了**，只能递 note 请 Worker 做） | 随进程 |
 | **`Logbook`** | 发生过什么 | 谁都能写 | 落盘 |
+| **Worker 私有状态** | Worker 对象**自己的字段**——内部滤波器历史、跟踪器状态、累积缓冲，以及 `tasks/protocol.py` 说的那种 *"stateful business component **held inside a Worker**"* | 只有 Worker 自己（**不公示**，不是 `WorldBoard` 上的键） | 随进程 —— **不随 `Batch`** |
 
 新定义：**`Blackboard` = 一个 `Batch` 的私有地址空间。**（命名消歧另见 [NEXT-014: Blackboard / WorldBoard 命名消歧](../next/014-board-naming-disambiguation.md)，已推后。）
 
-### 副作用（重要）：批次边界的"清账"动作消失了
+第四块和前三块的区别在于：前三块框架都看得见（能建、能销、能记），**第四块框架完全看不见**——它是 Worker 对象里的普通 Python 字段。
 
-新 `Batch` = 新黑板 = **天然干净**，不需要在树里写 reset 计数器。**跨批次状态泄漏从"要小心避免"变成"物理上不可能"。**
+### 副作用：批次边界的"清账"动作，一半消失了
+
+新 `Batch` = 新黑板 = **天然干净**，树里不需要再写 reset 计数器那种代码。
+
+但只到这里为止。准确的说法是：
+
+> **黑板不会泄漏；Worker 会。**
+
+一个带内部历史的滤波器、一个跟踪器，在批次之间是**同一个对象**——Worker 常驻，本来就该活得比 `Batch` 长（第 7 节：Worker 是驱动，`Batch` 是进程）。所以跨批次状态泄漏没有被消灭，只是**被挤到了一个更窄、也更明确的地方**。
+
+一个有意思的佐证：`tasks/protocol.py:43-44` 的 `Task.reset()`，docstring 原文是
+
+> Reset task state (e.g. when starting a new region/**session**).
+
+**那个 "session" 就是 `Batch`。** 写这行的时候已经预见到"会有一个边界，跨过去要重置"，只是当时框架里没有任何概念能触发它——于是 `reset()` 一直挂在协议上没人调。
+
+补上这个触发口，就是下一节。
 
 ---
 
-## 10. 进出两端
+## 10. `on_batch_start`：框架给 Worker 的"新批次开始"信号
+
+**`Batch` 启动时，框架向所有 Worker 广播一次"新批次开始"。** Worker 可选地响应，默认 no-op——和 `on_tick`（`worker/base.py:182`）一样，绝大多数 Worker 什么都不用做。
+
+### 为什么是框架广播，不是业务发 note
+
+这是**知识该放在哪里**的问题。
+
+让业务发 note 也能做到同样的效果，但那要求**业务持有一份"哪些 Worker 带脏状态"的清单**——而那份知识属于 Worker 自己。广播则把知识留在原地。
+
+两种做法的失败模式也不同：
+
+| | 出错时会发生什么 | 责任落在谁身上 |
+|---|---|---|
+| 业务发 note | 业务忘了发 → **静默的脏状态**，下一批结果不可信但没人报错 | 不知情的人 |
+| 框架广播 | Worker 作者没实现钩子 → 他自己的 Worker 没被重置 | **最清楚自己有没有状态的那个人** |
+
+差别在新增一个带状态的 Worker 的时候最明显：前者要改业务代码，后者**零改动**。
+
+### 只要 `on_batch_start`，不要 `on_batch_end`
+
+重置放在"进门"比"出门"可靠：被 kill 的 `Batch` 可能没机会跑结束钩子（第 7 节说过 kill 后只保证跑收尾树），但下一个 `Batch` **一定**会跑开始钩子。
+
+> **"进门先擦桌子"比"出门记得擦桌子"可靠。**
+
+### 纪律
+
+**钩子必须快**，和 `on_tick` 同一条——`on_tick` 的 docstring 原话是 *"keep it fast — slow operations go through `self.run_async(...)`. Do not sleep or block on IO here."*（`worker/base.py:187-189`）。要做慢活，走现成的 `run_async`（`worker/base.py:236`）/ `run_background`（`:260`）。
+
+**抛异常照 `attach_worker` 的纪律，不照 `on_tick` 的。** 仓里现在有两条不同的规矩：
+
+| 钩子 | 抛异常的后果 |
+|---|---|
+| `on_tick` | 该 Worker 转 `FAULTED`，**其他 Worker 照跑、tick 循环继续**（`worker/clock.py:281-285`） |
+| `on_attach` / `on_start` | 转 `FAULTED` + `on_stop` 清理 + **异常向调用方传播，attach 失败**（`worker/clock.py:143-153`） |
+
+`on_batch_start` 是**启动阶段**，照后者：**Worker 转 `FAULTED`，提交失败，`Batch` 起不来。**
+
+理由：一个没重置干净的 Worker 参与新批次，产出的结果不可信。**宁可提交失败。**
+
+### 传什么给钩子
+
+只传**最小的批次身份**：`Batch` 自己的 id + `batch_no`。
+
+**不传 `params`。** params 是给树的（第 12 节：`params` → `Blackboard.set_initial`），Worker 不该去解释它——这和 EVO-013 那条"框架不解释含义"是同一条纪律。Worker 真需要参数，那是**配置**，`on_attach` 的时候就该给它。
+
+---
+
+## 11. `TickContext` 传给树：时间也是内核服务
+
+**树已经不直接摸设备了**（note = syscall，第 2 节），**但树还在直接摸时钟。**
+
+### 现状：三种时间源，树能拿到的那个恰好是不该用的那个
+
+树里直接读 `time.monotonic()` 的**只有两个节点、四行**：
+
+- `nodes/leaf/wait.py:15,21` —— `Wait`
+- `nodes/decorator/timeout.py:16,23` —— `Timeout`
+
+（`Retry` **不**读时间，它只数次数，不在此列。）
+
+**内核其实已经有这个服务，只是没给树。** `TickContext`（`worker/base.py:33`）的 docstring 写着：
+
+> ``tick_id`` is monotonic from clock start; ``timestamp`` is the monotonic seconds at which the tick fired; ``dt`` is the actual elapsed seconds since the previous tick
+> —— `worker/base.py:36-39`
+
+但它只发给 `Worker.on_tick`（`worker/clock.py:280`）。`Action.tick()` 收到的只有一个 snapshot（`worker/clock.py:267`：`handle.action.tick(self._board.snapshot())`）。
+
+而 `Snapshot.ts` 是**一个摆在那儿的陷阱**：`WorldBoard.snapshot()`（`world_board.py:294-296`）直接 `return self._current`，不复制、不盖新时间；只有 `_commit`（`:342-355`，即真的有 state 写入时）才产生新 `Snapshot` 和新 `ts`。**两个 tick 之间没人写 state，两次 `snapshot()` 返回的就是同一个对象、同一个 `ts`。** 目前没有任何节点读它——全仓唯一读 `.ts` 的地方是 `WorldBoard` 自己的 `changed_between`（`world_board.py:314`，那里读的是历史快照，用法正当）。但它对节点看起来完全能用，所以将来一定有人踩。
+
+| 时间源 | 树够得着吗 | 对吗 |
+|---|---|---|
+| `time.monotonic()` | 够得着 | 能用，但是**树自己去读硬件** |
+| `Snapshot.ts` | 够得着 | ❌ **用了会错**（tick 之间可能根本不动） |
+| `TickContext.timestamp` | ❌ **够不着** | ✅ 正确的那个 |
+
+**树能拿到的那两个，一个不该用，一个是绕过内核。**
+
+### 决定：把整个 `TickContext` 传给树
+
+不是只传一个 `now`。理由：`TickContext` **已经存在、已经是 frozen dataclass、Worker 那边已经在用**；给树发明一个不同的东西只会多出一个概念。而且 `tick_id` 对 logbook 关联有用（哪一行日志属于哪一个 tick）。
+
+收益三条（**和 pause 无关**——pause 在第 3 节已经永久出局）：
+
+1. **可测试性** —— 现在要测 `Timeout(2.0)`，必须真的 sleep 两秒。
+2. **logbook 可复现** —— logbook 记的是 tick；重放时两条时间轴要对得齐。
+3. **OS 一致性** —— 进程向内核要时间，不自己读硬件。这和 note = syscall 是同一句话。
+
+### 为什么跟这次一起做
+
+诚实说：这条严格讲不属于 `Batch` 改造，是**搭同一趟车**。
+
+但 `Batch` 改造必然要动 `Action.tick()` 的签名（`action.py:72`），现在不一起改，就要改两次，而且第二次仍然是破坏性的。
+
+### 一处不能一刀切
+
+**`action.py:88,92` 也读 `time.monotonic()`，那两行不要动。** 它测的是 tick 的**执行耗时**（slow tick 检测，`:95-102`）——**测量墙上耗时是正当用途**，和树的逻辑时间是两回事。
+
+同理 `worker/clock.py:238`（tick 时间的源头，`TickContext` 就是从这里来的）和 `worker/clock.py:291-301`（`run()` 的 sleep 调度），**更不能动**。
+
+一句话：**逻辑时间走内核服务，墙上耗时该读就读。**
+
+---
+
+## 12. 进出两端
 
 ### 进（argv）
 
@@ -298,7 +461,7 @@ carry = result.exported
 
 ---
 
-## 11. 明确不做的（防止将来重开）
+## 13. 明确不做的（防止将来重开）
 
 | 不做 | 理由 |
 |---|---|
@@ -306,16 +469,18 @@ carry = result.exported
 | 抢占式调度 | 同上。我们是协作式 job scheduler，不是分时系统。 |
 | 框架内置 supervisor / 调度策略 | 第 5 节：策略在用户态。只有一个消费方时内置就是猜形状。 |
 | 多 `Batch` 并发（现在） | 没有业务需求。限制放在提交口的校验上，将来放开 = 删一个检查（第 6 节）。 |
+| `EXITING` 状态 | 第 7 节：没有消费方，且收尾是退出路径上的代码，不是一个状态。收尾树替代它。 |
+| `on_batch_end` | 第 10 节：被 kill 的 `Batch` 未必跑得到结束钩子；进门擦桌子比出门擦可靠。 |
 | 黑板 scope 概念 | 不需要——黑板已经随 `Batch` 生灭，天然就是那一趟的私有地址空间（第 9 节）。 |
 | 从 logbook 恢复状态 | logbook 目前**只写不读**，且 EVO-013 定了"框架不解释含义"（规则 3）。要当恢复源，得先长出读的那一半，并回答"物理世界才是权威"这个问题。 |
 
 ---
 
-## 12. 已知连带影响（备案，不在本次范围）
+## 14. 已知连带影响（备案，不在本次范围）
 
 1. **logbook 层级反转。** 现在 `batch` 是 run 的常量属性——`logbook/scribe.py:18` 的注释原话：*"``row_tags`` — **constant for the whole run** (batch, machine)"*，EVO-013 规则 2 特意把它盖在每一行上，好让"row stands alone, no join needed"。**OS 化后一个 run 里跑多个 `Batch`，这个常量假设会破。** 设计本身没错，错的是 batch 挂在 run 上。
 
-2. **EVO-010 已知问题第 3 条**：`BTClock.detach_tree`（`clock.py:98`）只调 `handle.action.tree.halt()`、**不调 `Action.halt()`**；`shutdown`（`clock.py:328`）走的也是 `detach_tree`。所以 `Action` 层的收尾（`action.py:115` 那段"halted" 结果 + `on_action_end`）在这条路径上**不会发生**。换成 `Batch` 时要一并处理——`EXITING` 正是它该待的地方。
+2. **EVO-010 已知问题第 3 条**：`BTClock.detach_tree`（`clock.py:98`）只调 `handle.action.tree.halt()`、**不调 `Action.halt()`**；`shutdown`（`clock.py:328`）走的也是 `detach_tree`。所以 `Action` 层的收尾（`action.py:115` 那段"halted" 结果 + `on_action_end`）在这条路径上**不会发生**。换成 `Batch` 时要一并处理——它属于第 7 节那条统一的退出路径（主树 halt → 收尾树 → `EXITED` + 退出结果）。
 
 3. **`ActionLeaf` → `Action` 的改名机会**（`Action` 这个名字腾出来了）：**未决。** 本文不拍板。
 
