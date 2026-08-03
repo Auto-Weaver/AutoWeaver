@@ -9,7 +9,7 @@ whole tree agrees on what time it is and tests can hand time in.
 
 import pytest
 
-from autoweaver.motion_policy.action import Action
+from autoweaver.motion_policy.batch import Batch
 from autoweaver.motion_policy.nodes.control.sequence import Sequence
 from autoweaver.motion_policy.nodes.decorator.force_success import ForceSuccess
 from autoweaver.motion_policy.nodes.decorator.timeout import Timeout
@@ -188,7 +188,7 @@ def test_every_node_in_one_tick_sees_the_same_now():
 def test_clock_hands_the_tick_context_to_the_tree():
     leaf = _NowRecordingLeaf(name="clocked")
     clock = BTClock(WorldBoard())
-    clock.attach_tree(Action(leaf, name="probe"))
+    clock.submit(Batch(lambda: leaf, name="probe"))
 
     ctx = clock.tick_once()
 
@@ -197,12 +197,12 @@ def test_clock_hands_the_tick_context_to_the_tree():
 
 
 def test_wait_under_the_clock_does_not_blow_up_on_missing_now():
-    """Guards the clock→Action→tree wiring: a missing ctx would surface as
+    """Guards the clock→Batch→tree wiring: a missing ctx would surface as
     FAILURE (the exception guard swallows it), not as an error."""
-    action = Action(Wait(seconds=60.0), name="waiter")
+    batch = Batch(lambda: Wait(seconds=60.0), name="waiter")
     clock = BTClock(WorldBoard())
-    clock.attach_tree(action)
+    clock.submit(batch)
 
     assert clock.tick_once() is not None
-    assert action.tree.status == Status.RUNNING
-    assert action.last_result is None
+    assert batch.tree.status == Status.RUNNING
+    assert batch.result is None

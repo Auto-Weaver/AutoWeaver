@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from autoweaver.motion_policy.action import Action
+from autoweaver.motion_policy.batch import Batch, BatchState, ExitReason
 from autoweaver.motion_policy.nodes.node import Status, TreeNode
 from autoweaver.motion_policy.world_board import WorldBoard
 from autoweaver.worker.async_pool import AsyncPoolRegistry
@@ -203,15 +203,14 @@ def test_paused_worker_does_not_receive_tick():
         clock.shutdown()
 
 
-# ---- tick_once: tree dispatch ------------------------------------------
+# ---- tick_once: batch dispatch -----------------------------------------
 
-def test_attached_tree_receives_ticks():
+def test_submitted_batch_receives_ticks():
     board = WorldBoard()
     clock = BTClock(world_board=board)
     tree = _CountingTree()
-    action = Action(tree=tree)
     try:
-        clock.attach_tree(action, name="t1")
+        clock.submit(Batch(lambda: tree), name="t1")
         clock.tick_once()
         clock.tick_once()
         assert tree.tick_count == 2
@@ -219,8 +218,8 @@ def test_attached_tree_receives_ticks():
         clock.shutdown()
 
 
-def test_tree_terminal_status_is_idempotent_under_clock():
-    """Trees that finish stay finished — no double-execution by the clock."""
+def test_batch_terminal_status_is_idempotent_under_clock():
+    """Batches that finish stay finished — no double-execution by the clock."""
     board = WorldBoard()
     clock = BTClock(world_board=board)
     counter = {"n": 0}
@@ -234,9 +233,8 @@ def test_tree_terminal_status_is_idempotent_under_clock():
             counter["n"] += 1
             return Status.SUCCESS
 
-    action = Action(tree=_OnceSuccess())
     try:
-        clock.attach_tree(action)
+        clock.submit(Batch(_OnceSuccess))
         for _ in range(5):
             clock.tick_once()
         assert counter["n"] == 1
@@ -244,21 +242,22 @@ def test_tree_terminal_status_is_idempotent_under_clock():
         clock.shutdown()
 
 
-def test_detach_tree_halts_and_skips_in_subsequent_ticks():
+def test_kill_halts_and_skips_in_subsequent_ticks():
     board = WorldBoard()
     clock = BTClock(world_board=board)
     tree = _CountingTree()
-    action = Action(tree=tree)
     try:
-        handle = clock.attach_tree(action)
+        handle = clock.submit(Batch(lambda: tree))
         clock.tick_once()
         assert tree.tick_count == 1
 
-        clock.detach_tree(handle)
+        clock.kill(handle)
         clock.tick_once()
         clock.tick_once()
-        # Detached tree no longer gets ticked.
+        # Killed batch no longer gets ticked.
         assert tree.tick_count == 1
+        assert handle.state is BatchState.EXITED
+        assert handle.result.reason is ExitReason.KILLED
     finally:
         clock.shutdown()
 
@@ -298,9 +297,8 @@ def test_tick_order_drains_then_delivers_then_trees_then_workers():
             events.append("worker_tick")
 
     worker = _OrderingWorker()
-    action = Action(tree=_OrderingTree())
     try:
-        clock.attach_tree(action)
+        clock.submit(Batch(_OrderingTree))
         clock.attach_worker(worker)
 
         # Pass a note before the first tick — it must arrive before the
@@ -343,11 +341,10 @@ def test_pass_note_during_tree_tick_delivers_on_next_tick():
         def on_attach(self) -> None:
             self.accept_notes("ping", dict, received.append)
 
-    action = Action(tree=_Sender())
     worker = _Receiver()
     try:
         clock.attach_worker(worker)
-        clock.attach_tree(action)
+        clock.submit(Batch(_Sender))
         # Tick 1: tree sends note #1; received is empty (no prior tick to deliver).
         clock.tick_once()
         assert received == []
@@ -507,12 +504,11 @@ def test_attached_workers_lists_only_attached():
         clock.shutdown()
 
 
-def test_attached_trees_lists_attached_only():
+def test_attached_batches_lists_attached_only():
     board = WorldBoard()
     clock = BTClock(world_board=board)
-    a = Action(tree=_ImmediateSuccess(), name="ok")
     try:
-        clock.attach_tree(a)
-        assert clock.attached_trees() == ["ok"]
+        clock.submit(Batch(_ImmediateSuccess, name="ok"))
+        assert clock.attached_batches() == ["ok"]
     finally:
         clock.shutdown()

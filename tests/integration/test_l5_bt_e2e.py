@@ -1,10 +1,10 @@
-"""L5 — ActionLeaf + Action.run() end-to-end on real hardware.
+"""L5 — ActionLeaf + Batch end-to-end on real hardware.
 
 What this exercises:
-  - Action's 25Hz asyncio tick loop running against a live feedback thread
+  - a Batch driven at 25Hz by BTClock against a live feedback thread
   - ActionLeaf.on_start firing move_j, on_running polling the world board
   - Settled-detection (running=False + joint near target) reaching SUCCESS
-  - Framework halt path: tree.halt() in finally → on_halted → arm.halt
+  - Framework exit path: BTClock.kill() → tree.halt() → on_halted → arm.halt
   - No SLOW_TICK warnings under steady-state (move_j RPC ~10ms < 40ms budget)
 
 Risk: same as L3 (J1 +5° at speed=10). Operator hand on e-stop.
@@ -21,7 +21,8 @@ from typing import Sequence
 
 import pytest
 
-from autoweaver.motion_policy.action import Action
+from autoweaver.motion_policy.batch import Batch
+from autoweaver.worker.clock import BTClock
 from autoweaver.motion_policy.nodes.leaf.action_leaf import ActionLeaf
 from autoweaver.motion_policy.nodes.node import Status
 
@@ -66,6 +67,19 @@ class MoveJ(ActionLeaf):
 
 # ---- the test ----------------------------------------------------------------
 
+async def _drive(clock, batch, timeout: float):
+    """Own the tick loop, like business code does — the framework offers no
+    blocking wait (EVO-014 §5)."""
+    deadline = time.monotonic() + timeout
+    while batch.result is None:
+        clock.tick_once()
+        if time.monotonic() > deadline:
+            raise TimeoutError(f"batch '{batch.name}' did not exit in {timeout}s")
+        await asyncio.sleep(0.04)  # 25 Hz
+    return batch.result
+
+
+
 @pytest.mark.integration
 async def test_move_j_action_leaf_e2e_on_real_arm(real_dobot):
     arm, board = real_dobot
@@ -78,16 +92,20 @@ async def test_move_j_action_leaf_e2e_on_real_arm(real_dobot):
     print(f"  start joint   : {tuple(round(x, 2) for x in start)}")
     print(f"  target joint  : {tuple(round(x, 2) for x in target)}")
 
+    clock = BTClock(world_board=board, hz=25)
+
     # ---- forward leg via BT ----
-    print(f"  → Action.run() with single MoveJ leaf, hz=25")
-    leaf = MoveJ(arm, target=target, speed=10)
-    action = Action(tree=leaf, world_board=board, hz=25, name="l5_forward")
+    print(f"  → Batch with single MoveJ leaf, hz=25")
+    batch = Batch(
+        lambda: MoveJ(arm, target=target, speed=10), name="l5_forward",
+    )
+    clock.submit(batch)
 
     t0 = time.monotonic()
-    result = await asyncio.wait_for(action.run(), timeout=15.0)
+    result = await _drive(clock, batch, timeout=15.0)
     elapsed = time.monotonic() - t0
-    print(f"  Action.run() returned in {elapsed:.2f}s")
-    print(f"  result.success    : {result.success}")
+    print(f"  batch exited in {elapsed:.2f}s")
+    print(f"  result.reason     : {result.reason}")
     print(f"  result.message    : {result.message!r}")
     print(f"  result.final_status: {result.final_status}")
     assert result.success, f"BT did not reach SUCCESS: {result}"
@@ -98,12 +116,15 @@ async def test_move_j_action_leaf_e2e_on_real_arm(real_dobot):
         f"J1 didn't reach target: {final[0]} vs {target[0]}"
     )
 
-    # ---- return leg via a fresh Action ----
-    # Each region in production will spawn a new Action — this models that.
-    print(f"  → returning to start via second Action.run()")
-    leaf2 = MoveJ(arm, target=start, speed=10)
-    action2 = Action(tree=leaf2, world_board=board, hz=25, name="l5_return")
-    result2 = await asyncio.wait_for(action2.run(), timeout=15.0)
+    # ---- return leg via a fresh Batch ----
+    # Each region in production will submit a new Batch — this models that,
+    # and proves the clock takes a next Batch once the first has EXITED.
+    print(f"  → returning to start via a second Batch")
+    batch2 = Batch(
+        lambda: MoveJ(arm, target=start, speed=10), name="l5_return",
+    )
+    clock.submit(batch2)
+    result2 = await _drive(clock, batch2, timeout=15.0)
     assert result2.success
 
     returned = board.snapshot()["dobot1.joint"]

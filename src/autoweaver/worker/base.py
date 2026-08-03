@@ -11,6 +11,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any, Callable, TypeVar
 
 if TYPE_CHECKING:
+    from autoweaver.motion_policy.batch import BatchInfo
     from autoweaver.motion_policy.world_board import WorldBoard
     from autoweaver.worker.async_pool import AsyncPool
 
@@ -123,6 +124,8 @@ class Worker(ABC):
         on_tick(ctx)             — periodic work (default no-op for
                                     PerceptionWorker; MotionWorker uses
                                     it as the completion detector)
+        on_batch_start(info)     — a new Batch is starting; reset
+                                    per-batch internal state
 
     Subclasses use these convenience methods (do not override):
 
@@ -186,6 +189,33 @@ class Worker(ABC):
 
         If override, keep it fast — slow operations go through
         ``self.run_async(...)``. Do not sleep or block on IO here.
+        """
+
+    def on_batch_start(self, info: BatchInfo) -> None:
+        """Default no-op. A new Batch is starting — reset per-batch state.
+
+        Broadcast by ``BTClock.submit`` to every RUNNING Worker before the
+        Batch is attached (EVO-014 §10). Blackboards die with their Batch,
+        so they never leak; **Workers do** — a filter's history, a
+        tracker's state, a ``Task`` held inside this Worker. This is the
+        hook that clears them, and it exists because the knowledge of
+        "what is dirty" belongs to the Worker's author, not to the
+        business loop.
+
+        There is deliberately no ``on_batch_end``: a killed Batch may
+        never reach an end hook, but the next Batch always runs the start
+        hook. Wiping the table on the way in beats remembering on the way
+        out.
+
+        ``info`` carries only the batch identity (id + ``batch_no``) —
+        never ``params``. Those are the tree's; a Worker that needs
+        parameters is being *configured*, and configuration arrives at
+        ``on_attach``.
+
+        Keep it fast, exactly like ``on_tick`` — slow work goes through
+        ``self.run_async(...)``. **If this raises, the Worker goes FAULTED
+        and the submit fails**: a Worker that did not reset cleanly would
+        make the whole batch's output untrustworthy.
         """
 
     def on_attach(self) -> None:

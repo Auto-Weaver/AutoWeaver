@@ -51,7 +51,7 @@ import time
 from typing import List
 
 from autoweaver.device.arm.epson_ls6 import EpsonLS6SocketWorker
-from autoweaver.motion_policy.action import Action
+from autoweaver.motion_policy.batch import Batch
 from autoweaver.motion_policy.nodes.control.sequence import Sequence
 from autoweaver.motion_policy.nodes.leaf.notify_and_wait import NotifyAndWait
 from autoweaver.motion_policy.nodes.node import TreeNode
@@ -76,7 +76,7 @@ PICK_Z = 22.061
 PICK_U = 60.236
 
 
-def build_demo_tree(board: WorldBoard) -> Action:
+def build_demo_tree(board: WorldBoard) -> TreeNode:
     """task_finish → pick → task_finish."""
     children: List[TreeNode] = [
         NotifyAndWait(
@@ -93,10 +93,7 @@ def build_demo_tree(board: WorldBoard) -> Action:
             payload={}, name="LS6.task_finish_post",
         ),
     ]
-    return Action(
-        tree=Sequence(children, name="ls6_socket_demo_sequence"),
-        name="ls6_socket_demo",
-    )
+    return Sequence(children, name="ls6_socket_demo_sequence")
 
 
 def main():
@@ -123,18 +120,21 @@ def main():
     # — exactly what we want for a smoke test.
     clock.attach_worker(worker)
 
-    action = build_demo_tree(board)
-    clock.attach_tree(action)
+    # The Batch takes the *factory*, not the tree: the program is the
+    # function that builds a tree, because tree nodes carry run state.
+    batch = Batch(lambda: build_demo_tree(board), name="ls6_socket_demo")
+    clock.submit(batch)
 
     logger.info("Starting BTClock at 50Hz — Ctrl+C to stop")
     try:
-        while not action._finished:
+        # The business owns the loop; the framework has no blocking wait.
+        while batch.result is None:
             clock.tick_once()
             time.sleep(0.02)  # 50 Hz
-        result = action.last_result
+        result = batch.result
         logger.info(
-            "Demo finished — final status: %s",
-            result.final_status if result else "?",
+            "Demo finished — %s (final status: %s)",
+            result.reason.value, result.final_status,
         )
     except KeyboardInterrupt:
         logger.warning("Ctrl+C — halting")

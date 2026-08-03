@@ -14,7 +14,14 @@ from .comm import (
     WebSocketProtocol,
     WSServerProtocol,
 )
-from .motion_policy.action import Action, ActionResult
+from .motion_policy.batch import (
+    Batch,
+    BatchInfo,
+    BatchResult,
+    BatchState,
+    ExitReason,
+    TeardownOutcome,
+)
 from .motion_policy.blackboard import Blackboard
 from .motion_policy.nodes.leaf.notify import NotifyLeaf
 from .motion_policy.nodes.leaf.wait_for import WaitFor
@@ -50,31 +57,35 @@ from .worker import (
     AsyncPool,
     AsyncPoolConfig,
     AsyncPoolRegistry,
+    BatchHandle,
     BTClock,
     TickContext,
-    TreeHandle,
     Worker,
     WorkerState,
     next_request_id,
 )
 from .tasks import Task, TaskBase
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 __all__ = [
     # Worker framework
     "AsyncPool",
     "AsyncPoolConfig",
     "AsyncPoolRegistry",
+    "BatchHandle",
     "BTClock",
     "TickContext",
-    "TreeHandle",
     "Worker",
     "WorkerState",
     "next_request_id",
     # BT engine
-    "Action",
-    "ActionResult",
+    "Batch",
+    "BatchInfo",
+    "BatchResult",
+    "BatchState",
+    "ExitReason",
+    "TeardownOutcome",
     "Blackboard",
     "NotifyLeaf",
     "Snapshot",

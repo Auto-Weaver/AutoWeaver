@@ -8,23 +8,44 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from autoweaver.motion_policy.batch import BatchState
 from autoweaver.worker.async_pool import AsyncPoolRegistry
 from autoweaver.worker.base import TickContext, Worker, WorkerState
 
 if TYPE_CHECKING:
     from autoweaver.frames import Frames
-    from autoweaver.motion_policy.action import Action
+    from autoweaver.motion_policy.batch import Batch, BatchResult
     from autoweaver.motion_policy.world_board import WorldBoard
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class TreeHandle:
-    """Returned by ``attach_tree``; pass to ``detach_tree`` to remove."""
+@dataclass(eq=False)
+class BatchHandle:
+    """Returned by ``submit``; pass to ``kill`` to stop the Batch early.
+
+    "Waiting for the result" is polling ``state`` / ``result`` from the
+    business's own tick loop — the framework offers no blocking wait, on
+    purpose (EVO-014 §5: the business owns the loop, policy lives in user
+    space).
+
+    ``eq=False`` — a handle is an identity, not a value. ``in`` and
+    ``remove`` on the clock's batch list must mean "is it *this* one",
+    never "does something with matching fields exist". Harmless while only
+    one Batch runs at a time; a landmine the day that limit is lifted.
+    """
 
     name: str
-    action: Action
+    batch: Batch
+
+    @property
+    def state(self) -> BatchState:
+        return self.batch.state
+
+    @property
+    def result(self) -> BatchResult | None:
+        """The exit result, or ``None`` while the Batch is still running."""
+        return self.batch.result
 
 
 class BTClock:
@@ -34,20 +55,25 @@ class BTClock:
 
       1. Drains queued worker callbacks (Worker.run_async on_done).
       2. Drains pending notes on the WorldBoard (deliver_notes).
-      3. Ticks all attached BT trees in attachment order.
+      3. Ticks the running Batch; reaps it once it has EXITED.
       4. Broadcasts on_tick to all RUNNING Workers in attachment order.
 
     Anything time-sensitive must hook into this loop — Workers may not
-    maintain their own heartbeats. BT trees and Workers can be attached
-    and detached at runtime.
+    maintain their own heartbeats. Batches and Workers can be submitted
+    and attached at runtime.
+
+    The clock offers exactly four verbs for Batches — create (``Batch``),
+    submit, get the result, kill — and says nothing about *when* or
+    *whether* to run one. That is business policy, and it lives in user
+    space (EVO-014 §5).
 
     Threading:
       - ``run()`` blocks the calling thread; everything in the loop above
         runs on that thread.
       - Worker threads from AsyncPool live on different threads, but
         their on_done callbacks fire here.
-      - ``attach_*`` / ``detach_*`` / ``stop`` are safe to call from any
-        thread (small lock).
+      - ``submit`` / ``kill`` / ``attach_*`` / ``detach_*`` / ``stop`` are
+        safe to call from any thread (small lock).
 
     Testing:
       - ``tick_once()`` runs one tick synchronously without sleeping —
@@ -68,44 +94,155 @@ class BTClock:
         self._async_pool_registry = async_pool or AsyncPoolRegistry()
         self._frames = frames
 
-        self._trees: list[TreeHandle] = []
+        # A list, not a single slot. Only one Batch may run at a time, but
+        # that limit is a *policy* check in submit() — the structure stays
+        # plural so lifting it later is deleting one check, not a refactor
+        # (EVO-014 §6).
+        self._batches: list[BatchHandle] = []
         self._workers: list[Worker] = []
         self._lock = threading.Lock()
+        # Serialises submit() end-to-end so the "one Batch at a time"
+        # check cannot race its own append. Kept separate from _lock so
+        # user code (Worker.on_batch_start) is never called under _lock.
+        self._submit_lock = threading.Lock()
 
         self._stopped = False
         self._tick_id = 0
         self._last_tick_ts: float | None = None
 
     # ------------------------------------------------------------------
-    # Tree attach / detach
+    # Batch submit / kill
     # ------------------------------------------------------------------
 
-    def attach_tree(self, action: Action, name: str | None = None) -> TreeHandle:
-        """Attach a BT tree (an Action) to the clock.
+    def submit(self, batch: Batch, name: str | None = None) -> BatchHandle:
+        """Submit a Batch. It starts receiving ticks on the next iteration.
 
-        The tree starts receiving ticks on the next iteration. The Action
-        is responsible for creating its own Blackboard. If the clock was
-        constructed with a ``frames=`` graph, it is injected into the whole
-        tree here so leaves can call ``self.lookup(target, source)``.
+        Order:
+          1. Reject unless the Batch is READY and no Batch is running.
+          2. Inject ``frames=`` (if the clock has one) into both trees.
+          3. Broadcast ``on_batch_start`` to every RUNNING Worker.
+          4. Attach.
+
+        Only **one** Batch may run at a time (EVO-014 §6) — a second
+        ``submit`` raises until the running one has EXITED and been
+        reaped. A Batch runs once: to run the same work again, build a
+        new Batch from the same factory.
+
+        If a Worker's ``on_batch_start`` raises, that Worker goes FAULTED
+        and the exception propagates — **the submit fails and the Batch
+        does not start** (EVO-014 §10). A Worker that did not reset
+        cleanly would poison the batch's results; failing the submit is
+        the cheaper outcome.
         """
-        if self._frames is not None:
-            action.set_frames(self._frames)
-        handle = TreeHandle(name=name or action.name, action=action)
-        with self._lock:
-            self._trees.append(handle)
-        return handle
+        if batch.state is not BatchState.READY:
+            raise RuntimeError(
+                f"Batch '{batch.name}' is {batch.state.value}, cannot submit "
+                "(a Batch runs once — build a new one from the same factory)"
+            )
 
-    def detach_tree(self, handle: TreeHandle) -> None:
-        """Detach a BT tree. The tree is halted; subsequent ticks skip it."""
+        with self._submit_lock:
+            with self._lock:
+                if self._batches:
+                    running = self._batches[0].name
+                    raise RuntimeError(
+                        f"Batch '{running}' is already running; only one Batch "
+                        "may run at a time. Wait for it to EXIT, or kill it."
+                    )
+
+            if self._frames is not None:
+                batch.set_frames(self._frames)
+
+            self._broadcast_batch_start(batch)
+
+            handle = BatchHandle(name=name or batch.name, batch=batch)
+            with self._lock:
+                self._batches.append(handle)
+            return handle
+
+    def kill(self, handle: BatchHandle) -> None:
+        """Begin a Batch's exit: halt its main tree, then run its teardown tree.
+
+        **``kill`` starts the exit; ticking finishes it.** The clock has
+        no thread of its own — it only does work inside ``tick_once``. So
+        if the Batch has a teardown tree, killing it is not enough::
+
+            clock.kill(handle)
+            while handle.result is None:     # ← required, not optional
+                clock.tick_once()
+                time.sleep(period)
+            if not handle.result.teardown_ok:
+                ...  # cleanup did not complete — do NOT submit the next one
+
+        Break out of the loop right after ``kill`` and the teardown tree
+        is **silently never ticked** — on precisely the path (an abnormal
+        stop) that the teardown tree was written for. ``handle.result``
+        turning non-None is the only signal that the exit finished.
+
+        With no teardown tree the Batch reaches EXITED immediately and is
+        reaped before this returns.
+
+        Idempotent, and safe to call from any thread.
+        """
+        with self._lock:
+            attached = handle in self._batches
+        if not attached:
+            return
+        try:
+            handle.batch.kill()
+        except Exception:
+            logger.exception("batch '%s' kill raised", handle.name)
+        self._reap_if_exited(handle)
+
+    def _broadcast_batch_start(self, batch: Batch) -> None:
+        """Tell every attached Worker a new Batch is starting.
+
+        Only the minimal batch identity goes out — never ``params``
+        (EVO-014 §10). The hook must be fast; slow work belongs in
+        ``run_async`` / ``run_background``.
+
+        **PAUSED Workers are included**, unlike ``on_tick``. Skipping a
+        PAUSED Worker on ``on_tick`` is correct — paused means "do not
+        advance". But ``on_batch_start`` is a *notification*, not a
+        tick: "a new batch began, drop your stale state" is true whether
+        or not the Worker is currently paused, and a Worker that missed
+        it would resume carrying the previous batch's state — the exact
+        leak this hook exists to prevent.
+
+        FAULTED Workers are skipped: "broken but still attached" is a
+        real state for a Worker (they are drivers, they should not die),
+        and a broken one has no business being handed new work.
+        """
+        with self._lock:
+            workers = list(self._workers)
+        info = batch.info
+        for worker in workers:
+            if worker.lifecycle_state is WorkerState.FAULTED:
+                continue
+            try:
+                worker.on_batch_start(info)
+            except BaseException:
+                logger.exception(
+                    "worker '%s' on_batch_start raised; marking FAULTED — "
+                    "batch '%s' will not start",
+                    worker.name,
+                    batch.name,
+                )
+                worker._transition(WorkerState.FAULTED)
+                raise
+
+    def _reap_if_exited(self, handle: BatchHandle) -> None:
+        """Detach a Batch that has reached EXITED, freeing the slot."""
+        if handle.batch.state is not BatchState.EXITED:
+            return
+        self._detach(handle)
+
+    def _detach(self, handle: BatchHandle) -> None:
+        """Remove a Batch from the clock unconditionally."""
         with self._lock:
             try:
-                self._trees.remove(handle)
+                self._batches.remove(handle)
             except ValueError:
-                return
-        try:
-            handle.action.tree.halt()
-        except Exception:
-            logger.exception("tree '%s' halt raised during detach", handle.name)
+                pass
 
     # ------------------------------------------------------------------
     # Worker attach / detach
@@ -259,16 +396,35 @@ class BTClock:
         except BaseException:
             logger.exception("note delivery raised; continuing")
 
-        # 3. Tick BT trees.
+        # 3. Tick the running Batch, and reap it if it exited this tick.
         with self._lock:
-            trees = list(self._trees)
-        for handle in trees:
+            batches = list(self._batches)
+        for handle in batches:
             try:
-                handle.action.tick(self._board.snapshot(), ctx)
-            except BaseException:
+                handle.batch.tick(self._board.snapshot(), ctx)
+            except BaseException as exc:
+                # Unlike a Worker, a broken Batch cannot just be logged
+                # and left attached: the Batch slot is exclusive, so
+                # "this tree is broken" would silently become "this
+                # machine never accepts another batch again". Force the
+                # exit and free the slot, whatever it takes.
                 logger.exception(
-                    "tree '%s' tick raised; continuing", handle.name
+                    "batch '%s' tick raised; forcing it to EXITED", handle.name
                 )
+                try:
+                    handle.batch._abort(exc)
+                except BaseException:
+                    logger.exception(
+                        "batch '%s' abort raised; detaching anyway", handle.name
+                    )
+                self._detach(handle)
+                # KeyboardInterrupt / SystemExit are not errors — Python
+                # keeps them off `Exception` precisely so they propagate.
+                # The slot is already clean, so re-raising is safe here.
+                if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                    raise
+                continue
+            self._reap_if_exited(handle)
 
         # 4. Broadcast on_tick to RUNNING Workers.
         with self._lock:
@@ -313,9 +469,10 @@ class BTClock:
         """Number of ticks fired since clock start."""
         return self._tick_id
 
-    def attached_trees(self) -> list[str]:
+    def attached_batches(self) -> list[str]:
+        """Names of Batches currently attached (submitted, not yet reaped)."""
         with self._lock:
-            return [h.name for h in self._trees]
+            return [h.name for h in self._batches]
 
     def attached_workers(self) -> list[str]:
         with self._lock:
@@ -326,15 +483,42 @@ class BTClock:
     # ------------------------------------------------------------------
 
     def shutdown(self) -> None:
-        """Detach all workers and trees, shut down worker pools.
+        """Detach all workers, kill the running Batch, shut down worker pools.
 
         Best-effort — exceptions logged, never raised.
+
+        Batches exit through the same path as ``kill``: the main tree is
+        halted, so in-flight goals get their ``on_halted`` (this is the
+        EVO-010 known-issue #3 that ``detach_tree`` used to skip).
+
+        **shutdown does not tick, so a teardown tree will not run here.**
+        Shutting down a clock whose Batch has one halts the main tree,
+        logs a warning, and forces the Batch to EXITED anyway — the
+        "``result is not None`` ⇔ finished" contract holds even here, so a
+        business loop polling on it cannot hang.
+
+        But a result on this path is **not** evidence that the cleanup
+        ran — it is evidence of the opposite: ``teardown_outcome`` is
+        ``ABORTED``, and ``reason`` keeps whatever the exit path had
+        already decided (a kill in flight stays ``KILLED``). If the
+        teardown matters (parking the arm, waiting for it to stand still),
+        the business must drain it *before* shutting down::
+
+            clock.kill(handle)
+            while handle.result is None:
+                clock.tick_once()
+                time.sleep(period)
+            clock.shutdown()
+
+        This is deliberate: draining the teardown inside ``shutdown``
+        would mean the framework inventing its own bounded tick loop, and
+        the tick loop belongs to the business.
         """
         self._stopped = True
 
         with self._lock:
             workers = list(self._workers)
-            trees = list(self._trees)
+            batches = list(self._batches)
 
         for worker in workers:
             try:
@@ -344,13 +528,34 @@ class BTClock:
                     "shutdown: detach_worker('%s') raised", worker.name
                 )
 
-        for handle in trees:
+        for handle in batches:
             try:
-                self.detach_tree(handle)
+                self.kill(handle)
             except BaseException:
-                logger.exception(
-                    "shutdown: detach_tree('%s') raised", handle.name
+                logger.exception("shutdown: kill('%s') raised", handle.name)
+            if handle.batch.state is not BatchState.EXITED:
+                logger.warning(
+                    "shutdown: batch '%s' was killed mid-flight but its "
+                    "teardown tree cannot run — the clock is shutting down "
+                    "and will not tick again",
+                    handle.name,
                 )
+                # Still drive it to EXITED. "result is not None ⇔ finished"
+                # is the contract business loops poll on; a Batch stranded
+                # short of EXITED by shutdown would hang
+                # `while handle.result is None: clock.tick_once()` forever,
+                # on the shutdown path of all places.
+                try:
+                    handle.batch._abort(
+                        message="clock shut down before the teardown tree ran"
+                    )
+                except BaseException:
+                    logger.exception(
+                        "shutdown: forcing batch '%s' to EXITED raised",
+                        handle.name,
+                    )
+        with self._lock:
+            self._batches.clear()
 
         try:
             self._async_pool_registry.shutdown()

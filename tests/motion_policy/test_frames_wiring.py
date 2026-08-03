@@ -1,4 +1,4 @@
-"""Wiring test: Frames injected through BTClock → Action → tree → leaf.
+"""Wiring test: Frames injected through BTClock → Batch → tree → leaf.
 
 Validates that a leaf can call ``self.lookup(target, source)`` and have it
 resolve against the live WorldBoard snapshot, with the Frames graph injected
@@ -14,7 +14,7 @@ import numpy as np
 import pytest
 
 from autoweaver.frames import Frames
-from autoweaver.motion_policy.action import Action
+from autoweaver.motion_policy.batch import Batch
 from autoweaver.motion_policy.nodes.node import Status, TreeNode
 from autoweaver.motion_policy.world_board import WorldBoard
 from autoweaver.worker.clock import BTClock
@@ -72,9 +72,8 @@ def test_leaf_lookup_resolves_through_clock(tmp_path):
     board.post_state("arm_1.pose", _pose(500, 0, 200), writer="arm_1")
 
     leaf = _LookupLeaf()
-    action = Action(tree=leaf)
     clock = BTClock(world_board=board, frames=_frames(tmp_path))
-    clock.attach_tree(action)
+    clock.submit(Batch(lambda: leaf))
 
     clock.tick_once()
     # flange at (500,0,200); gripper +100z → world (500, 0, 300).
@@ -86,9 +85,8 @@ def test_lookup_without_frames_raises(tmp_path):
     """No frames= on the clock → lookup() fails loud, not silently."""
     board = WorldBoard()
     leaf = _LookupLeaf()
-    action = Action(tree=leaf)
     clock = BTClock(world_board=board)  # no frames
-    clock.attach_tree(action)
+    clock.submit(Batch(lambda: leaf))
 
     clock.tick_once()
     # The leaf's lookup raises RuntimeError; TreeNode.tick catches it and the
@@ -107,9 +105,8 @@ def test_frames_injected_into_nested_tree(tmp_path):
     leaf = _LookupLeaf()
     # Wrap the leaf in a Sequence (a control node) to test propagation.
     tree = leaf >> _LookupLeaf()
-    action = Action(tree=tree)
     clock = BTClock(world_board=board, frames=_frames(tmp_path))
-    clock.attach_tree(action)
+    clock.submit(Batch(lambda: tree))
 
     clock.tick_once()
     # flange at origin; gripper +100z → (0,0,100).
